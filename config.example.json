@@ -2,6 +2,7 @@
   "settings": {
     "motionStrength": 1,
     "autofocus": "pointer-movement",
+    "showMenuBar": true,
     "showStripMap": false,
     "stripWidths": [
       0.333333,
@@ -9,10 +10,9 @@
       0.666667,
       1
     ],
-    "mod": "ctrl+alt",
-    "snap": "center",
-    "snapMagnet": 0.1,
-    "newWindowPlacement": "center-gap",
+    "mod": "alt+cmd",
+    "snap": "none",
+    "newWindowPlacement": "beside-focused",
     "hotReload": true,
     "hud": true,
     "inactiveOpacity": 1,
@@ -52,79 +52,49 @@
       "dim": 0.38
     },
     "commands": {
-      "terminal": "open -na Ghostty",
-      "browser": "open -a Firefox"
+      "terminal": "open -a Terminal",
+      "browser": "open -a Safari"
     },
-    "snapThreshold": 0.15,
     "swipeGain": 1,
     "focusAfterScroll": "pointer",
     "dimInactive": 0.2,
-    "strips": [
-      "main",
-      "web",
-      "chat"
-    ],
-    "verticalSwipe": "overview",
     "attention": "badge",
     "haptics": true,
     "autoPip": true,
     "wallpaper": {
       "parallax": 0
-    },
-    "helper": {
-      "autoReload": true,
-      "command": "sudo -n /opt/homebrew/bin/yabai --load-sa"
     }
   },
   "shortcuts": {
     "left": "mod+left",
     "right": "mod+right",
-    "move-left": "mod+shift+left",
-    "move-right": "mod+shift+right",
-    "float": "mod+f",
-    "full": "mod+return",
-    "center": "mod+c",
-    "home": "mod+h",
-    "pause": "mod+p",
-    "reflow": "mod+r",
-    "close": "mod+w",
-    "terminal": "mod+t",
-    "browser": "mod+b",
-    "overview": "mod+o",
-    "preset-width": "mod+1",
-    "fit-two": "mod+2",
-    "previous": "mod+tab",
-    "undo": "mod+z",
-    "consume": "mod+u",
-    "expel": "mod+e",
     "up": "mod+up",
     "down": "mod+down",
-    "utility-mark": "mod+m",
-    "utility": "mod+space",
-    "tabs": "mod+shift+t",
-    "reload-config": "mod+shift+r",
-    "commands": "mod+shift+p",
-    "move-first": "mod+shift+,",
-    "move-last": "mod+shift+.",
-    "strip-up": "mod+k",
-    "strip-down": "mod+j",
-    "send-strip-up": "mod+shift+k",
-    "send-strip-down": "mod+shift+j",
-    "strip-1": "mod+7",
-    "strip-2": "mod+8",
-    "strip-3": "mod+9",
-    "mark": "mod+'",
-    "jump-mark": "mod+;",
-    "fit-visible": "mod+-",
-    "equalize": "mod+=",
-    "sticky": "mod+s"
+    "move-left": "mod+shift+left",
+    "move-right": "mod+shift+right",
+    "move-up": "mod+shift+up",
+    "move-down": "mod+shift+down",
+    "fit-all": "ctrl+up",
+    "fit-focused": "mod+f",
+    "actual-size": "mod+0",
+    "float": "cmd+space",
+    "center": "mod+c",
+    "home": "mod+h",
+    "undo": "mod+z",
+    "previous": "mod+tab",
+    "preset-width": "mod+r",
+    "close": "cmd+q",
+    "terminal": "cmd+return",
+    "browser": "shift+cmd+w",
+    "commands": "ctrl+alt+p",
+    "pause": "ctrl+alt+shift+p",
+    "reload-config": "ctrl+alt+r"
   },
   "appRules": {
     "com.apple.Safari": {
       "width": 0.666667,
       "floating": false,
-      "openBesideCurrent": true,
-      "strip": "web"
+      "openBesideCurrent": true
     },
     "com.apple.Notes": {
       "width": 760,
@@ -145,17 +115,13 @@
       "app": "org.mozilla.firefox",
       "title": "^Library$",
       "floating": true
-    },
-    {
-      "title": "Inspector",
-      "tabbed": true
     }
   ],
   "jump": {
     "mod+g": "com.mitchellh.ghostty",
     "mod+shift+b": {
       "app": "org.mozilla.firefox",
-      "launch": "open -a Firefox"
+      "launch": "open -a Safari"
     }
   }
 }

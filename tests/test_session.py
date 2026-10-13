@@ -33,19 +33,19 @@ class FakeRunner(session.Runner):
 
 
 class SessionTests(unittest.TestCase):
-    def test_rename_preserves_existing_state_directory(self):
+    def test_fork_never_uses_upstream_state_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             paths = session.SessionPaths(home / 'project', home)
             base = home / 'Library' / 'Application Support'
-            self.assertEqual(paths.state_dir, base / 'Tana')
+            self.assertEqual(paths.state_dir, base / 'Tana2D')
             legacy = base / 'HorizontalWM'
             legacy.mkdir(parents=True)
             (legacy / 'layout.json').write_text('{"order":[123]}')
-            self.assertEqual(paths.state_dir, legacy)
-            self.assertEqual(paths.recovery_path, legacy / 'recovery.json')
-            (base / 'Tana').mkdir()
-            self.assertEqual(paths.state_dir, base / 'Tana')
+            self.assertEqual(paths.state_dir, base / "Tana2D")
+            self.assertEqual(paths.recovery_path, base / 'Tana2D' / 'recovery.json')
+            (base / 'Tana2D').mkdir()
+            self.assertEqual(paths.state_dir, base / 'Tana2D')
             self.assertEqual((legacy / 'layout.json').read_text(), '{"order":[123]}')
 
     def test_rename_can_stop_a_legacy_recovery_session(self):
@@ -65,7 +65,7 @@ class SessionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "project"
         home = Path(temporary.name) / "home"
-        executable = root / "build" / "Tana.app" / "Contents" / "MacOS" / "tana"
+        executable = root / "build" / "Tana2D.app" / "Contents" / "MacOS" / "tana2d"
         executable.parent.mkdir(parents=True)
         executable.write_text("placeholder", encoding="utf-8")
         executable.chmod(0o755)
@@ -242,10 +242,10 @@ class SessionTests(unittest.TestCase):
             return session.CommandResult(args, 0, "", "")
 
         controller = session.Controller(paths, FakeRunner(respond), timeout=1)
-        record = {"tana": {}}
+        record = {"tana2d": {}}
         controller.launch_app(record)
         self.assertEqual(polls, 2)
-        self.assertTrue(record["tana"]["status"]["ready"])
+        self.assertTrue(record["tana2d"]["status"]["ready"])
 
 
 if __name__ == "__main__":

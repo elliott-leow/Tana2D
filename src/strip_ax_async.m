@@ -32,7 +32,7 @@ static _Atomic double hwm_ax_resize_max_ms;
 static dispatch_queue_t hwm_ax_queue(void)
 {
     static dispatch_queue_t queue; static dispatch_once_t once;
-    dispatch_once(&once,^{ queue=dispatch_queue_create("tana.accessibility",dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT,QOS_CLASS_USER_INTERACTIVE,0)); });
+    dispatch_once(&once,^{ queue=dispatch_queue_create("tana2d.accessibility",dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT,QOS_CLASS_USER_INTERACTIVE,0)); });
     return queue;
 }
 

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WM = ROOT / 'build/tana'
+WM = ROOT / 'build/tana2d'
 report = {}
 
 def command(*parts):

@@ -8,7 +8,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-WM = ROOT / "build/tana"
+WM = ROOT / "build/tana2d"
 
 
 def command(*args):

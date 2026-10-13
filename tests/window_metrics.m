@@ -8,8 +8,9 @@ extern CGError SLSGetWindowAlpha(int,uint32_t,float *);
 int main(int argc,char **argv) { @autoreleasepool {
     NSMutableArray *result=[NSMutableArray array];
     NSMutableArray *ids=[NSMutableArray array];
-    if(argc==2 && strcmp(argv[1],"--borders")==0) {
-        CFArrayRef list=CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID);
+    if(argc==2 && (strcmp(argv[1],"--borders")==0 || strcmp(argv[1],"--visible-borders")==0)) {
+        CGWindowListOption option=strcmp(argv[1],"--visible-borders")==0 ? kCGWindowListOptionOnScreenOnly : kCGWindowListOptionAll;
+        CFArrayRef list=CGWindowListCopyWindowInfo(option,kCGNullWindowID);
         for(NSDictionary *entry in (NSArray *)list)
             if([entry[(id)kCGWindowOwnerName] isEqualToString:@"borders"])
                 [ids addObject:entry[(id)kCGWindowNumber]];

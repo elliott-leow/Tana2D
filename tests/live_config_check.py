@@ -7,8 +7,8 @@ import tempfile
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
-WM=ROOT/'build/tana'
-CONFIG=Path.home()/'Library/Application Support/Tana/config.json'
+WM=ROOT/'build/tana2d'
+CONFIG=Path.home()/'Library/Application Support/Tana2D/config.json'
 
 def command(*args): return subprocess.check_output([str(WM),'-m',*map(str,args)],text=True)
 def windows(): return json.loads(command('query','--windows'))
@@ -24,7 +24,7 @@ def restart():
         if subprocess.run([str(WM),'-m','strip','status'],capture_output=True).returncode: break
         time.sleep(.1)
     else: raise AssertionError('manager did not stop')
-    subprocess.run(['open','-g','-n','--stdout',str(ROOT/'build/tana-live.out.log'),'--stderr',str(ROOT/'build/tana-live.err.log'),str(ROOT/'build/Tana.app')],check=True)
+    subprocess.run(['open','-g','-n','--stdout',str(ROOT/'build/tana2d-live.out.log'),'--stderr',str(ROOT/'build/tana2d-live.err.log'),str(ROOT/'build/Tana2D.app')],check=True)
     for _ in range(100):
         q=subprocess.run([str(WM),'-m','strip','status'],capture_output=True,text=True)
         if not q.returncode and json.loads(q.stdout).get('ready'): break
@@ -43,7 +43,7 @@ original=CONFIG.read_bytes();report={};spawned=False
 try:
     document=json.loads(original)
     document.setdefault('settings',{})['motionStrength']=.5
-    document.setdefault('appRules',{})['dev.tana.fixture']={'width':460,'floating':False,'openBesideCurrent':True}
+    document.setdefault('appRules',{})['dev.tana2d.fixture']={'width':460,'floating':False,'openBesideCurrent':True}
     write(json.dumps(document).encode());command('strip','reload-config')
     assert config()['motionStrength']==.5
     write(b'{invalid');command('strip','reload-config')
@@ -58,7 +58,7 @@ try:
     a,b,c=[w['id'] for w in tiles]
     report['new_window_app_rules']=True
     focus(a);command('strip','width',512);time.sleep(.5);command('strip','remember-width')
-    assert json.loads(CONFIG.read_text())['appRules']['dev.tana.fixture']['width']==512
+    assert json.loads(CONFIG.read_text())['appRules']['dev.tana2d.fixture']['width']==512
     report['remember_width']=True
     command('strip','place',b,a,'below');time.sleep(.5);command('strip','tabs');time.sleep(.5)
     focus(c);command('strip','utility-mark');time.sleep(.5)

@@ -16,7 +16,7 @@ static void hwm_haptic(int kind)
     });
 }
 
-/* `tana -m strip subscribe` keeps its connection and is sent one JSON object
+/* `tana2d -m strip subscribe` keeps its connection and is sent one JSON object
  * per line as things happen. Every write is made from the event loop and never
  * blocks: a reader that falls behind is dropped rather than waited for. */
 enum { HWM_IPC_MAX=8 };

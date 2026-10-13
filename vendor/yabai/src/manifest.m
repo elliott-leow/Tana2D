@@ -97,5 +97,6 @@
 #include "space_manager.c"
 #include "window_manager.c"
 #include "mouse_handler.c"
+#include "../../../src/tana_setup.m"
 #include "../../../src/horizontal.m"
 #include "yabai.c"

@@ -2,7 +2,7 @@
 #import <assert.h>
 #import "../src/tana_config.h"
 
-static NSString *test_path(void) { NSString *directory=[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo].globallyUniqueString stringByAppendingString:@".tana-config"]]; return [directory stringByAppendingPathComponent:@"config.json"]; }
+static NSString *test_path(void) { NSString *directory=[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo].globallyUniqueString stringByAppendingString:@".tana2d-config"]]; return [directory stringByAppendingPathComponent:@"config.json"]; }
 static void write_text(NSString *path, NSString *text) { assert([[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:NULL]); assert([text dataUsingEncoding:NSUTF8StringEncoding]); assert([[text dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES]); }
 static NSDictionary *defaults(void) { return @{ @"toggle-strip": @"ctrl+alt+t", @"focus-left": @"ctrl+alt+left", @"focus-right": @"ctrl+alt+right" }; }
 static void test_defaults(void) { NSString *path=test_path(); TanaConfig *config=[[[TanaConfig alloc] initWithPath:path defaultShortcuts:defaults()] autorelease]; assert([config reload:NULL]); TanaConfigSnapshot *s=[config copySnapshot]; assert(s.motionStrength==1 && !s.showStripMap && s.autofocusMode==TanaAutofocusPointerMovement && [s.stripWidths count]==4); assert([[s actionForKeyCode:17 modifiers:(NSEventModifierFlagControl|NSEventModifierFlagOption)] isEqual:@"toggle-strip"]); [s release]; }
@@ -65,7 +65,7 @@ static void test_example_is_clean(void) {
     TanaConfig *config=[[[TanaConfig alloc] initWithPath:@"config.example.json" defaultShortcuts:@{}] autorelease]; assert([config reload:NULL]);
     TanaConfigSnapshot *s=[config copySnapshot];
     if([s.diagnostics count]) NSLog(@"%@",s.diagnostics);
-    assert([s.diagnostics count]==0 && s.hasTitleRules && [[s propertiesForBundleIdentifier:@"com.apple.Safari" title:nil][@"strip"] isEqual:@"web"]);
+    assert([s.diagnostics count]==0 && s.hasTitleRules && [[s propertiesForBundleIdentifier:@"com.apple.Safari" title:nil][@"openBesideCurrent"] boolValue]);
     [s release];
 }
 int main(void) { @autoreleasepool { test_rules_and_jump(); test_example_is_clean(); test_defaults(); test_malformed_is_atomic(); test_duplicates_and_invalid_numbers(); test_wrong_types_are_ignored(); test_persistence(); test_extended_settings(); puts("tana_config_test: OK"); } return 0; }

@@ -86,7 +86,14 @@ static bool hwm_render_shelf_floats(struct view *view,double now)
         if(!w->strip_float_homed) continue;
         if(!window_check_flag(w,WINDOW_FLOAT) || w->strip_float_animating) { w->strip_float_homed=false; continue; }
         CGPoint to=CGPointMake(round(w->strip_float_home.origin.x),round(w->strip_float_home.origin.y+(w->strip_sticky ? 0 : hwm_shelf_shift(view,hwm_shelf_of(w),now))));
-        if(!CGPointEqualToPoint(to,w->strip_float_last.origin) && scripting_addition_move_window(w->id,to.x,to.y)) w->strip_float_last.origin=to;
+        CGRect frame=w->strip_float_home; frame.origin=to;
+        bool hidden=!CGRectIntersectsRect(frame,hwm_screen(view));
+        if(hidden) hwm_visibility_set(w,true,frame);
+        if(w->strip_offscreen || !CGPointEqualToPoint(to,w->strip_float_last.origin)) {
+            if(!scripting_addition_move_window(w->id,to.x,to.y)) { ++hwm_move_failures; hwm_backend_ok=false; continue; }
+            w->strip_float_last.origin=to;
+        }
+        if(!hidden) hwm_visibility_set(w,false,frame);
         // Back on its own strip and at rest, the window is the user's to move again.
         if(!moving && (w->strip_sticky || hwm_shelf_of(w)==hwm_shelf)) w->strip_float_homed=false;
     })
@@ -555,18 +562,15 @@ static double hwm_helper_last=-100;
 static void hwm_helper_reload(void)
 {
     double now=hwm_now();
-    if(!hwm_helper_auto || !hwm_helper_command.length || now-hwm_helper_last<8 || hwm_helper_attempts>=4) return;
+    if(!hwm_helper_auto || now-hwm_helper_last<8 || hwm_helper_attempts>=4) return;
     hwm_helper_last=now; ++hwm_helper_attempts;
-    warn("Tana: window helper is not answering; running the loader (attempt %d).\n",hwm_helper_attempts);
+    warn("Tana2D: window helper is not answering; running the loader (attempt %d).\n",hwm_helper_attempts);
     if(hwm_helper_attempts==1) hwm_hud(@"Reconnecting window helper…");
     NSString *command=[hwm_helper_command copy];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
         @autoreleasepool {
-            NSTask *task=[[[NSTask alloc] init] autorelease];
-            task.launchPath=@"/bin/sh"; task.arguments=@[@"-c",command];
-            task.standardInput=[NSFileHandle fileHandleWithNullDevice];
-            // The loader's exit status says nothing useful (it is 1 on success); the handshake decides.
-            if([task launchAndReturnError:NULL]) [task waitUntilExit];
+            if(command.length) tana_run(@"/bin/sh",@[@"-c",command]);
+            else tana_run(@"/usr/bin/sudo",@[@"-n",TanaHelperPath,@"--load-sa"]);
             [command release];
         }
         hwm_wake();

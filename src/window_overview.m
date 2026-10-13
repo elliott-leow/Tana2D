@@ -34,6 +34,7 @@ static const double HWMOverviewHoverScale=1.035;
     NSString *_search;
     NSMutableArray *_pills; /* one caption per card: a CALayer holding an icon layer and a text layer */
     CATextLayer *_hint;
+    NSArray *_accessibilityCards;
 }
 - (void)showHint:(BOOL)visible;
 - (void)setOverview:(HorizontalWindowOverview *)overview;
@@ -43,6 +44,7 @@ static const double HWMOverviewHoverScale=1.035;
  * to reach their places: 0 while they are following the cards frame by frame. */
 - (void)setPills:(NSArray *)entries opacity:(double)opacity glide:(CFTimeInterval)glide;
 - (void)setSearch:(NSString *)search;
+- (HorizontalWindowOverview *)accessibilityOverview;
 @end
 
 @interface HorizontalWindowOverview : NSObject {
@@ -97,6 +99,7 @@ static const double HWMOverviewHoverScale=1.035;
 - (BOOL)keyEvent:(NSEvent *)event;
 - (BOOL)keyCode:(unsigned short)keyCode characters:(NSString *)characters
        modifiers:(NSEventModifierFlags)modifiers;
+- (void)announceAccessibilitySelection;
 @end
 
 @interface HorizontalWindowOverview (Input)
@@ -106,6 +109,32 @@ static const double HWMOverviewHoverScale=1.035;
 - (void)dragAt:(NSPoint)point;
 - (void)releaseAt:(NSPoint)point;
 - (void)cancelFromOverlay;
+@end
+
+@interface HorizontalWindowOverview (Accessibility)
+- (NSUInteger)accessibilityCardCount;
+- (NSString *)accessibilityCardLabelAtIndex:(NSUInteger)index;
+- (BOOL)accessibilityCardSelectedAtIndex:(NSUInteger)index;
+- (BOOL)accessibilityCardEnabledAtIndex:(NSUInteger)index;
+- (NSRect)accessibilityCardFrameAtIndex:(NSUInteger)index;
+- (BOOL)accessibilityActivateCardAtIndex:(NSUInteger)index;
+@end
+
+@interface HWMOverviewCardAccessibilityElement : NSAccessibilityElement
+@property(nonatomic,assign) HWMOverviewView *view;
+@property(nonatomic) NSUInteger index;
+@end
+
+@implementation HWMOverviewCardAccessibilityElement
+- (BOOL)isAccessibilityElement { return YES; }
+- (id)accessibilityRole { return NSAccessibilityButtonRole; }
+- (NSString *)accessibilityLabel { return [[self.view accessibilityOverview] accessibilityCardLabelAtIndex:self.index]; }
+- (NSString *)accessibilityHelp { return @"Press to focus this window"; }
+- (id)accessibilityParent { return self.view; }
+- (NSRect)accessibilityFrame { return [[self.view accessibilityOverview] accessibilityCardFrameAtIndex:self.index]; }
+- (BOOL)accessibilitySelected { return [[self.view accessibilityOverview] accessibilityCardSelectedAtIndex:self.index]; }
+- (BOOL)accessibilityEnabled { return [[self.view accessibilityOverview] accessibilityCardEnabledAtIndex:self.index]; }
+- (BOOL)accessibilityPerformPress { return [[self.view accessibilityOverview] accessibilityActivateCardAtIndex:self.index]; }
 @end
 
 static BOOL hwm_overview_valid_screen(CGRect frame)
@@ -169,6 +198,29 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
     return self;
 }
 - (void)setOverview:(HorizontalWindowOverview *)overview { _overview = overview; }
+- (HorizontalWindowOverview *)accessibilityOverview { return _overview; }
+- (BOOL)isAccessibilityElement { return YES; }
+- (id)accessibilityRole { return NSAccessibilityGroupRole; }
+- (NSString *)accessibilityLabel { return @"Window overview cards"; }
+- (NSArray *)accessibilityChildren
+{
+    NSUInteger count=[_overview accessibilityCardCount];
+    if (!_accessibilityCards || [_accessibilityCards count] != count) {
+        NSMutableArray *cards=[NSMutableArray arrayWithCapacity:count];
+        for (NSUInteger index=0U; index<count; ++index) {
+            HWMOverviewCardAccessibilityElement *card=[[[HWMOverviewCardAccessibilityElement alloc] init] autorelease];
+            card.view=self; card.index=index; [cards addObject:card];
+        }
+        [_accessibilityCards release]; _accessibilityCards=[cards copy];
+    }
+    return _accessibilityCards;
+}
+- (NSArray *)accessibilitySelectedChildren
+{
+    for (HWMOverviewCardAccessibilityElement *card in [self accessibilityChildren])
+        if ([card accessibilitySelected]) return @[card];
+    return @[];
+}
 - (void)setOutline:(NSRect)outline visible:(BOOL)visible
 {
     if(_hasOutline==visible && (!visible || NSEqualRects(_outline,outline))) return;
@@ -307,7 +359,7 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
 }
 - (void)mouseMoved:(NSEvent *)event { [_overview mouseAt:[self convertPoint:[event locationInWindow] fromView:nil]]; }
 - (void)mouseDown:(NSEvent *)event { [_overview clickAt:[self convertPoint:[event locationInWindow] fromView:nil]]; }
-- (void)dealloc { [_halo release]; [_stroke release]; [_oldHalo release]; [_oldStroke release]; [_pills release]; [_hint release]; [_search release]; [_trackingArea release]; [super dealloc]; }
+- (void)dealloc { [_halo release]; [_stroke release]; [_oldHalo release]; [_oldStroke release]; [_pills release]; [_hint release]; [_search release]; [_trackingArea release]; [_accessibilityCards release]; [super dealloc]; }
 @end
 
 @implementation HorizontalWindowOverview
@@ -519,7 +571,10 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
     }
     /* A change of selection lifts one card and lowers another; their captions follow at the same pace. */
     [self updatePillsGliding:(wid != _highlighted && _arrived) ? .14 : 0.0];
-    if (wid != _highlighted) { _highlighted=wid; if (_highlight) _highlight(wid); }
+    if (wid != _highlighted) {
+        _highlighted=wid; if (_highlight) _highlight(wid);
+        NSAccessibilityPostNotification(_view,NSAccessibilitySelectedChildrenChangedNotification);
+    }
 }
 /* Tell the runtime which cards the search no longer matches, so it can dim them. */
 - (void)publishFilter
@@ -542,6 +597,7 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
         [_windows release]; _windows=[windows copy];
         if ([_query length]) [self publishFilter];
         [self updatePillsGliding:0.0];
+        NSAccessibilityPostNotification(_view,NSAccessibilityLayoutChangedNotification);
         return;
     }
 }
@@ -554,6 +610,7 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
         if ([[[_windows objectAtIndex:index] objectForKey:@"id"] unsignedIntValue]==selected) _selected=(NSInteger)index;
     _highlighted=0U; /* Report the selection again: the runtime's cards were rebuilt too. */
     [self updateOutline];
+    NSAccessibilityPostNotification(_view,NSAccessibilityLayoutChangedNotification);
     /* The cards are easing to their new cells; the captions travel with them. */
     [self updatePillsGliding:[[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceMotion] ? 0.0 : .30];
 }
@@ -566,6 +623,38 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
         !hwm_overview_window_rect(window,@"grid",&grid)) return NO;
     if (frameOut) *frameOut=hwm_overview_flight(source,grid,_progress,_screenFrame.size.height);
     return YES;
+}
+- (NSUInteger)accessibilityCardCount { return (_visible && !_closing) ? [_windows count] : 0U; }
+- (NSString *)accessibilityCardLabelAtIndex:(NSUInteger)index
+{
+    if (index >= [_windows count]) return @"Window";
+    NSDictionary *window=[_windows objectAtIndex:index];
+    NSString *title=[window objectForKey:@"title"], *app=[window objectForKey:@"app"];
+    if (![title isKindOfClass:[NSString class]] || ![title length]) title=@"Untitled window";
+    return [app isKindOfClass:[NSString class]] && [app length] ? [NSString stringWithFormat:@"%@, %@",title,app] : title;
+}
+- (BOOL)accessibilityCardSelectedAtIndex:(NSUInteger)index { return _selected==(NSInteger)index && [self accessibilityCardEnabledAtIndex:index]; }
+- (BOOL)accessibilityCardEnabledAtIndex:(NSUInteger)index
+{
+    return _visible && !_closing && !_dragging && !_selectionSent && !_cancellationSent && index<[_windows count] && [self matchesQueryAtIndex:index];
+}
+- (NSRect)accessibilityCardFrameAtIndex:(NSUInteger)index
+{
+    HWMOverviewRect frame;
+    if (![self frameForWindowAtIndex:index frame:&frame]) return NSZeroRect;
+    NSRect local=NSMakeRect(frame.x,frame.y,frame.width,frame.height);
+    return [_panel convertRectToScreen:[_view convertRect:local toView:nil]];
+}
+- (BOOL)accessibilityActivateCardAtIndex:(NSUInteger)index
+{
+    if (![self accessibilityCardEnabledAtIndex:index]) return NO;
+    _selected=(NSInteger)index; [self updateOutline]; [self chooseIndex:(NSInteger)index]; return YES;
+}
+- (void)announceAccessibilitySelection
+{
+    NSString *text=(_selected>=0 && (NSUInteger)_selected<[_windows count]) ? [self accessibilityCardLabelAtIndex:(NSUInteger)_selected] : @"No matching windows";
+    NSAccessibilityPostNotificationWithUserInfo(_view,NSAccessibilityAnnouncementRequestedNotification,
+        @{NSAccessibilityAnnouncementKey:text,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityLow)});
 }
 - (void)mouseAt:(NSPoint)point
 {
@@ -673,6 +762,8 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
 {
     unichar character=([characters length] ? [characters characterAtIndex:0] : 0);
     if (!_visible || _closing || _selectionSent || _cancellationSent) return NO;
+    /* Control-Option chords belong to VoiceOver; do not consume its navigation. */
+    if ((modifiers & (NSEventModifierFlagControl|NSEventModifierFlagOption)) == (NSEventModifierFlagControl|NSEventModifierFlagOption)) return NO;
     if ((keyCode == 53 || character == 0x1b) && _dragging) {
         /* Escape while carrying a card puts the strip back; the overview stays. */
         _dragging=NO; _pressed=-1; _highlighted=_dragWid;
@@ -693,20 +784,20 @@ static BOOL hwm_overview_window_rect(NSDictionary *window, NSString *key, HWMOve
     }
     if (keyCode == 36 || keyCode == 76 || character == '\r' || character == '\n') { [self activateSelection]; return YES; }
     if (_dragging) return YES;
-    if (keyCode == 123) { [self selectDirectionX:-1 y:0]; return YES; }
-    if (keyCode == 124) { [self selectDirectionX:1 y:0]; return YES; }
-    if (keyCode == 126) { [self selectDirectionX:0 y:-1]; return YES; }
-    if (keyCode == 125) { [self selectDirectionX:0 y:1]; return YES; }
+    if (keyCode == 123) { [self selectDirectionX:-1 y:0]; [self announceAccessibilitySelection]; return YES; }
+    if (keyCode == 124) { [self selectDirectionX:1 y:0]; [self announceAccessibilitySelection]; return YES; }
+    if (keyCode == 126) { [self selectDirectionX:0 y:-1]; [self announceAccessibilitySelection]; return YES; }
+    if (keyCode == 125) { [self selectDirectionX:0 y:1]; [self announceAccessibilitySelection]; return YES; }
     if ((modifiers & (NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption)) == 0 &&
         [characters length] && character >= 0x20 && character != 0x7f) {
         NSString *next=[(_query ?: @"") stringByAppendingString:characters];
-        [_query release]; _query=[next copy]; [_view setSearch:_query]; _selected=-1; [self selectRelativeToCurrent:1]; [self publishFilter];
+        [_query release]; _query=[next copy]; [_view setSearch:_query]; _selected=-1; [self selectRelativeToCurrent:1]; [self publishFilter]; [self announceAccessibilitySelection];
         return YES;
     }
     if (keyCode == 51 || character == 0x08 || character == 0x7f) {
         if ([_query length]) {
             NSString *next=[_query substringToIndex:[_query length]-1U];
-            [_query release]; _query=[next copy]; [_view setSearch:_query]; _selected=-1; [self selectRelativeToCurrent:1]; [self publishFilter];
+            [_query release]; _query=[next copy]; [_view setSearch:_query]; _selected=-1; [self selectRelativeToCurrent:1]; [self publishFilter]; [self announceAccessibilitySelection];
         }
         return YES;
     }

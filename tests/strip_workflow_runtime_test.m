@@ -18,7 +18,7 @@ enum window_op_error { WINDOW_OP_ERROR_SUCCESS, WINDOW_OP_ERROR_CANT_MINIMIZE, W
 struct application { pid_t pid; ProcessSerialNumber psn; };
 struct window {
     uint32_t id; struct application *application; AXUIElementRef ref; unsigned flags;
-    uint64_t strip_column; double strip_width, strip_saved_width, strip_weight, strip_min_width, strip_world_x;
+    uint64_t strip_column; double strip_width, strip_saved_width, strip_weight, strip_min_width, strip_world_x, strip_world_y, strip_height;
     bool strip_full_width; CGRect frame; int strip_shelf; bool strip_sticky;
 };
 struct window_node { uint32_t window_list[8]; int window_count; struct window_node *next; };
@@ -32,6 +32,8 @@ static struct window windows[4];
 static struct window_node nodes[4];
 static struct view view;
 static int g_connection, layout_calls;
+static double hwm_plane_y_target,hwm_plane_scale=1; static bool hwm_plane_fit_active;
+static void hwm_plane_set_camera(struct view *v,double x,double y,bool animate) { (void)animate; v->strip_target_offset=x; hwm_plane_y_target=y; }
 
 #define table_for(declaration, table, body) for (int slot = 0; slot < 4; ++slot) { declaration = &windows[slot]; body; }
 static struct view *hwm_view(void) { return &view; }
@@ -71,7 +73,7 @@ static void reset(void)
     hwm_workflow_current_offset=0; hwm_workflow_previous_offset=0; hwm_workflow_restoring=false; hwm_workflow_suppress_focus=false;
     memset(windows, 0, sizeof(windows)); memset(nodes, 0, sizeof(nodes));
     view = (struct view){.layout = VIEW_STRIP, .window_gap = 20, .sid = 9, .root = nodes};
-    layout_calls = 0;
+    layout_calls = 0; hwm_plane_y_target=0; hwm_plane_scale=1; hwm_plane_fit_active=false;
     for (int i = 0; i < 4; ++i) {
         windows[i] = (struct window){.id = (uint32_t)(i + 1), .application = &app, .strip_column = (uint64_t)(i + 1), .strip_width = 400, .strip_weight = 1, .frame = CGRectMake(i * 50, 20, 400, 500)};
         nodes[i].window_list[0] = (uint32_t)(i + 1); nodes[i].window_count = 1; nodes[i].next = i < 3 ? &nodes[i + 1] : NULL;
@@ -79,6 +81,17 @@ static void reset(void)
     g_window_manager.focused_window_id = 1;
 }
 
+static void test_plane_undo(void)
+{
+    reset(); windows[0].strip_world_x=-300; windows[0].strip_world_y=800; windows[0].strip_height=350;
+    view.strip_target_offset=-500; hwm_plane_y_target=600; hwm_plane_scale=.5;
+    hwm_undo_capture();
+    windows[0].strip_world_x=900; windows[0].strip_world_y=-200; windows[0].strip_height=700;
+    hwm_plane_y_target=-700; hwm_plane_scale=2;
+    assert(hwm_undo_restore());
+    assert(windows[0].strip_world_x==-300 && windows[0].strip_world_y==800 && windows[0].strip_height==350);
+    assert(view.strip_target_offset==-500 && hwm_plane_y_target==600 && hwm_plane_scale==.5);
+}
 static void test_arrangement_undo_and_fit(void)
 {
     reset(); windows[0].strip_min_width = 470; windows[1].strip_min_width = 220;
@@ -138,7 +151,7 @@ static void test_workflow_persistence(void)
 
 int main(void)
 {
-    @autoreleasepool { test_arrangement_undo_and_fit(); test_focus_tabs_and_utilities(); test_workflow_persistence(); test_marked_current_restores_other_window_and_previous_reaches_float(); }
+    @autoreleasepool { test_plane_undo(); test_arrangement_undo_and_fit(); test_focus_tabs_and_utilities(); test_workflow_persistence(); test_marked_current_restores_other_window_and_previous_reaches_float(); }
     puts("strip workflow runtime tests passed");
     return 0;
 }

@@ -1,13 +1,11 @@
 #ifndef SA_COMMON_H
 #define SA_COMMON_H
 
-#define SA_SOCKET_PATH_FMT "/tmp/yabai-sa_%s.socket"
+#define SA_SOCKET_PATH_FMT "/tmp/tana2d-sa_%s.socket"
 #define SA_SOCKET_BUFF_LEN 0x1000
 
-// Bumped from upstream's "2.1.29" so that scripting_addition_check() sees a version
-// mismatch against an already-installed stock payload and reinstalls this patched one.
-// Without this bump the old animation-killing payload would be kept as "up to date".
-#define OSAX_VERSION                "2.1.30"
+// Tana2D owns this payload and socket independently of installed yabai helpers.
+#define OSAX_VERSION                "0.4.0"
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02

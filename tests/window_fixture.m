@@ -8,7 +8,7 @@
 - (void)add {
     NSUInteger i=self.windows.count;
     NSWindow *w=[[NSWindow alloc] initWithContentRect:NSMakeRect(160+i*50,180+i*50,500,600) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
-    w.title=[NSString stringWithFormat:@"Tana Test %lu",(unsigned long)i+1];
+    w.title=[NSString stringWithFormat:@"Tana2D Test %lu",(unsigned long)i+1];
     w.minSize=NSMakeSize(240,180); w.releasedWhenClosed=NO;
     NSView *view=w.contentView; view.wantsLayer=YES;
     view.layer.backgroundColor=[[NSColor colorWithHue:i*.23 saturation:.15 brightness:.95 alpha:1] CGColor];
@@ -26,10 +26,10 @@
 }
 @end
 int main(int argc,char **argv) { @autoreleasepool {
-    if (argc==2) { [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.tana.fixture" object:nil userInfo:@{@"command":@(argv[1])} deliverImmediately:YES]; return 0; }
+    if (argc==2) { [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.tana2d.fixture" object:nil userInfo:@{@"command":@(argv[1])} deliverImmediately:YES]; return 0; }
     [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     Fixture *fixture=[Fixture new]; fixture.windows=[NSMutableArray array];
-    [[NSDistributedNotificationCenter defaultCenter] addObserver:fixture selector:@selector(command:) name:@"dev.tana.fixture" object:nil];
+    [[NSDistributedNotificationCenter defaultCenter] addObserver:fixture selector:@selector(command:) name:@"dev.tana2d.fixture" object:nil];
     for(int i=0;i<3;++i) [fixture add];
     [NSApp activateIgnoringOtherApps:YES]; [NSApp run];
 } return 0; }

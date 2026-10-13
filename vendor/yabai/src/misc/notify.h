@@ -35,7 +35,7 @@ static void notify(const char *subtitle, const char *format, ...)
     va_list args;
     va_start(args, format);
     NSUserNotification *notification = [[NSUserNotification alloc] init];
-    notification.title = @"yabai";
+    notification.title = @"Tana2D";
     notification.subtitle = [NSString stringWithUTF8String:subtitle];
     notification.informativeText = [[[NSString alloc] initWithFormat:[NSString stringWithUTF8String:format] arguments:args] autorelease];
     [notification setValue:g_notify_img forKey:@"_identityImage"];

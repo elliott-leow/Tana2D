@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <unistd.h>
-// Controlled integration-test input. Run only with Tana active.
+// Controlled integration-test input. Run only with Tana2D active.
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr,"usage: gesture_probe swipe <progress> | vertical <progress> | vertical-begin/change/end/cancel <progress> | resize <points> | key <keycode>\n"); return 2; }
     double value = strtod(argv[2],NULL);

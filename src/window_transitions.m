@@ -52,6 +52,28 @@ static void hwm_scale_reset_all(void)
     })
 }
 
+/* Plane zoom is a compositor-only transform. Before a window leaves plane
+ * ownership, restore its native transform so floating, pause, unmanage and
+ * shutdown never inherit a stale scaled or translated surface. */
+static void hwm_plane_reset_transform(struct window *w)
+{
+    if(!w || !w->strip_plane_scaled) return;
+    CGRect base=w->strip_last_frame;
+    if(CGRectIsNull(base) || base.size.width<=0 || base.size.height<=0) {
+        w->strip_plane_scaled=false;
+        return;
+    }
+    hwm_batch_begin();
+    if(scripting_addition_scale_window(w->id,base.origin.x-3*base.size.width,base.origin.y,
+                                       4*base.size.width,base.size.height)) w->strip_plane_scaled=false;
+    hwm_batch_end();
+}
+
+static void hwm_plane_reset_all_transforms(void)
+{
+    table_for(struct window *w,g_window_manager.window, { hwm_plane_reset_transform(w); })
+}
+
 static void hwm_float_to(struct window *w,CGRect target)
 {
     CGRect source=w->strip_float_animating ? w->strip_float_last : CGRectNull;
@@ -74,14 +96,17 @@ static bool hwm_render_floating(double now)
         double elapsed=now-w->strip_float_start;
         CGRect f=hwm_mix_frame(w->strip_float_from,w->strip_float_target,hstrip_spring_progress(elapsed,hwm_duration));
         CGRect last=w->strip_float_last;
+        struct view *view=hwm_view();
+        bool hidden=view && !CGRectIntersectsRect(f,hwm_screen(view));
+        if(hidden) hwm_visibility_set(w,true,f);
         if(!CGSizeEqualToSize(f.size,last.size)) {
             ++hwm_resize_operations;
             hwm_resize_submit(w,f,true);
         }
-        if(!CGRectEqualToRect(f,last)) {
+        if(w->strip_offscreen || !CGRectEqualToRect(f,last)) {
             if(!scripting_addition_move_window(w->id,f.origin.x,f.origin.y)) {
                 ++hwm_move_failures; hwm_backend_ok=false;
-            } else { w->strip_float_last=f; }
+            } else { w->strip_float_last=f; if(!hidden) hwm_visibility_set(w,false,f); }
         }
         w->strip_float_animating=elapsed<hwm_duration || (hwm_resize_busy(w) && elapsed<hwm_duration+1);
         active|=w->strip_float_animating;

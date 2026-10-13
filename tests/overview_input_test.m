@@ -44,8 +44,22 @@ int main(void)
         begin(overview,&selected,&cancelled);
         assert([overview keyCode:124 characters:nil modifiers:0]);
         [overview setProgress:.8];
-        assert([overview keyCode:36 characters:@"\r" modifiers:0]);
+        HWMOverviewView *view=[overview valueForKey:@"_view"];
+        NSArray *cards=[view accessibilityChildren];
+        assert(cards.count==3U);
+        HWMOverviewCardAccessibilityElement *card=cards[0];
+        assert([[card accessibilityRole] isEqual:NSAccessibilityButtonRole]);
+        assert([[card accessibilityLabel] isEqual:@"Project Notes, Safari"]);
+        assert([card accessibilitySelected]);
+        assert([card accessibilityPerformPress]);
         assert(selected==11U && cancelled==0);
+
+        /* Retained AX elements remain safe when a runtime regrid changes cards. */
+        selected=0U; begin(overview,&selected,&cancelled);
+        view=[overview valueForKey:@"_view"]; cards=[view accessibilityChildren]; card=cards[2];
+        [overview updateWindows:[test_windows() subarrayWithRange:NSMakeRange(0,2)]];
+        assert([[card accessibilityLabel] isEqual:@"Window"]);
+        assert([view accessibilityChildren].count==2U);
 
         /* Search matches title and app names without regard to case. */
         selected=0U; begin(overview,&selected,&cancelled);

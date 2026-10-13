@@ -1,18 +1,16 @@
 static NSDictionary *hwm_default_shortcuts(void)
 {
-    return @{@"left":@"alt+cmd+left",@"right":@"alt+cmd+right",@"move-left":@"shift+alt+cmd+left",@"move-right":@"shift+alt+cmd+right",
-      @"move-first":@"shift+alt+cmd+,",@"move-last":@"shift+alt+cmd+.",
-      @"float":@"cmd+space",@"float-alt":@"alt+cmd+space",@"full":@"shift+cmd+return",@"full-alt":@"alt+cmd+f",@"full-keypad":@"shift+cmd+keycode:76",
-      @"center":@"alt+cmd+c",@"home":@"alt+cmd+0",@"close":@"cmd+q",@"terminal":@"cmd+return",@"terminal-keypad":@"cmd+keycode:76",@"browser":@"shift+cmd+w",
-      @"preset-width":@"alt+cmd+r",@"fit-two":@"alt+cmd+=",@"previous":@"alt+cmd+tab",@"undo":@"alt+cmd+z",
-      @"consume":@"alt+cmd+]",@"expel":@"alt+cmd+[",@"up":@"alt+cmd+up",@"down":@"alt+cmd+down",
-      @"utility-mark":@"ctrl+alt+shift+space",@"utility":@"ctrl+alt+space",@"tabs":@"alt+cmd+t",@"overview":@"alt+cmd+o",
-      // The Mission Control keys show Tana's overview: Mission Control itself lays every window of the
-      // strip out as if it were on screen, which is no picture of the strip at all.
-      @"overview-mission":@"ctrl+up",@"overview-close":@"ctrl+down",@"commands":@"ctrl+alt+p",
-      @"strip-up":@"alt+cmd+k",@"strip-down":@"alt+cmd+j",@"send-strip-up":@"shift+alt+cmd+k",@"send-strip-down":@"shift+alt+cmd+j",
-      @"strip-1":@"alt+cmd+1",@"strip-2":@"alt+cmd+2",@"strip-3":@"alt+cmd+3",@"strip-4":@"alt+cmd+4",
-      @"mark":@"alt+cmd+m",@"jump-mark":@"alt+cmd+'",@"fit-visible":@"alt+cmd+-",@"equalize":@"shift+alt+cmd+=",@"sticky":@"alt+cmd+p"};
+    return @{
+      @"left":@"alt+cmd+left",@"right":@"alt+cmd+right",@"up":@"alt+cmd+up",@"down":@"alt+cmd+down",
+      @"move-left":@"shift+alt+cmd+left",@"move-right":@"shift+alt+cmd+right",
+      @"move-up":@"shift+alt+cmd+up",@"move-down":@"shift+alt+cmd+down",
+      @"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
+      @"float":@"cmd+space",@"float-alt":@"alt+cmd+space",
+      @"center":@"alt+cmd+c",@"home":@"alt+cmd+h",@"close":@"cmd+q",
+      @"terminal":@"cmd+return",@"browser":@"shift+cmd+w",
+      @"previous":@"alt+cmd+tab",@"undo":@"alt+cmd+z",@"preset-width":@"alt+cmd+r",
+      @"commands":@"ctrl+alt+p",@"pause":@"ctrl+alt+shift+p",@"reload-config":@"ctrl+alt+r"
+    };
 }
 static NSArray *hwm_width_presets(void)
 {
@@ -36,13 +34,15 @@ static bool hwm_config_reload(bool announce)
     NSError *error=nil;
     hwm_config_mtime=hwm_config_file_mtime();
     if(![hwm_config reload:&error]) {
-        warn("Tana: config retained: %s\n",error.localizedDescription.UTF8String);
+        warn("Tana2D: config retained: %s\n",error.localizedDescription.UTF8String);
         hwm_hud([NSString stringWithFormat:@"Config not loaded — previous settings kept: %@",error.localizedDescription]);
         return false;
     }
     TanaConfigSnapshot *snapshot=[hwm_config copySnapshot];
     NSMutableArray *problems=[NSMutableArray arrayWithArray:snapshot.diagnostics];
     hwm_pointer_focus=snapshot.autofocusMode==TanaAutofocusPointerMovement;
+    window_manager_set_focus_follows_mouse(&g_window_manager,snapshot.autofocusMode==TanaAutofocusOff ? FFM_DISABLED : FFM_AUTOFOCUS);
+    window_manager_set_menubar_opacity(&g_window_manager,[snapshot boolAt:@"showMenuBar" fallback:YES] ? 1.0f : 0.0f);
     hwm_motion_scale=[NSWorkspace sharedWorkspace].accessibilityDisplayShouldReduceMotion?0:snapshot.motionStrength;
     hwm_duration=fmax(.001,[snapshot numberAt:@"animations.windows.duration" fallback:.36 minimum:.05 maximum:1.5]*hwm_motion_scale);
     hwm_window_zeta=1-[snapshot numberAt:@"animations.windows.bounce" fallback:0 minimum:0 maximum:.6];
@@ -60,7 +60,7 @@ static bool hwm_config_reload(bool announce)
     hwm_pop_duration=fmax(.001,.22*hwm_motion_scale);
     hwm_show_map=snapshot.showStripMap;
     NSString *snap=[[snapshot stringAt:@"snap" fallback:@"center"] lowercaseString];
-    hwm_snap=[snap isEqual:@"none"] ? 0 : [snap isEqual:@"column"] ? 1 : 2;
+    hwm_snap=0; // The plane never snaps the camera to strip columns.
     if(![@[@"center",@"column",@"none"] containsObject:snap]) [problems addObject:@"settings.snap must be center, column or none"];
     hwm_magnet=[snapshot numberAt:@"snapMagnet" fallback:.1 minimum:0 maximum:.6];
     hwm_snap_threshold=[snapshot numberAt:@"snapThreshold" fallback:.15 minimum:.02 maximum:.6];
@@ -74,18 +74,15 @@ static bool hwm_config_reload(bool announce)
     hwm_hud_enabled=[snapshot boolAt:@"hud" fallback:YES];
     hwm_haptics=[snapshot boolAt:@"haptics" fallback:YES];
     hwm_auto_pip=[snapshot boolAt:@"autoPip" fallback:YES];
-    NSString *vertical=[[snapshot stringAt:@"verticalSwipe" fallback:@"overview"] lowercaseString];
-    hwm_vertical_mode=[vertical isEqual:@"strips"] ? 1 : [vertical isEqual:@"strips-reversed"] ? 2 : 0;
-    if(![@[@"overview",@"strips",@"strips-reversed"] containsObject:vertical]) [problems addObject:@"settings.verticalSwipe must be overview, strips or strips-reversed"];
-    NSMutableArray *names=[NSMutableArray array]; id strips=[snapshot hasValueAt:@"strips"] ? [snapshot valueAt:@"strips"] : nil;
-    if(strips && ![strips isKindOfClass:[NSArray class]]) [problems addObject:@"settings.strips must be a list of names"];
-    else for(id name in strips) if([name isKindOfClass:[NSString class]] && [name length] && names.count<HWM_SHELVES) [names addObject:name];
-    [hwm_shelf_names release]; hwm_shelf_names=[names copy];
+    hwm_vertical_mode=0;
+    [hwm_shelf_names release]; hwm_shelf_names=[@[] copy];
     NSString *attention=[[snapshot stringAt:@"attention" fallback:@"badge"] lowercaseString];
     hwm_attention_mode=[attention isEqual:@"off"] ? 0 : [attention isEqual:@"title"] ? 2 : [attention isEqual:@"both"] ? 3 : 1;
     if(![@[@"off",@"badge",@"title",@"both"] containsObject:attention]) [problems addObject:@"settings.attention must be badge, title, both or off"];
     hwm_helper_auto=[snapshot boolAt:@"helper.autoReload" fallback:YES];
-    NSString *loader=[snapshot stringAt:@"helper.command" fallback:@"sudo -n /opt/homebrew/bin/yabai --load-sa"];
+    NSString *loader=[snapshot stringAt:@"helper.command" fallback:nil];
+    // Migrate the former built-in loader without requiring a config edit.
+    if([loader isEqual:@"sudo -n /opt/homebrew/bin/yabai --load-sa"]) loader=nil;
     [hwm_helper_command release]; hwm_helper_command=[loader copy];
     hwm_dim_strength=[snapshot numberAt:@"dimInactive" fallback:0 minimum:0 maximum:.7];
     hwm_border_travel=[snapshot boolAt:@"border.travel" fallback:YES];
@@ -126,7 +123,7 @@ static bool hwm_config_reload(bool announce)
     if(left!=g_space_manager.left_padding) space_manager_set_left_padding_for_all_spaces(&g_space_manager,left);
     if(right!=g_space_manager.right_padding) space_manager_set_right_padding_for_all_spaces(&g_space_manager,right);
 
-    for(NSString *problem in problems) warn("Tana: config: %s\n",problem.UTF8String);
+    for(NSString *problem in problems) warn("Tana2D: config: %s\n",problem.UTF8String);
     if(problems.count) hwm_hud([NSString stringWithFormat:@"Config: %@%@",problems[0],problems.count>1 ? [NSString stringWithFormat:@" (+%lu more, see config-status)",(unsigned long)problems.count-1] : @""]);
     else if(announce) hwm_hud(@"Config reloaded");
     [hwm_config_problems release]; hwm_config_problems=[problems copy];
@@ -152,7 +149,7 @@ static void hwm_config_begin(void)
     if(![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         NSString *directory=path.stringByDeletingLastPathComponent;
         [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL];
-        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"pointer-movement",@"showStripMap":@YES,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
+        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"pointer-movement",@"showStripMap":@NO,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
         int fd=open(path.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
         if(fd>=0) { write(fd,data.bytes,data.length); close(fd); }
     }
@@ -210,12 +207,96 @@ static NSDictionary *hwm_rule_for(struct window *w,TanaConfigSnapshot *snapshot)
     }
     return rule;
 }
+/* New windows use the nearest free rectangle; existing points never move. */
+static bool hwm_plane_place_free(struct view *view,struct window *window,double x,double y,double width,double height)
+{
+    CGRect candidate=CGRectMake(x,y,width,height);
+    double gap=view->window_gap*.5;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *other=hwm_tile(n->window_list[i]);
+        if(!other || other==window || other->strip_close_ghost) continue;
+        CGRect occupied=CGRectInset(CGRectMake(other->strip_world_x,other->strip_world_y,other->strip_width,other->strip_height),-gap,-gap);
+        if(CGRectIntersectsRect(candidate,occupied)) return false;
+    }
+    return true;
+}
+static void hwm_plane_find_free(struct view *view,struct window *window,double *x,double *y,double width,double height)
+{
+    if(hwm_plane_place_free(view,window,*x,*y,width,height)) return;
+    double best=INFINITY,bx=*x,by=*y,gap=view->window_gap;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *other=hwm_tile(n->window_list[i]);
+        if(!other || other==window || other->strip_close_ghost) continue;
+        CGPoint candidates[]={
+            {other->strip_world_x+other->strip_width+gap,other->strip_world_y},
+            {other->strip_world_x,other->strip_world_y+other->strip_height+gap},
+            {other->strip_world_x-width-gap,other->strip_world_y},
+            {other->strip_world_x,other->strip_world_y-height-gap}};
+        for(int j=0;j<4;j++) {
+            double distance=hypot(candidates[j].x-*x,candidates[j].y-*y);
+            if(distance<best && hwm_plane_place_free(view,window,candidates[j].x,candidates[j].y,width,height)) {
+                best=distance; bx=candidates[j].x; by=candidates[j].y;
+            }
+        }
+    }
+    *x=bx; *y=by;
+}
+static void hwm_plane_arrange_grid(struct view *view)
+{
+    if(!view || hwm_paused || hwm_suspended) return;
+    size_t count=0;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) count+=n->window_count;
+    if(!count) return;
+    struct window **windows=calloc(count,sizeof(*windows)); if(!windows) return;
+    size_t used=0;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *w=hwm_tile(n->window_list[i]); if(w && !w->strip_close_ghost) windows[used++]=w;
+    }
+    size_t columns=(size_t)ceil(sqrt((double)used)),rows=columns?(used+columns-1)/columns:0;
+    double *widths=calloc(columns?columns:1,sizeof(double)),*heights=calloc(rows?rows:1,sizeof(double));
+    if(!widths || !heights) { free(windows); free(widths); free(heights); return; }
+    hwm_undo_capture();
+    for(size_t i=0;i<used;i++) { widths[i%columns]=fmax(widths[i%columns],windows[i]->strip_width); heights[i/columns]=fmax(heights[i/columns],windows[i]->strip_height); }
+    double y=0;
+    for(size_t row=0;row<rows;row++) {
+        double x=0;
+        for(size_t col=0;col<columns;col++) {
+            size_t i=row*columns+col; if(i>=used) break;
+            windows[i]->strip_world_x=x; windows[i]->strip_world_y=y;
+            x+=widths[col]+view->window_gap;
+        }
+        y+=heights[row]+view->window_gap;
+    }
+    free(windows); free(widths); free(heights);
+    hwm_layout(view,true); hwm_plane_fit_all(view);
+}
 /* Give a tile that has just joined the strip its place: beside the window it
  * was opened from, or in the gap between columns nearest the middle of the
  * screen. It is never left at the far end unless the configuration asks. */
 static void hwm_place_new(struct view *view,struct window *w,NSDictionary *rule)
 {
+    (void)rule;
     CGRect bounds=hwm_bounds(view);
+    /* New plane windows appear in the current camera, beside the opener when
+     * available. This changes only the new point; existing windows never make
+     * room or get reordered. */
+    w->strip_placed=true; w->strip_shelf=0; w->strip_column=w->id;
+    double width=w->strip_width>0?w->strip_width:fmax(320,bounds.size.width*.5);
+    double height=w->strip_height>0?w->strip_height:fmax(180,bounds.size.height*.65);
+    struct window *anchor=w->strip_rule_anchor!=w->id ? hwm_tile(w->strip_rule_anchor) : NULL;
+    if(!anchor) anchor=window_manager_find_window(&g_window_manager,g_window_manager.focused_window_id);
+    if(anchor && anchor!=w && view_find_window_node(view,anchor->id)) {
+        w->strip_world_x=anchor->strip_world_x+anchor->strip_width+view->window_gap;
+        w->strip_world_y=anchor->strip_world_y;
+    } else {
+        w->strip_world_x=view->strip_target_offset+(bounds.size.width/hwm_plane_scale-width)*.5;
+        w->strip_world_y=hwm_plane_y_target+(bounds.size.height/hwm_plane_scale-height)*.5;
+    }
+    hwm_plane_find_free(view,w,&w->strip_world_x,&w->strip_world_y,width,height);
+    w->strip_width=width; w->strip_height=height;
+    hwm_layout(view,true); hwm_plane_set_camera(view,w->strip_world_x-(bounds.size.width/hwm_plane_scale-width)*.5,w->strip_world_y-(bounds.size.height/hwm_plane_scale-height)*.5,true);
+    return;
+#if 0
     bool here=hwm_shelf_of(w)==hwm_shelf, fresh=hwm_now()-w->strip_added<2.5;
     w->strip_placed=true;
     if(here) {
@@ -244,6 +325,7 @@ static void hwm_place_new(struct view *view,struct window *w,NSDictionary *rule)
     }
     hwm_preserve_focus_window=w->id; hwm_preserve_focus_until=hwm_now()+.6;
     hwm_scroll(view,hwm_center_target(view,w),true);
+#endif
 }
 /* `full` is false while the engine is in the middle of tiling the window:
  * everything but floating it can be done there, and the rest follows at once. */
@@ -295,7 +377,7 @@ static void hwm_apply_rule(struct window *w,bool full,bool late)
     else if(changed && full) hwm_layout(view,true);
 }
 static void hwm_apply_app_rule_now(struct window *w) { hwm_apply_rule(w,true,false); }
-/* Tiles of the view that were opened since Tana started and have no place yet. */
+/* Tiles of the view that were opened since Tana2D started and have no place yet. */
 static void hwm_place_unplaced(struct view *view)
 {
     static bool placing;
@@ -337,16 +419,69 @@ static void hwm_remember_app(const char *action)
     if(strcmp(action,"remember-floating")==0) floating=!floating;
     if(strcmp(action,"remember-beside")==0) beside=!beside;
     NSError *error=nil;
-    if(![hwm_config rememberRuleForBundleIdentifier:bundle width:width floating:floating openBesideCurrent:beside error:&error]) warn("Tana: cannot save app preference: %s\n",error.localizedDescription.UTF8String);
+    if(![hwm_config rememberRuleForBundleIdentifier:bundle width:width floating:floating openBesideCurrent:beside error:&error]) warn("Tana2D: cannot save app preference: %s\n",error.localizedDescription.UTF8String);
     [snapshot release];
 }
 static NSArray *hwm_palette_commands(void);
+/* Spatial navigation is independent of the engine's historical leaf order. */
+static bool hwm_plane_direction_action(const char *name)
+{
+    bool moving=!strncmp(name,"move-",5);
+    const char *direction=moving?name+5:name;
+    int dx=!strcmp(direction,"right")?1:!strcmp(direction,"left")?-1:0;
+    int dy=!strcmp(direction,"down")?1:!strcmp(direction,"up")?-1:0;
+    if(!dx && !dy) return false;
+    struct view *view=hwm_view(); struct window *window=hwm_action_window();
+    if(hwm_paused || hwm_suspended || !view || !window || !view_find_window_node(view,window->id)) return true;
+    if(moving) {
+        hwm_undo_capture();
+        window->strip_world_x+=dx*(window->strip_width+view->window_gap);
+        window->strip_world_y+=dy*(window->strip_height+view->window_gap);
+        hwm_layout(view,true);
+        CGRect bounds=hwm_bounds(view);
+        hwm_plane_set_camera(view,window->strip_world_x+(window->strip_width-bounds.size.width/hwm_plane_scale)*.5,
+                                  window->strip_world_y+(window->strip_height-bounds.size.height/hwm_plane_scale)*.5,true);
+        return true;
+    }
+    struct window *best=NULL; double score=INFINITY;
+    double cx=window->strip_world_x+window->strip_width*.5,cy=window->strip_world_y+window->strip_height*.5;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *candidate=hwm_tile(n->window_list[i]);
+        if(!candidate || candidate==window || candidate->strip_close_ghost || hwm_workflow_tab_hidden(candidate)) continue;
+        double x=candidate->strip_world_x+candidate->strip_width*.5-cx;
+        double y=candidate->strip_world_y+candidate->strip_height*.5-cy;
+        double forward=x*dx+y*dy,side=fabs(dx?y:x);
+        if(forward<=.5) continue;
+        double distance=hypot(forward,side)+side*2;
+        if(distance<score) { score=distance; best=candidate; }
+    }
+    if(best) {
+        hwm_nav_to(view,best);
+        CGRect bounds=hwm_bounds(view);
+        hwm_plane_set_camera(view,best->strip_world_x+(best->strip_width-bounds.size.width/hwm_plane_scale)*.5,
+                                  best->strip_world_y+(best->strip_height-bounds.size.height/hwm_plane_scale)*.5,true);
+    }
+    return true;
+}
 static bool hwm_named_action(const char *name)
 {
     if(!name) return false;
+    if(hwm_plane_direction_action(name)) return true;
+    // Old strip and repacking commands have no meaning on the plane.
+    if(!strncmp(name,"strip-",6) || !strncmp(name,"send-strip-",11) ||
+       [@[@"consume",@"expel",@"tabs",@"move-first",@"move-last",@"fit-two",@"fit-visible",@"equalize",@"sticky"] containsObject:@(name)]) return true;
+    if(!strcmp(name,"overview")) { hwm_plane_fit_all(hwm_view()); return true; }
+    if(!strcmp(name,"overview-close")) return true;
+    if(strcmp(name,"setup")==0) {
+        dispatch_async(dispatch_get_main_queue(),^{ [[TanaSetup shared] showForStartup:NO preview:NO]; }); return true;
+    }
     // Every command except further navigation acts on the window the cursor reached.
     if(strcmp(name,"left") && strcmp(name,"right")) hwm_nav_flush();
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
+    if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }
+    if(strcmp(name,"fit-all")==0) { hwm_plane_fit_all(hwm_view()); return true; }
+    if(strcmp(name,"fit-focused")==0) { hwm_plane_fit_focused(hwm_view()); return true; }
+    if(strcmp(name,"actual-size")==0) { hwm_plane_actual_size(hwm_view()); return true; }
     if(strncmp(name,"exec:",5)==0) { hwm_spawn(@(name+5)); return true; }
     if(hwm_extras_action(name)) { hwm_wake(); return true; }
     // Shutdown runs from the tick, after this command has returned.
@@ -359,7 +494,7 @@ static bool hwm_named_action(const char *name)
         }); return true;
     }
     if(strcmp(name,"remember-width")==0 || strcmp(name,"remember-floating")==0 || strcmp(name,"remember-beside")==0) { hwm_remember_app(name); hwm_hud(@"App preference saved"); return true; }
-    const char *names[]={"left","right","move-left","move-right","swap-left","swap-right","move-first","move-last","float","full","center","home","pause","reflow","close","terminal","browser","overview","float-alt","full-alt","terminal-keypad","full-keypad","overview-mission","overview-close"};
+    const char *names[]={"left","right","move-left","move-right","swap-left","swap-right","move-first","move-last","float","full","center","home","pause","reflow","close","terminal","browser","overview","float-alt","full-alt","terminal-keypad","full-keypad","overview-close"};
     int actions[]={HWM_LEFT,HWM_RIGHT,HWM_MOVE_LEFT,HWM_MOVE_RIGHT,HWM_MOVE_LEFT,HWM_MOVE_RIGHT,HWM_MOVE_FIRST,HWM_MOVE_LAST,HWM_FLOAT,HWM_FULL,HWM_CENTER,HWM_HOME,HWM_PAUSE,HWM_REFLOW,HWM_CLOSE,HWM_TERMINAL,HWM_BROWSER,HWM_OVERVIEW,HWM_FLOAT,HWM_FULL,HWM_TERMINAL,HWM_FULL,HWM_OVERVIEW,HWM_OVERVIEW_CANCEL};
     for(size_t i=0;i<sizeof(actions)/sizeof(*actions);i++) if(strcmp(name,names[i])==0) {
         if(actions[i]==HWM_FLOAT || actions[i]==HWM_FULL) hwm_undo_capture();

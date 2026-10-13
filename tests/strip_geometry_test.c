@@ -208,6 +208,16 @@ static void test_motion_helpers(void)
 
 int main(void)
 {
+    // At the empty-desktop stop, even the last tile's shadow clears the
+    // physical screen: cover fractional widths, padding, Dock and origins.
+    double origins[]={0,-1920,1710}, insets[]={0,12,96};
+    for(size_t i=0;i<3;i++) for(size_t j=0;j<3;j++) {
+        double content=4532.88, width=977.88;
+        double offset=hstrip_empty_desktop_offset(content,insets[j]);
+        double last_x=round(hstrip_project_x(content-width,offset,origins[i]+insets[j],1000000));
+        assert(last_x+ceil(width)+HSTRIP_OFFSCREEN_MARGIN<=origins[i]+1);
+        assert(isfinite(offset) && offset>content);
+    }
     test_motion_helpers();
     assert(hstrip_project_x(2000,1000,12,1000000)==1012);
     assert(hstrip_project_x(0,DBL_MAX,0,1000000)==-1000000);

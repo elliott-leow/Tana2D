@@ -5,7 +5,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-WM = ROOT / 'build/tana'
+WM = ROOT / 'build/tana2d'
 METRICS = ROOT / 'build/window_metrics'
 
 def command(*parts):
@@ -39,6 +39,7 @@ ids = [window['id'] for window in status['windows']]
 time.sleep(.5)
 before = metrics(ids)
 borders = metrics(['--borders'])
+visible_border_ids = [w['id'] for w in metrics(['--visible-borders'])]
 report = {'windows': len(ids), 'borders':len(borders), 'checks': []}
 try:
     command('overview-progress', '.25')
@@ -54,10 +55,12 @@ try:
     for i,(x,y,w,h) in enumerate(rects):
         for xx,yy,ww,hh in rects[i+1:]:
             assert min(x+w,xx+ww)-max(x,xx)<=1 or min(y+h,yy+hh)-max(y,yy)<=1, 'grid overlap'
-    hidden = metrics(['--borders'])
+    # Ordered-out borders of closed/hidden apps retain their opacity; the
+    # overview only hides borders that were on screen when it opened.
+    hidden = metrics(visible_border_ids)
     assert all(w['alpha']==0 for w in hidden), hidden
     report['checks'].append('actual windows move and shrink with progress into a nonoverlapping grid')
-    report['checks'].append('all JankyBorders windows have zero opacity during overview')
+    report['checks'].append('previously onscreen JankyBorders windows have zero opacity during overview')
     command('overview-cancel')
     wait_for(lambda: not state()['overview'])
     time.sleep(.4)

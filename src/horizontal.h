@@ -18,6 +18,8 @@ static void horizontal_begin(void);
 static void horizontal_window_added(struct window *window);
 static bool horizontal_window_changed(struct window *window, struct view *view, bool resized);
 static bool horizontal_window_moved(struct window *window);
+/* Used by the compact plane controls; it only queues a normal manager action. */
+void horizontal_plane_action(const char *name);
 #endif
 
 static bool horizontal_hover_allowed(CGPoint point);

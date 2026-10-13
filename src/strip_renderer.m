@@ -1,24 +1,30 @@
 /* Serialized rendering and delayed-notification handling. */
+#include "plane_geometry.h"
 static bool hwm_view_in_motion(struct view *view,double now);
 static double hwm_rendered_offset; // Camera position of the frame last drawn.
 static bool hwm_render(struct view *view, double now)
 {
     CGRect bounds = hwm_bounds(view);
     double offset = hwm_offset(view, now);
+    double camera_y=hwm_plane_camera_y(now), plane_scale=hwm_plane_scale;
     hwm_rendered_offset = offset;
-    bool active = view->strip_scrolling;
+    bool active = view->strip_scrolling || hwm_plane_y_scrolling;
     bool batched=false;
     // While the strip is travelling, a window that is off screen before and
     // after a frame does not need that frame: only what can be seen is moved.
     // Everything is brought up to date once the strip rests.
     bool travelling=hwm_view_in_motion(view,now);
     if(hwm_shelf_moving(now)) active=true;
-    CGRect visible=CGRectInset(bounds,-120,-120);
+    hwm_visibility_prepare(view,now);
+    CGRect screen=hwm_screen(view);
+    CGRect visible=CGRectInset(bounds,-HSTRIP_OFFSCREEN_MARGIN,-HSTRIP_OFFSCREEN_MARGIN);
     for (struct window_node *node = window_node_find_first_leaf(view->root); node; node = window_node_find_next_leaf(node)) {
         for (int i = 0; i < node->window_count; ++i) {
             struct window *window = window_manager_find_window(&g_window_manager, node->window_list[i]);
             if (!window || !window->strip_initialized || window->id==hwm_drag_window || window->id==hwm_edge_window) continue;
             if(hwm_workflow_tab_hidden(window)) {
+                if(!batched) { hwm_batch_begin(); batched=true; }
+                hwm_visibility_set(window,true,CGRectNull);
                 // Parking is movement only. AX resizing at an extreme negative
                 // y can make AppKit report CGRectNull and lose the window frame.
                 CGRect parked=window->strip_last_frame;
@@ -28,7 +34,7 @@ static bool hwm_render(struct view *view, double now)
                 bool measured=window->strip_tab_parked || SLSGetWindowBounds(g_connection,window->id,&observed)==kCGErrorSuccess;
                 if(!window->strip_tab_parked || !measured || (!CGRectIsNull(observed) && !CGPointEqualToPoint(parked.origin,observed.origin))) {
                     if(!scripting_addition_move_window(window->id,parked.origin.x,parked.origin.y)) { hwm_backend_ok=false; ++hwm_move_failures; }
-                    window->strip_last_frame=parked; window->strip_last_offset=offset; window->strip_last_shift=0;
+                    window->strip_last_frame=parked; window->strip_last_offset=offset; window->strip_last_camera_y=camera_y; window->strip_last_shift=0;
                 }
                 window->strip_tab_parked=true; window->strip_size_pending=false;
                 if(now-window->strip_start<hwm_duration+.5) active=true;
@@ -46,13 +52,25 @@ static bool hwm_render(struct view *view, double now)
             double height = hwm_window_sample(window->strip_from_height,window->strip_height,window->strip_vel_height,elapsed,1,&unused);
             double width = hwm_window_sample(window->strip_from_width,window->strip_width,window->strip_vel_width,elapsed,1,&unused);
             if (t < 1) active = true;
-            // Each strip is drawn at its own camera position, the strips out of view further down.
-            int shelf = hwm_shelf_of(window);
-            double own_offset = shelf==hwm_shelf ? offset : hwm_shelf_offsets[shelf], shift = hwm_shelf_shift(view,shelf,now);
-            CGRect frame = CGRectMake(round(hstrip_project_x(x,own_offset,bounds.origin.x,1000000)), round(bounds.origin.y+y+shift), round(width), round(height));
+            /* Base geometry stays at its real size; fit/pinch use the helper's
+             * transient WindowServer transform so zoom never rewrites window
+             * sizes or the persisted plane arrangement. */
+            double own_offset=offset, shift=0;
+            CGRect base=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,1)),
+                                   round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,1)),
+                                   round(hwm_plane_physical_size(width)),round(hwm_plane_physical_size(height)));
+            CGRect frame=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
+                                    round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,plane_scale)),
+                                    round(hwm_plane_physical_size(width*plane_scale)),round(hwm_plane_physical_size(height*plane_scale)));
             CGRect last = window->strip_last_frame;
-            bool resize = CGRectIsNull(last) || fabs(last.size.width-frame.size.width) >= 1 || fabs(last.size.height-frame.size.height) >= 1;
-            bool move = resize || CGRectIsNull(last) || !CGPointEqualToPoint(last.origin, frame.origin);
+            bool hidden=!CGRectIntersectsRect(frame,screen);
+            bool revealing=window->strip_offscreen && !hidden;
+            if(hidden) {
+                if(!batched) { hwm_batch_begin(); batched=true; }
+                hwm_visibility_set(window,true,frame);
+            }
+            bool resize = !hwm_plane_fit_active && (CGRectIsNull(last) || fabs(last.size.width-base.size.width) >= 1 || fabs(last.size.height-base.size.height) >= 1);
+            bool move = revealing || resize || CGRectIsNull(last) || !CGPointEqualToPoint(last.origin, base.origin);
             if (move && travelling && !resize && !window->strip_size_pending && !CGRectIsNull(last) &&
                 !CGRectIntersectsRect(last,visible) && !CGRectIntersectsRect(frame,visible)) {
                 node->area = (struct area) { frame.origin.x, frame.origin.y, frame.size.width, frame.size.height };
@@ -60,10 +78,14 @@ static bool hwm_render(struct view *view, double now)
             }
             if (move) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
+                if(window->strip_plane_scaled && !CGRectIsNull(last)) {
+                    scripting_addition_scale_window(window->id,last.origin.x-3*last.size.width,last.origin.y,4*last.size.width,last.size.height);
+                    window->strip_plane_scaled=false;
+                }
                 // Position first, through WindowServer: it bypasses the on-screen
                 // constraints that would otherwise destroy an infinite strip, and
                 // puts the top edge where the new size will be measured from.
-                if (!scripting_addition_move_window(window->id, frame.origin.x, frame.origin.y)) {
+                if (!scripting_addition_move_window(window->id, base.origin.x, base.origin.y)) {
                     ++hwm_move_failures;
                     hwm_backend_ok = false;
                     // Do not replace this with AX movement: that clamps off-screen
@@ -71,9 +93,22 @@ static bool hwm_render(struct view *view, double now)
                     hwm_batch_end();
                     return false;
                 }
-                window->strip_last_frame = frame;
+                window->strip_last_frame = base;
                 window->strip_last_offset = own_offset;
+                window->strip_last_camera_y = camera_y;
                 window->strip_last_shift = shift;
+            }
+            if(hwm_plane_fit_active && (move || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale)) {
+                if(!batched) { hwm_batch_begin(); batched=true; }
+                if(scripting_addition_scale_window(window->id,frame.origin.x-3*frame.size.width,frame.origin.y,4*frame.size.width,frame.size.height)) { window->strip_plane_scaled=true; window->strip_last_plane_scale=plane_scale; }
+            } else if(!hwm_plane_fit_active && window->strip_plane_scaled) {
+                if(!batched) { hwm_batch_begin(); batched=true; }
+                scripting_addition_scale_window(window->id,base.origin.x-3*base.size.width,base.origin.y,4*base.size.width,base.size.height);
+                window->strip_plane_scaled=false;
+            }
+            if(!hidden) {
+                if(!batched) { hwm_batch_begin(); batched=true; }
+                hwm_visibility_set(window,false,frame);
             }
             if (resize) {
                 ++hwm_resize_operations;
@@ -116,7 +151,7 @@ static bool hwm_render(struct view *view, double now)
 
 static bool hwm_view_in_motion(struct view *view,double now)
 {
-    return view->strip_scrolling || __atomic_load_n(&__pending_gesture,__ATOMIC_ACQUIRE) ||
+    return view->strip_scrolling || hwm_plane_y_scrolling || __atomic_load_n(&__pending_gesture,__ATOMIC_ACQUIRE) ||
            now-hwm_last_input<.15 || hwm_shelf_moving(now);
 }
 
@@ -146,17 +181,20 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
     }
     CGRect actual = CGRectNull;
     if (SLSGetWindowBounds(g_connection,window->id,&actual) != kCGErrorSuccess) return true;
-    if (resized && isfinite(actual.size.width) && actual.size.width >= 160 && fabs(actual.size.width-window->strip_width) > 1) {
+    if (resized && isfinite(actual.size.width) && actual.size.width >= 160 && isfinite(actual.size.height) && actual.size.height >= 100 &&
+        (fabs(actual.size.width-window->strip_width)>1 || fabs(actual.size.height-window->strip_height)>1)) {
         hwm_column_width(view,window,actual.size.width);
+        window->strip_height=actual.size.height;
         window->strip_full_width = false;
         window->strip_last_frame = actual;
         window->strip_last_offset=hwm_shelf_offset(view,hwm_shelf_of(window),now);
         hwm_layout(view,true);
     } else if (!CGRectIsNull(window->strip_last_frame) && !CGPointEqualToPoint(actual.origin,window->strip_last_frame.origin)) {
-        // A delayed move notification must never invalidate the size cache.
-        // Doing so turns a pan into AX resize calls, which can clamp offscreen
-        // windows back onto the display and fight the next gesture frame.
-        window->strip_last_frame.origin = actual.origin;
+        /* Explicit title dragging commits through hwm_drag_submit_plane().
+         * Any other AX move can be AppKit clamping an offscreen surface back
+         * onto a display edge, so retain the persisted world point and force
+         * the renderer to submit its projection again. */
+        window->strip_last_frame=CGRectNull;
         hwm_wake();
     }
     return true;

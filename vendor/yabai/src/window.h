@@ -119,7 +119,9 @@ struct window
     bool strip_float_full,strip_ordered_out;
     CGRect strip_last_frame;
     double strip_last_offset;
-    bool strip_initialized, strip_full_width, strip_tab_parked;
+    double strip_last_camera_y;
+    double strip_last_plane_scale;
+    bool strip_initialized, strip_full_width, strip_tab_parked, strip_offscreen;
     bool strip_size_pending;
     double strip_size_sent_at;
     CGRect strip_original_frame;
@@ -129,13 +131,13 @@ struct window
     double strip_vel_x, strip_vel_y, strip_vel_width, strip_vel_height;
     double strip_pop_start;
     int strip_pop; /* 0 none, 1 opening */
-    bool strip_pop_scaled, strip_close_scaled, strip_placed;
+    bool strip_pop_scaled, strip_close_scaled, strip_plane_scaled, strip_placed;
     bool strip_close_ghost; /* vacated its place in the strip while it fades out */
     double strip_ghost_time;
     float strip_alpha; /* opacity Tana last requested; 0 means untouched */
     CGRect strip_float_saved;
     int strip_shelf;          /* which stacked strip the window lives on */
-    double strip_last_shift;  /* vertical strip shift of strip_last_frame */
+    double strip_last_shift;  /* retained for legacy shelf floats */
     double strip_added;       /* when Tana first saw the window */
     float strip_rule_alpha;   /* opacity fixed by a rule; 0 means none */
     bool strip_no_border, strip_sticky, strip_attention, strip_ruled;

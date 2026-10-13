@@ -1,6 +1,6 @@
 """Inject native vertical gesture phases; verify cleanup and subsequent panning.
 
-Run with Tana active and the pointer idle. Restores the original viewport.
+Run with Tana2D active and the pointer idle. Restores the original viewport.
 """
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-WM = ROOT / 'build/tana'
+WM = ROOT / 'build/tana2d'
 PROBE = ROOT / 'build/gesture_probe'
 METRICS = ROOT / 'build/window_metrics'
 

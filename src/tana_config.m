@@ -162,7 +162,7 @@ static TanaConfigSnapshot *tana_snapshot(NSDictionary *document, NSDictionary *d
     if (!mod) { [diagnostics addObject:@"settings.mod is not a modifier list such as \"alt+cmd\""]; mod=NSEventModifierFlagOption|NSEventModifierFlagCommand; }
     tana_mod_mask=mod;
     if (tana_number([settings objectForKey:@"motionStrength"],&candidate) && candidate>=0 && candidate<=1) motion=candidate;
-    NSString *focus=tana_lower([settings objectForKey:@"autofocus"]); TanaAutofocusMode autofocus=[focus isEqual:@"after-scroll"] ? TanaAutofocusAfterScroll : TanaAutofocusPointerMovement;
+    NSString *focus=tana_lower([settings objectForKey:@"autofocus"]); TanaAutofocusMode autofocus=[focus isEqual:@"off"] ? TanaAutofocusOff : [focus isEqual:@"after-scroll"] ? TanaAutofocusAfterScroll : TanaAutofocusPointerMovement;
     BOOL showStripMap=tana_bool([settings objectForKey:@"showStripMap"],NO);
     NSArray *inputWidths=[settings objectForKey:@"stripWidths"]; NSMutableArray *widths=[NSMutableArray array];
     if ([inputWidths isKindOfClass:[NSArray class]]) for (id value in inputWidths) if (tana_number(value,&candidate) && candidate>0 && candidate<=1) [widths addObject:@(candidate)];
@@ -244,7 +244,7 @@ static BOOL tana_private_atomic_write(NSString *path, NSData *data, NSError **er
 {
     NSFileManager *manager=[NSFileManager defaultManager]; NSString *parent=[path stringByDeletingLastPathComponent];
     if (![manager createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:error]) return NO;
-    if (chmod([parent fileSystemRepresentation],0700)!=0) { if (error) *error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey:@"Could not secure Tana's config directory."}]; return NO; }
+    if (chmod([parent fileSystemRepresentation],0700)!=0) { if (error) *error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey:@"Could not secure Tana2D's config directory."}]; return NO; }
     NSString *templatePath=[parent stringByAppendingPathComponent:@".config.json.XXXXXX"]; char *temporary=strdup([templatePath fileSystemRepresentation]);
     if (!temporary) { if (error) *error=[NSError errorWithDomain:NSPOSIXErrorDomain code:ENOMEM userInfo:nil]; return NO; }
     int fd=mkstemp(temporary); if (fd<0) { int saved=errno; free(temporary); if (error) *error=[NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:nil]; return NO; }
@@ -258,7 +258,7 @@ static BOOL tana_private_atomic_write(NSString *path, NSData *data, NSError **er
 
 @implementation TanaConfig
 @synthesize path=_path, lastError=_lastError;
-+ (NSString *)defaultPath { NSArray *paths=NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES); return [[paths objectAtIndex:0] stringByAppendingPathComponent:@"Tana/config.json"]; }
++ (NSString *)defaultPath { NSArray *paths=NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES); return [[paths objectAtIndex:0] stringByAppendingPathComponent:@"Tana2D/config.json"]; }
 - (id)initWithPath:(NSString *)path defaultShortcuts:(NSDictionary *)defaultShortcuts { if ((self=[super init])) { _path=[(path ?: [[self class] defaultPath]) copy]; _defaultShortcuts=[defaultShortcuts copy]; _document=[[NSMutableDictionary alloc] init]; _snapshot=[tana_snapshot(_document,_defaultShortcuts) retain]; } return self; }
 - (BOOL)reload:(NSError **)error { if (error) *error=nil; @synchronized(self) { NSData *data=[NSData dataWithContentsOfFile:_path options:0 error:error]; if (!data) { if ([[NSFileManager defaultManager] fileExistsAtPath:_path]) return NO; if (error) *error=nil; [_document release]; _document=[[NSMutableDictionary alloc] init]; TanaConfigSnapshot *next=tana_snapshot(_document,_defaultShortcuts); [_snapshot release]; _snapshot=[next retain]; return YES; } NSError *jsonError=nil; id object=[NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError]; if (![object isKindOfClass:[NSDictionary class]]) { if (!jsonError) jsonError=[NSError errorWithDomain:TanaConfigErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey:@"Config root must be an object."}]; [_lastError release]; _lastError=[[jsonError localizedDescription] copy]; if (error) *error=jsonError; return NO; } NSMutableDictionary *document=[object mutableCopy]; TanaConfigSnapshot *next=tana_snapshot(document,_defaultShortcuts); [_document release]; _document=document; [_snapshot release]; _snapshot=[next retain]; [_lastError release]; _lastError=nil; return YES; } }
 - (TanaConfigSnapshot *)copySnapshot { @synchronized(self) { return [_snapshot copy]; } }

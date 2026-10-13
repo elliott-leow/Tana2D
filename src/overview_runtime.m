@@ -220,6 +220,8 @@ static void hwm_overview_render(double p)
         HWMOverviewRect shown=hwm_overview_closing ? hwm_overview_mix(item->close_from,item->destination,p) :
             hwm_overview_current(item,p,frame);
         hwm_overview_transform(item,shown);
+        struct window *w=hwm_overview_find(item);
+        if(w) hwm_visibility_set(w,false,CGRectNull);
     }
     double border_visibility=hwm_overview_closing ? hwm_overview_border_from+(1-hwm_overview_border_from)*p : 1-fmin(1,p*4);
     for(NSMutableDictionary *entry in hwm_overview_borders) {

@@ -1,4 +1,4 @@
-"""Optional native transition check. Requires an idle Tana session and TanaFixture.
+"""Optional native transition check. Requires an idle Tana2D session and TanaFixture.
 
 Runs only float/fill/restore/retile on a verified disposable fixture window.
 Samples fresh-process WindowServer bounds; does not claim compositor FPS.
@@ -9,7 +9,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-WM = ROOT / 'build/tana'
+WM = ROOT / 'build/tana2d'
 
 
 def command(*parts):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit, reversible handoff between an existing yabai session and Tana.
+"""Optional legacy migration: reversible handoff from an existing yabai session.
 
 This tool never installs a service, changes configuration, loads the scripting
 addition, or grants macOS permissions.  It records the state it can query
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-APP_NAME = "Tana"
+APP_NAME = "Tana2D"
 SERVICE_LABELS = ("com.asmvik.yabai", "com.koekeishiya.yabai", "homebrew.mxcl.yabai")
 
 
@@ -52,7 +52,7 @@ class Runner:
 
     def permission_check(self, executable: Path, app: Path, *, timeout: float = 5.0) -> CommandResult:
         """Probe the standalone app's TCC identity, not inherited terminal access."""
-        with tempfile.TemporaryDirectory(prefix="tana-permission-") as directory:
+        with tempfile.TemporaryDirectory(prefix="tana2d-permission-") as directory:
             output = Path(directory) / "stdout"
             error = Path(directory) / "stderr"
             args = ["/usr/bin/open", "-n", "--stdout", str(output), "--stderr", str(error), str(app), "--args", "--check-permissions"]
@@ -80,12 +80,12 @@ class SessionPaths:
 
     @property
     def app(self) -> Path:
-        override = os.environ.get("TANA_APP") or os.environ.get("HORIZONTALWM_APP")
-        return Path(override).expanduser() if override else self.root / "build" / "Tana.app"
+        override = os.environ.get("TANA2D_APP")
+        return Path(override).expanduser() if override else self.root / "build" / "Tana2D.app"
 
     @property
     def app_executable(self) -> Path:
-        return self.app / "Contents" / "MacOS" / "tana"
+        return self.app / "Contents" / "MacOS" / "tana2d"
 
     @property
     def original_yabai(self) -> Path:
@@ -98,8 +98,7 @@ class SessionPaths:
     @property
     def state_dir(self) -> Path:
         base = self.home / "Library" / "Application Support"
-        current, legacy = base / APP_NAME, base / "HorizontalWM"
-        return legacy if legacy.exists() and not current.exists() else current
+        return base / APP_NAME
 
     @property
     def recovery_path(self) -> Path:
@@ -119,11 +118,11 @@ class SessionPaths:
 
     @property
     def sa_socket_path(self) -> Path:
-        return Path("/tmp") / f"yabai-sa_{self.user}.socket"
+        return Path("/tmp") / f"tana2d-sa_{self.user}.socket"
 
 
 class SessionLock:
-    """Separate session lock; Tana itself takes yabai_USER.lock."""
+    """Separate session lock; Tana2D itself takes yabai_USER.lock."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -137,7 +136,7 @@ class SessionLock:
         except BlockingIOError as exc:
             self._file.close()
             self._file = None
-            raise SessionError("another Tana session operation is already running") from exc
+            raise SessionError("another Tana2D session operation is already running") from exc
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -244,9 +243,9 @@ class Controller:
         return self.command_json([str(self.paths.original_yabai), "-m", "query", subject], f"yabai query {subject}")
 
     def app_status(self) -> dict[str, Any]:
-        value = self.command_json([str(self.paths.app_executable), "-m", "strip", "status"], "Tana status")
+        value = self.command_json([str(self.paths.app_executable), "-m", "strip", "status"], "Tana2D status")
         if not isinstance(value, dict):
-            raise SessionError("Tana status did not return an object")
+            raise SessionError("Tana2D status did not return an object")
         return value
 
     def app_pids(self, executable: Optional[str] = None) -> list[int]:
@@ -270,22 +269,22 @@ class Controller:
             raise SessionError(f"packaged executable is not executable: {self.paths.app_executable}")
         permission = parse_json_output(
             self.runner.permission_check(self.paths.app_executable, self.paths.app, timeout=min(5.0, self.timeout)),
-            "Tana permission check",
+            "Tana2D permission check",
         )
         if not isinstance(permission, dict) or not permission.get("accessibility"):
-            raise SessionError("Tana Accessibility permission is required; grant it manually, then retry")
+            raise SessionError("Tana2D Accessibility permission is required; grant it manually, then retry")
         if permission.get("session_unlocked") is False:
-            raise SessionError("Unlock the Mac before starting Tana")
+            raise SessionError("Unlock the Mac before starting Tana2D")
         if not self.paths.sa_socket_path.exists():
             raise SessionError(
-                f"existing yabai scripting-addition socket is absent: {self.paths.sa_socket_path}; "
-                "load it manually before starting Tana"
+                f"Tana2D window-helper socket is absent: {self.paths.sa_socket_path}; "
+                "open Tana2D Setup & Settings to install its bundled helper"
             )
         if not self.paths.original_yabai.is_file():
             raise SessionError(f"original yabai is required at {self.paths.original_yabai}")
         backend = parse_json_output(self.runner.run([str(self.paths.app_executable), "--check-backend"]), "helper handshake")
         if not isinstance(backend, dict) or not backend.get("backend"):
-            raise SessionError("existing yabai helper did not pass its handshake; load it before starting Tana")
+            raise SessionError("Tana2D helper did not pass its handshake; use Tana2D Setup & Settings")
         return {"permissions": permission, "backend": backend, "sa_socket": str(self.paths.sa_socket_path)}
 
     def make_snapshot(self, preflight: dict[str, Any]) -> dict[str, Any]:
@@ -316,7 +315,7 @@ class Controller:
             "processes": {"skhd_running": process_running(self.runner, "skhd"),
                           "loop_running": bool(loop) or process_running(self.runner, "Loop"),
                           "loop": loop},
-            "tana": {"app": str(self.paths.app), "executable": str(self.paths.app_executable), "pids": []},
+            "tana2d": {"app": str(self.paths.app), "executable": str(self.paths.app_executable), "pids": []},
             "evidence": [],
         }
 
@@ -398,13 +397,13 @@ class Controller:
         def ready_status() -> dict[str, Any]:
             status = self.app_status()
             if not status.get("ready"):
-                raise SessionError("Tana daemon replied but is not ready")
+                raise SessionError("Tana2D daemon replied but is not ready")
             if not status.get("backend"):
-                raise SessionError("Tana daemon replied but its yabai backend is unavailable")
+                raise SessionError("Tana2D daemon replied but its yabai backend is unavailable")
             return status
-        status = self.wait_for(ready_status, "Tana daemon")
-        record["tana"]["status"] = status
-        record["tana"]["pids"] = self.app_pids()
+        status = self.wait_for(ready_status, "Tana2D daemon")
+        record["tana2d"]["status"] = status
+        record["tana2d"]["pids"] = self.app_pids()
 
     def ensure_no_unresolved_recovery(self) -> None:
         if not self.paths.recovery_path.exists():
@@ -445,10 +444,10 @@ class Controller:
                 raise
 
     def stop_tana(self, record: dict[str, Any]) -> None:
-        recorded = record.get("tana", record.get("horizontalwm", {}))
+        recorded = record.get("tana2d", record.get("horizontalwm", {}))
         executables = list(dict.fromkeys((str(self.paths.app_executable), str(recorded.get("executable", self.paths.app_executable)))))
         # Ask the daemon to restore its own pre-session state before it exits.
-        # An older recovery journal may predate the Tana executable/socket name.
+        # An older recovery journal may predate the Tana2D executable/socket name.
         for executable in executables:
             self.runner.run([executable, "-m", "strip", "quit"])
         if all(self.wait_until_tana_stops(executable) for executable in executables):
@@ -460,7 +459,7 @@ class Controller:
                 self.runner.run(["/bin/kill", "-TERM", str(pid)])
         if all(self.wait_until_tana_stops(executable) for executable in executables):
             return
-        raise SessionError("Tana daemon did not exit; refusing to restore yabai over it")
+        raise SessionError("Tana2D daemon did not exit; refusing to restore yabai over it")
 
     def wait_until_tana_stops(self, executable: str) -> bool:
         """Require both a dead client socket and no matching app process."""
@@ -558,7 +557,7 @@ class Controller:
 
     def restore(self, dry_run: bool = False) -> dict[str, Any]:
         if dry_run:
-            return {"dry_run": True, "would": ["quit Tana", "restart only services stopped by session", "restore surviving windows"]}
+            return {"dry_run": True, "would": ["quit Tana2D", "restart only services stopped by session", "restore surviving windows"]}
         with SessionLock(self.paths.session_lock_path):
             record = load_json(self.paths.recovery_path)
             errors = self.rollback(record)
@@ -578,7 +577,7 @@ class Controller:
             except SessionError as exc:
                 result["recovery_error"] = str(exc)
         try:
-            result["tana"] = self.app_status()
+            result["tana2d"] = self.app_status()
         except SessionError as exc:
             result["tana_error"] = str(exc)
         return result

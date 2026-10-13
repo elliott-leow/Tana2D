@@ -8,6 +8,7 @@
 typedef NS_ENUM(NSInteger, TanaAutofocusMode) {
     TanaAutofocusPointerMovement = 0,
     TanaAutofocusAfterScroll = 1,
+    TanaAutofocusOff = 2,
 };
 
 @interface TanaShortcutBinding : NSObject <NSCopying> {

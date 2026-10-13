@@ -77,6 +77,7 @@ static NSColor *hwm_color(NSArray *rgba)
 @property(nonatomic,retain) CAShapeLayer *attention;
 @property(nonatomic,retain) CALayer *shelfBack;
 @property(nonatomic,retain) CALayer *shelfMark;
+@property(nonatomic,retain) CALayer *shelfLabelBack;
 @property(nonatomic,retain) CATextLayer *shelfLabel;
 @property(nonatomic) NSInteger shelfCount;
 @property(nonatomic) double spin;
@@ -138,10 +139,12 @@ static NSColor *hwm_color(NSArray *rgba)
     self.attention=[CAShapeLayer layer]; self.attention.fillColor=NSColor.clearColor.CGColor;
     self.shelfBack=[CALayer layer]; self.shelfBack.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:.5].CGColor; self.shelfBack.cornerRadius=11; self.shelfBack.opacity=0;
     self.shelfMark=[CALayer layer]; self.shelfMark.cornerRadius=3;
+    self.shelfLabelBack=[CALayer layer]; self.shelfLabelBack.backgroundColor=[NSColor colorWithCalibratedWhite:.08 alpha:.92].CGColor;
+    self.shelfLabelBack.cornerRadius=8; self.shelfLabelBack.opacity=0;
     self.shelfLabel=[CATextLayer layer]; self.shelfLabel.fontSize=12; self.shelfLabel.font=(__bridge CFTypeRef)[NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
     self.shelfLabel.foregroundColor=NSColor.whiteColor.CGColor; self.shelfLabel.alignmentMode=kCAAlignmentRight; self.shelfLabel.contentsScale=self.panel.backingScaleFactor ?: 2;
     self.shelfLabel.shadowColor=NSColor.blackColor.CGColor; self.shelfLabel.shadowOpacity=.7; self.shelfLabel.shadowRadius=4; self.shelfLabel.shadowOffset=CGSizeZero; self.shelfLabel.opacity=0;
-    for(CALayer *layer in @[self.drag,self.inactive,self.attention,self.focus,self.tabs,self.mapBack,self.wall,self.shelfBack,self.shelfLabel]) [root addSublayer:layer];
+    for(CALayer *layer in @[self.drag,self.inactive,self.attention,self.focus,self.tabs,self.mapBack,self.wall,self.shelfBack,self.shelfLabelBack,self.shelfLabel]) [root addSublayer:layer];
     for(CALayer *layer in @[self.map,self.mapFocus,self.mapView]) [self.mapBack addSublayer:layer];
 }
 /* Top-left screen-local rect to this panel's bottom-left layer coordinates. */
@@ -273,7 +276,7 @@ static NSColor *hwm_color(NSArray *rgba)
     BOOL showShelves=[state[@"shelves"][@"show"] boolValue];
     [CATransaction begin]; [CATransaction setAnimationDuration:reduce?0:.16];
     self.mapBack.opacity=showMap?1:0; self.wall.opacity=showWall?1:0;
-    self.shelfBack.opacity=showShelves?1:0; self.shelfLabel.opacity=showShelves?1:0;
+    self.shelfBack.opacity=showShelves?1:0; self.shelfLabel.opacity=showShelves?1:0; self.shelfLabelBack.opacity=showShelves?1:0;
     [CATransaction commit];
     if(!self.panel.visible || changed) [self.panel orderFrontRegardless];
     uint64_t generation=++self.generation;
@@ -282,7 +285,7 @@ static NSColor *hwm_color(NSArray *rgba)
     if(showMap || showWall || showShelves) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.85*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
         if(self.generation!=generation) return;
         [CATransaction begin]; [CATransaction setAnimationDuration:reduce?0:.25];
-        self.mapBack.opacity=0; self.wall.opacity=0; self.shelfBack.opacity=0; self.shelfLabel.opacity=0;
+        self.mapBack.opacity=0; self.wall.opacity=0; self.shelfBack.opacity=0; self.shelfLabel.opacity=0; self.shelfLabelBack.opacity=0;
         [CATransaction commit];
     });
 }
@@ -328,7 +331,10 @@ static NSColor *hwm_color(NSArray *rgba)
     self.shelfMark.backgroundColor=hwm_color(state[@"active"]).CGColor;
     self.shelfMark.frame=CGRectMake(8,total-8-pip-camera*(pip+gap),6,pip);
     self.shelfLabel.string=shelves[@"label"] ?: @"";
-    self.shelfLabel.frame=CGRectMake(back.origin.x-228,CGRectGetMidY(back)-8,220,16);
+    CGFloat labelWidth=MIN(220,ceil([(NSString *)self.shelfLabel.string sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium]}].width));
+    self.shelfLabel.truncationMode=kCATruncationEnd;
+    self.shelfLabel.frame=CGRectMake(back.origin.x-18-labelWidth,CGRectGetMidY(back)-8,labelWidth,16);
+    self.shelfLabelBack.frame=CGRectInset(self.shelfLabel.frame,-10,-6);
 }
 /* One dark layer per unfocused tile, in a panel of its own that sits above
  * the tiles and beneath floating windows, dialogs and everything else. Moving
@@ -445,14 +451,24 @@ static bool hwm_feedback_animating(double now)
 }
 /* Where a window is on screen, for an outline: a tile's last submitted frame
  * is exact and costs no round trip. */
+static CGRect hwm_feedback_plane_frame(struct view *view,struct window *w)
+{
+    CGRect frame=w->strip_last_frame;
+    if(CGRectIsNull(frame) || w->strip_offscreen) return CGRectNull;
+    CGRect bounds=hwm_bounds(view);
+    frame.origin.x=bounds.origin.x+(frame.origin.x-bounds.origin.x)*hwm_plane_scale;
+    frame.origin.y=bounds.origin.y+(frame.origin.y-bounds.origin.y)*hwm_plane_scale;
+    frame.size.width*=hwm_plane_scale; frame.size.height*=hwm_plane_scale;
+    return frame;
+}
 static CGRect hwm_feedback_frame(struct view *view,struct window *w,CGRect screen)
 {
     if(!w || w->strip_pop || w->strip_close_pending || w->strip_close_ghost || !window_manager_is_window_eligible(w) ||
        window_check_flag(w,WINDOW_FULLSCREEN) || window_check_flag(w,WINDOW_MINIMIZE) || w->application->is_hidden) return CGRectNull;
     bool tile=view_find_window_node(view,w->id)!=NULL;
     if(!tile && !window_check_flag(w,WINDOW_FLOAT)) return CGRectNull;
-    CGRect f=tile ? w->strip_last_frame : CGRectNull;
-    if(tile && hwm_workflow_tab_hidden(w)) return CGRectNull;
+    CGRect f=tile ? hwm_feedback_plane_frame(view,w) : CGRectNull;
+    if(tile && (hwm_workflow_tab_hidden(w) || w->strip_offscreen)) return CGRectNull;
     if(CGRectIsNull(f) && SLSGetWindowBounds(g_connection,w->id,&f)!=kCGErrorSuccess) return CGRectNull;
     return !CGRectIsNull(f) && CGRectIntersectsRect(f,screen) ? f : CGRectNull;
 }
@@ -480,7 +496,7 @@ static void hwm_feedback_tick(struct view *view,double now)
     CGRect screen=hwm_screen(view),bounds=hwm_bounds(view);
     NSMutableArray *columns=[NSMutableArray array],*tabs=[NSMutableArray array],*others=[NSMutableArray array];
     NSMutableArray *dim=[NSMutableArray array],*asking=[NSMutableArray array];
-    NSMutableSet *seen=[NSMutableSet set]; bool borders=hwm_border_on();
+    NSMutableSet *seen=[NSMutableSet set]; bool borders=hwm_border_mode!=0 && (hwm_border_on() || hwm_plane_fit_active);
     struct window *focus=window_manager_find_window(&g_window_manager,hwm_feedback_focus_id);
     uint64_t focus_column=focus && view_find_window_node(view,focus->id) ? focus->strip_column : 0;
     double shown_offset=hwm_rendered_offset, viewport=bounds.size.width;
@@ -491,7 +507,7 @@ static void hwm_feedback_tick(struct view *view,double now)
             [columns addObject:[NSValue valueWithRect:CGRectMake(w->strip_world_x,0,w->strip_width,focus_column && w->strip_column==focus_column?2:1)]];
             [seen addObject:@(w->strip_column)];
         }
-        CGRect shown=w->strip_last_frame;
+        CGRect shown=hwm_feedback_plane_frame(view,w);
         bool visible=!hwm_workflow_tab_hidden(w) && !w->strip_pop && !w->strip_close_ghost && !w->strip_close_pending && w->id!=hwm_drag_window &&
                      !CGRectIsNull(shown) && CGRectIntersectsRect(shown,screen);
         if(!visible) continue;
@@ -505,7 +521,7 @@ static void hwm_feedback_tick(struct view *view,double now)
         struct window *w=hwm_tile(n->window_list[j]); if(!w) continue;
         double y=0,height=0;
         if(!hwm_workflow_tab_geometry(view,w,&y,&height) || hwm_workflow_tab_hidden(w) || CGRectIsNull(w->strip_last_frame)) continue;
-        CGRect shown=w->strip_last_frame;
+        CGRect shown=hwm_feedback_plane_frame(view,w);
         if(!CGRectIntersectsRect(shown,screen)) continue;
         NSMutableArray *members=[NSMutableArray array];
         for(struct window_node *m=window_node_find_first_leaf(view->root);m;m=window_node_find_next_leaf(m)) for(int k=0;k<m->window_count;k++) {
@@ -523,9 +539,9 @@ static void hwm_feedback_tick(struct view *view,double now)
     // Only what is actually drawn goes into the snapshot. An unchanged
     // snapshot is not sent at all, so a still strip costs the main thread nothing
     // however long the tick keeps running (during a drag it runs every frame).
-    bool map=hwm_show_map && now-hwm_feedback_nav_time<.7, wall=now-hwm_feedback_wall_time<.3;
+    bool map=false, wall=false; // An unbounded plane has no strip map or wall flash.
     double total=fmax(hwm_content_width,view->strip_offset)+bounds.size.width;
-    bool shelves=now-hwm_feedback_shelf_time<.9 || hwm_shelf_moving(now);
+    bool shelves=false;
     int shelf_count=hwm_shelf_limit(view)+1;
     // Shown only while it matters; a still strip sends none of it, so the snapshot stays equal.
     NSDictionary *shelf_state=shelves ? @{@"show":@YES,@"count":@(shelf_count),@"camera":@(round(hwm_shelf_camera(now)*200)/200),

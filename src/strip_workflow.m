@@ -25,7 +25,7 @@ typedef struct {
 typedef struct {
     HWMWorkflowIdentity identity;
     uint64_t column;
-    double width, saved_width, weight;
+    double width, saved_width, weight, world_x, world_y, height;
     CGRect floating_frame;
     bool full_width, floating;
     int shelf;
@@ -36,7 +36,7 @@ typedef struct {
     HWMUndoWindow *windows;
     size_t count;
     uint64_t sid;
-    double offset;
+    double offset, camera_y, scale;
     HWMTabColumn *tabs;
     size_t tab_count;
     bool valid;
@@ -267,6 +267,7 @@ static void hwm_undo_capture(void)
             CGRect frame = window->frame; (void)SLSGetWindowBounds(g_connection, window->id, &frame);
             captured[count++] = ((HWMUndoWindow){
                 .identity = hwm_workflow_identity(window), .column = window->strip_column,
+                .world_x = window->strip_world_x, .world_y = window->strip_world_y, .height = window->strip_height,
                 .width = window->strip_width, .saved_width = window->strip_saved_width, .weight = window->strip_weight,
                 .floating_frame = frame, .full_width = window->strip_full_width, .floating = false, .shelf = window->strip_shelf, .order = order++
             });
@@ -281,7 +282,8 @@ static void hwm_undo_capture(void)
         CGRect frame = window->frame; (void)SLSGetWindowBounds(g_connection, window->id, &frame);
         captured[count++] = ((HWMUndoWindow){
             .identity = hwm_workflow_identity(window), .column = window->strip_column,
-            .width = window->strip_width, .saved_width = window->strip_saved_width, .weight = window->strip_weight,
+            .world_x = window->strip_world_x, .world_y = window->strip_world_y, .height = window->strip_height,
+                .width = window->strip_width, .saved_width = window->strip_saved_width, .weight = window->strip_weight,
             .floating_frame = frame, .full_width = window->strip_full_width, .floating = true, .shelf = window->strip_shelf, .order = SIZE_MAX
         });
     })
@@ -294,7 +296,7 @@ static void hwm_undo_capture(void)
     free(hwm_workflow_undo.windows);
     free(hwm_workflow_undo.tabs);
     hwm_workflow_undo = (HWMUndoSnapshot){.windows = captured, .count = count, .sid = view->sid,
-                                          .offset = view->strip_target_offset, .tabs = tabs,
+                                          .offset = view->strip_target_offset, .camera_y = hwm_plane_y_target, .scale = hwm_plane_scale, .tabs = tabs,
                                           .tab_count = hwm_workflow_tab_count, .valid = count != 0U};
 }
 
@@ -318,6 +320,7 @@ static bool hwm_undo_restore(void)
         }
         if (!hwm_workflow_in_view(view, window)) continue;
         window->strip_column = saved->column ? saved->column : window->id;
+        window->strip_world_x = saved->world_x; window->strip_world_y = saved->world_y; window->strip_height = saved->height;
         window->strip_width = saved->width;
         window->strip_saved_width = saved->saved_width;
         window->strip_weight = saved->weight > 0.0 ? saved->weight : 1.0;
@@ -358,7 +361,7 @@ static bool hwm_undo_restore(void)
         if (active && hwm_workflow_in_view(view, active) && hwm_workflow_column(active) == tab.column)
             (void)hwm_workflow_set_tab(tab.column, tab.active);
     }
-    if (restored) { hwm_layout(view, true); hwm_scroll(view, hwm_workflow_undo.offset, true); }
+    if (restored) { hwm_plane_scale=hwm_workflow_undo.scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001; hwm_layout(view, true); hwm_plane_set_camera(view, hwm_workflow_undo.offset, hwm_workflow_undo.camera_y, true); }
     hwm_workflow_restoring = false;
     return restored;
 }

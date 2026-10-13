@@ -31,11 +31,11 @@ static char sa_plist[] =
     "<key>CFBundleExecutable</key>\n"
     "<string>loader</string>\n"
     "<key>CFBundleIdentifier</key>\n"
-    "<string>com.asmvik.yabai-osax</string>\n"
+    "<string>dev.tana2d.window-helper</string>\n"
     "<key>CFBundleInfoDictionaryVersion</key>\n"
     "<string>6.0</string>\n"
     "<key>CFBundleName</key>\n"
-    "<string>yabai</string>\n"
+    "<string>Tana2D</string>\n"
     "<key>CFBundlePackageType</key>\n"
     "<string>osax</string>\n"
     "<key>CFBundleShortVersionString</key>\n"
@@ -60,7 +60,7 @@ static char sa_bundle_plist[] =
     "<key>CFBundleExecutable</key>\n"
     "<string>payload</string>\n"
     "<key>CFBundleIdentifier</key>\n"
-    "<string>com.asmvik.yabai-sa</string>\n"
+    "<string>dev.tana2d.window-payload</string>\n"
     "<key>CFBundleInfoDictionaryVersion</key>\n"
     "<string>6.0</string>\n"
     "<key>CFBundleName</key>\n"
@@ -80,7 +80,7 @@ static char sa_bundle_plist[] =
 
 static void scripting_addition_set_path(void)
 {
-    snprintf(osax_base_dir, sizeof(osax_base_dir), "%s", "/Library/ScriptingAdditions/yabai.osax");
+    snprintf(osax_base_dir, sizeof(osax_base_dir), "%s", "/Library/ScriptingAdditions/tana2d.osax");
 
     snprintf(osax_contents_dir, sizeof(osax_contents_dir), "%s/%s", osax_base_dir, "Contents");
     snprintf(osax_contents_macos_dir, sizeof(osax_contents_macos_dir), "%s/%s", osax_contents_dir, "MacOS");
@@ -98,6 +98,9 @@ static void scripting_addition_set_path(void)
 
 static bool scripting_addition_create_directory(void)
 {
+    struct stat parent;
+    if(mkdir("/Library/ScriptingAdditions",0755)!=0 && errno!=EEXIST) return false;
+    if(lstat("/Library/ScriptingAdditions",&parent)!=0 || !S_ISDIR(parent.st_mode) || parent.st_uid!=0 || (parent.st_mode&0022)) return false;
     if (mkdir(osax_base_dir, 0755))                   goto err;
     if (mkdir(osax_contents_dir, 0755))               goto err;
     if (mkdir(osax_contents_macos_dir, 0755))         goto err;
@@ -122,21 +125,14 @@ static bool scripting_addition_write_file(char *buffer, unsigned int size, char 
     return result;
 }
 
-static void scripting_addition_prepare_binaries(void)
+static bool scripting_addition_prepare_binaries(void)
 {
+    if(chmod(osax_bin_loader,0755)!=0 || chmod(osax_bin_payload,0755)!=0) return false;
     char cmd[MAXLEN];
-
-    snprintf(cmd, sizeof(cmd), "%s %s", "chmod +x", osax_bin_loader);
-    system(cmd);
-
-    snprintf(cmd, sizeof(cmd), "%s %s %s", "codesign -f -s -", osax_bin_loader, "2>/dev/null");
-    system(cmd);
-
-    snprintf(cmd, sizeof(cmd), "%s %s", "chmod +x", osax_bin_payload);
-    system(cmd);
-
-    snprintf(cmd, sizeof(cmd), "%s %s %s", "codesign -f -s -", osax_bin_payload, "2>/dev/null");
-    system(cmd);
+    snprintf(cmd,sizeof(cmd),"/usr/bin/codesign -f -s - %s 2>/dev/null",osax_bin_loader);
+    if(system(cmd)!=0) return false;
+    snprintf(cmd,sizeof(cmd),"/usr/bin/codesign -f -s - %s 2>/dev/null",osax_bin_payload);
+    return system(cmd)==0;
 }
 
 static void scripting_addition_restart_dock(void)
@@ -196,7 +192,7 @@ static int scripting_addition_check(void)
 static bool scripting_addition_remove(void)
 {
     char cmd[MAXLEN];
-    snprintf(cmd, sizeof(cmd), "%s %s %s", "rm -rf", osax_base_dir, "2>/dev/null");
+    snprintf(cmd, sizeof(cmd), "%s %s %s", "/bin/rm -rf", osax_base_dir, "2>/dev/null");
 
     int code = system(cmd);
     return code == 0;
@@ -230,8 +226,7 @@ static int scripting_addition_install(void)
         goto cleanup;
     }
 
-    scripting_addition_prepare_binaries();
-    scripting_addition_restart_dock();
+    if(!scripting_addition_prepare_binaries()) goto cleanup;
     return 0;
 
 cleanup:
@@ -313,7 +308,7 @@ static bool scripting_addition_is_arm64e_enabled(void)
 
 static bool mach_loader_inject_payload(void)
 {
-    FILE *handle = popen("/Library/ScriptingAdditions/yabai.osax/Contents/MacOS/loader", "r");
+    FILE *handle = popen("/Library/ScriptingAdditions/tana2d.osax/Contents/MacOS/loader", "r");
     if (!handle) return false;
 
     int result = pclose(handle);
@@ -331,13 +326,13 @@ static bool mach_loader_inject_payload(void)
 int scripting_addition_uninstall(void)
 {
     if (!scripting_addition_is_sip_friendly()) {
-        warn("yabai: System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!\n");
+        warn("Tana2D: System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!\n");
         notify("scripting-addition", "System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!");
         return 1;
     }
 
     if (!is_root()) {
-        warn("yabai: scripting-addition must be uninstalled as root!\n");
+        warn("Tana2D: scripting-addition must be uninstalled as root!\n");
         notify("scripting-addition", "must be uninstalled as root!");
         return 1;
     }
@@ -353,14 +348,14 @@ int scripting_addition_load(void)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     if (!is_root()) {
-        warn("yabai: scripting-addition must be loaded as root!\n");
+        warn("Tana2D: scripting-addition must be loaded as root!\n");
         notify("scripting-addition", "must be loaded as root!");
         result = 1;
         goto out;
     }
 
     if (!scripting_addition_is_sip_friendly()) {
-        warn("yabai: System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!\n");
+        warn("Tana2D: System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!\n");
         notify("scripting-addition", "System Integrity Protection: Filesystem Protections and Debugging Restrictions must be disabled!");
         result = 1;
         goto out;
@@ -368,12 +363,12 @@ int scripting_addition_load(void)
 
     if (scripting_addition_check() != 0) {
         result = scripting_addition_install();
-        goto out;
+        if (result != 0) goto out;
     }
 
 #ifdef __arm64__
     if (!scripting_addition_is_arm64e_enabled()) {
-        warn("yabai: missing required nvram boot-arg '-arm64e_preview_abi'!\n");
+        warn("Tana2D: missing required nvram boot-arg '-arm64e_preview_abi'!\n");
         notify("scripting-addition", "missing required nvram boot-arg '-arm64e_preview_abi'!");
         result = 1;
         goto out;
@@ -381,7 +376,7 @@ int scripting_addition_load(void)
 #endif
 
     if (!mach_loader_inject_payload()) {
-        warn("yabai: scripting-addition failed to inject payload into Dock.app!\n");
+        warn("Tana2D: scripting-addition failed to inject payload into Dock.app!\n");
         notify("scripting-addition", "failed to inject payload into Dock.app!");
         result = 1;
         goto out;

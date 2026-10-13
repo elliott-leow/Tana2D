@@ -211,6 +211,14 @@ static inline double hstrip_add_length(double left, double right)
     return left > DBL_MAX - right ? DBL_MAX : left + right;
 }
 
+/* Keep native shadows and attached borders out of the visible desktop too. */
+#define HSTRIP_OFFSCREEN_MARGIN 120.0
+
+static inline double hstrip_empty_desktop_offset(double content_width, double left_inset)
+{
+    return hstrip_add_length(hstrip_add_length(content_width,left_inset),HSTRIP_OFFSCREEN_MARGIN);
+}
+
 /* A scroll offset has a hard left boundary at zero and intentionally no right boundary. */
 static inline double hstrip_viewport_offset(double offset)
 {

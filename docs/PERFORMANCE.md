@@ -1,3 +1,5 @@
+> Historical Tana measurements. Re-run benchmarks and live measurements before making Tana2D performance claims.
+
 # Performance and animation verification
 
 The optimization constraint is unchanged behavior: keep the dynamic strip,

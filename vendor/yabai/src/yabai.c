@@ -1,4 +1,6 @@
-#define SA_SOCKET_PATH_FMT      "/tmp/yabai-sa_%s.socket"
+#ifndef SA_SOCKET_PATH_FMT
+#define SA_SOCKET_PATH_FMT      "/tmp/tana2d-sa_%s.socket"
+#endif
 #define SOCKET_PATH_FMT         "/tmp/tana_%s.socket"
 #define LCFILE_PATH_FMT         "/tmp/yabai_%s.lock"
 
@@ -54,12 +56,12 @@ pid_t g_pid;
 static int client_send_message(int argc, char **argv)
 {
     if (argc <= 1) {
-        error("tana-msg: no arguments given! abort..\n");
+        error("tana2d-msg: no arguments given! abort..\n");
     }
 
     char *user = getenv("USER");
     if (!user) {
-        error("tana-msg: 'env USER' not set! abort..\n");
+        error("tana2d-msg: 'env USER' not set! abort..\n");
     }
 
     int message_length = argc;
@@ -86,15 +88,15 @@ static int client_send_message(int argc, char **argv)
     snprintf(socket_file, sizeof(socket_file), SOCKET_PATH_FMT, user);
 
     if (!socket_open(&sockfd)) {
-        error("tana-msg: failed to open socket..\n");
+        error("tana2d-msg: failed to open socket..\n");
     }
 
     if (!socket_connect(sockfd, socket_file)) {
-        error("tana-msg: failed to connect to socket..\n");
+        error("tana2d-msg: failed to connect to socket..\n");
     }
 
     if (send(sockfd, message, sizeof(int)+message_length, 0) == -1) {
-        error("tana-msg: failed to send data..\n");
+        error("tana2d-msg: failed to send data..\n");
     }
 
     shutdown(sockfd, SHUT_WR);
@@ -129,7 +131,7 @@ static inline bool configure_settings_and_acquire_lock(void)
 {
     char *user = getenv("USER");
     if (!user) {
-        error("tana: 'env USER' not set! abort..\n");
+        error("tana2d: 'env USER' not set! abort..\n");
     }
 
     snprintf(g_sa_socket_file, sizeof(g_sa_socket_file), SA_SOCKET_PATH_FMT, user);
@@ -163,7 +165,7 @@ static inline bool configure_settings_and_acquire_lock(void)
 
     int handle = open(g_lock_file, O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
     if (handle == -1) {
-        error("tana: could not create lock-file! abort..\n");
+        error("tana2d: could not create lock-file! abort..\n");
     }
 
     struct flock lockfd = {
@@ -180,11 +182,19 @@ static inline bool configure_settings_and_acquire_lock(void)
 
 static void parse_arguments(int argc, char **argv)
 {
+    if (string_equals(argv[1], "--install-helper")) {
+        exit(argc==3 ? tana_install_helper(argv[2]) : 2);
+    }
+    if (string_equals(argv[1], "--setup-status")) {
+        [NSApplication sharedApplication];
+        NSData *json=[NSJSONSerialization dataWithJSONObject:tana_setup_status() options:0 error:NULL];
+        fwrite(json.bytes,1,json.length,stdout); fputc('\n',stdout); exit(0);
+    }
     if (string_equals(argv[1], "--check-backend")) {
         struct passwd *user = getpwuid(getuid());
         char version[256] = {0}; uint32_t attributes = 0;
         if (user) snprintf(g_sa_socket_file, sizeof(g_sa_socket_file), SA_SOCKET_PATH_FMT, user->pw_name);
-        bool ready = user && scripting_addition_request_handshake(version,sizeof(version),&attributes);
+        bool ready = user && scripting_addition_request_handshake(version,sizeof(version),&attributes) && !strcmp(version,OSAX_VERSION);
         fprintf(stdout,"{\"backend\":%s,\"attributes\":%u}\n",ready ? "true" : "false",attributes);
         exit(ready ? EXIT_SUCCESS : EXIT_FAILURE);
     }
@@ -199,31 +209,35 @@ static void parse_arguments(int argc, char **argv)
     if (string_equals(argv[1], "--request-permissions")) {
         NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
         bool trusted = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
-        fprintf(stdout, "Accessibility: %s\n", trusted ? "granted" : "grant Tana in System Settings > Privacy & Security > Accessibility");
+        fprintf(stdout, "Accessibility: %s\n", trusted ? "granted" : "grant Tana2D in System Settings > Privacy & Security > Accessibility");
         exit(trusted ? EXIT_SUCCESS : EXIT_FAILURE);
     }
     if ((string_equals(argv[1], HELP_OPT_LONG)) ||
         (string_equals(argv[1], HELP_OPT_SHRT))) {
-        fprintf(stdout, "Tana — one continuous horizontal window strip\n"
-                        "  -m strip overview               Show the graphical window overview\n"
+        fprintf(stdout, "Tana2D — an infinite two-dimensional window plane\n"
+                        "  -m strip fit-all                Fit all windows on the plane\n"
                         "  -m strip status                 Inspect layout and backend health\n"
-                        "  -m strip left|right             Focus an adjacent tile\n"
-                        "  -m strip move-left|move-right   Reorder the focused tile\n"
+                        "  -m strip left|right|up|down     Focus a window in that direction\n"
+                        "  -m strip move-left|move-right   Move the focused window on the plane\n"
                         "  -m strip full|center|float      Change the focused window\n"
-                        "  -m strip scroll <points>        Move the viewport from the left wall\n"
+                        "  -m strip camera <x> <y>         Set the unbounded camera position\n"
+                        "  -m strip pan <dx> <dy>           Move the camera in both axes\n"
+                        "  -m strip zoom <scale>            Set camera zoom (1 is actual size)\n"
+                        "  -m strip fit-focused            Fit the focused window\n"
+                        "  -m strip actual-size            Reset camera zoom to 100%%\n"
                         "  -m strip width <points>         Resize the focused tile\n"
                         "  -m strip home|pause|reflow|quit  Session controls\n"
                         "  --check-permissions             Report access in this launch context\n"
                         "  --check-backend                 Read-only helper connectivity check\n"
                         "  --request-permissions           Open the macOS Accessibility prompt\n"
                         "  --version                       Print version\n"
-                        "Use scripts/session.py start/restore for a recoverable handoff.\n");
+                        "Open Tana2D.app for guided setup. --setup reopens setup; --setup-status diagnoses requirements.\n");
         exit(EXIT_SUCCESS);
     }
 
     if ((string_equals(argv[1], VERSION_OPT_LONG)) ||
         (string_equals(argv[1], VERSION_OPT_SHRT))) {
-        fprintf(stdout, "tana 0.1.0 (yabai %d.%d.%d foundation)\n", MAJOR, MINOR, PATCH);
+        fprintf(stdout, "tana2d 0.4.0 (yabai %d.%d.%d foundation)\n", MAJOR, MINOR, PATCH);
         exit(EXIT_SUCCESS);
     }
 
@@ -269,10 +283,10 @@ static void parse_arguments(int argc, char **argv)
         } else if ((string_equals(opt, CONFIG_OPT_LONG)) ||
                    (string_equals(opt, CONFIG_OPT_SHRT))) {
             char *val = i < argc - 1 ? argv[++i] : NULL;
-            if (!val) error("tana: option '%s|%s' requires an argument!\n", CONFIG_OPT_LONG, CONFIG_OPT_SHRT);
+            if (!val) error("tana2d: option '%s|%s' requires an argument!\n", CONFIG_OPT_LONG, CONFIG_OPT_SHRT);
             snprintf(g_config_file, sizeof(g_config_file), "%s", val);
         } else {
-            error("tana: '%s' is not a valid option!\n", opt);
+            error("tana2d: '%s' is not a valid option!\n", opt);
         }
     }
 }
@@ -280,52 +294,53 @@ static void parse_arguments(int argc, char **argv)
 #ifndef TESTS
 int main(int argc, char **argv)
 {
-    if (argc > 1) {
-        parse_arguments(argc, argv);
-    }
+    BOOL setup=argc==2 && !strcmp(argv[1],"--setup");
+    BOOL preview=argc==2 && !strcmp(argv[1],"--setup-preview");
+    if (argc > 1 && !setup && !preview) parse_arguments(argc, argv);
+    if (!is_root() && !tana_prepare_startup(setup || preview,preview)) return 0;
 
     if (is_root()) {
-        require("tana: running as root is not allowed! abort..\n");
+        require("tana2d: running as root is not allowed! abort..\n");
     }
 
     if (!ax_privilege()) {
-        require("tana: could not access accessibility features! abort..\n");
+        require("tana2d: could not access accessibility features! abort..\n");
     }
 
     if (!(SLSGetSpaceManagementMode(SLSMainConnectionID()) == 1)) {
-        require("tana: 'display has separate spaces' is disabled! abort..\n");
+        require("tana2d: 'display has separate spaces' is disabled! abort..\n");
     }
 
     if (!ts_init(MEGABYTES(8))) {
-        error("tana: could not allocate temporary storage! abort..\n");
+        error("tana2d: could not allocate temporary storage! abort..\n");
     }
 
     if (!memory_pool_init(&g_signal_storage, KILOBYTES(256))) {
-        error("tana: could not allocate event signal storage! abort..\n");
+        error("tana2d: could not allocate event signal storage! abort..\n");
     }
 
     if (!configure_settings_and_acquire_lock()) {
-        error("tana: could not acquire lock-file! abort..\n");
+        error("tana2d: could not acquire lock-file! abort..\n");
     }
 
     if (!event_loop_begin(&g_event_loop)) {
-        error("tana: could not start event loop! abort..\n");
+        error("tana2d: could not start event loop! abort..\n");
     }
 
     if (!workspace_event_handler_begin(&g_workspace_context)) {
-        error("tana: could not start workspace context! abort..\n");
+        error("tana2d: could not start workspace context! abort..\n");
     }
 
     if (!process_manager_begin(&g_process_manager)) {
-        error("tana: could not start process manager! abort..\n");
+        error("tana2d: could not start process manager! abort..\n");
     }
 
     if (!display_manager_begin(&g_display_manager)) {
-        error("tana: could not start display manager! abort..\n");
+        error("tana2d: could not start display manager! abort..\n");
     }
 
     if (!mouse_handler_begin(&g_mouse_state, MOUSE_EVENT_MASK_FFM)) {
-        error("tana: could not start mouse handler! abort..\n");
+        error("tana2d: could not start mouse handler! abort..\n");
     }
 
     if (workspace_is_macos_monterey() ||
@@ -362,7 +377,7 @@ int main(int argc, char **argv)
     }
 
     if (!message_loop_begin(g_socket_file)) {
-        error("tana: could not start message loop! abort..\n");
+        error("tana2d: could not start message loop! abort..\n");
     }
 
     event_loop_post(&g_event_loop, HORIZONTAL_BEGIN, NULL, 0);

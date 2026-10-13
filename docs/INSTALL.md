@@ -1,143 +1,161 @@
-# Install and recover Tana
+# Install Tana2D
 
-Tana is an experimental macOS window manager built on a locally patched
-yabai foundation. It is not production-certified. Test it with disposable work
-before relying on it for a session.
+Tana2D is a standalone macOS app. Its window engine and window-control helper are
+included. You do not need Homebrew, Python, skhd, or an installed yabai to use it.
+The engine retains its MIT-licensed yabai foundation and attribution.
 
-## Build the app bundle
+## Install the app
 
-From the repository root:
+1. Open the Tana2D disk image and drag **Tana2D.app** to **Applications** (or unzip
+   the app and move it there).
+2. Open **Tana2D** and follow **Setup & Settings**. Allow Accessibility, then use
+   **Set Up Window Helper** when the requirements are ready. Click **Start Tana2D**.
+
+The setup page checks automatically as permissions change. Nothing is tiled
+until the checks pass. The helper setup asks for administrator approval and
+installs a root-owned copy with permission to run only its fixed helper-loading
+command. No separate window manager or passwordless general shell is installed.
+
+**The macOS security prerequisite is still real.** Full live off-screen placement,
+window layers, and overview animations use a helper in Dock. On a stock Mac,
+macOS blocks that helper: a one-time change in Recovery and a reboot are required.
+The app explains this and includes an [offline setup guide](SETUP.html).
+Tana2D never changes SIP or boot arguments automatically. Installing the app takes
+two steps; a first-time Mac with the default security settings needs the additional
+manual macOS steps. There is no reduced-feature mode hidden behind “Ready.”
+
+Requirements: macOS 14 or later, one connected display, Accessibility permission,
+“Displays have separate Spaces” enabled, and a compatible macOS window helper.
+Other OS/hardware combinations need validation; a successful build alone does not
+prove them supported. Locally built, ad-hoc-signed archives are not notarized public
+releases. A downloaded unnotarized build may be blocked by Gatekeeper. Release
+signing and notarization are supported by the packaging scripts, but require a
+Developer ID and a configured notarization profile.
+
+## Build from source
+
+Install Xcode Command Line Tools if needed (`xcode-select --install`), then from
+the downloaded repository run:
 
 ```sh
+./scripts/install.sh
+```
+
+This builds, packages, installs `/Applications/Tana2D.app`, and opens setup.
+`--destination "$HOME/Applications/Tana2D.app"` selects another existing parent
+folder. `--no-open` installs without launching. `--no-build` reuses `build/tana2d`.
+No `sudo`, package manager, or session script is needed for this step. If the
+Applications folder is not writable, the script tells you to copy the built app
+with Finder. Existing unrelated applications are never replaced.
+
+For development without installing:
+
+```sh
+make all test
 scripts/package.sh
+open build/Tana2D.app
 ```
 
-This runs `make all`, creates `build/Tana.app`, gives it the bundle ID
-`dev.horizontalwm.manager`, and ad-hoc signs it by default. To use an installed
-Developer ID instead, set `TANA_SIGN_ID` before packaging. Use
-`scripts/package.sh --no-build` only when `build/tana` has already been
-built. Packaging does not install the app, start a service, or request any
-permission.
+`TANA2D_SIGN_ID` selects a signing identity; the packaging script remembers it
+locally. The bundle uses `dev.tana2d.manager` so Tana2D permissions can
+survive updates signed with the same identity. Fresh state lives in
+`~/Library/Application Support/Tana2D`. Tana and HorizontalWM settings and layouts
+are never imported automatically. Tana2D requires its own Accessibility grant.
 
-The bundle identifier deliberately retains the original HorizontalWM identity. Existing installations also keep using `~/Library/Application Support/HorizontalWM` when no Tana state directory exists. Fresh installations use `~/Library/Application Support/Tana`. Old recovery journals and `HORIZONTALWM_APP` / `HORIZONTALWM_SIGN_ID` overrides remain supported.
+## Everyday use and accessibility
 
-## Prerequisites you must set up manually
+- Open **Setup & Settings** from the Tana2D menu, or open the app again.
+- The menu bar is visible by default. Every command is available in the menu and
+  command palette. Gestures are optional; the README lists keyboard equivalents.
+- **Use Keyboard & Screen Reader Preferences** turns off hover focus, reduces
+  motion, disables haptics, and shows the menu bar. It keeps Spotlight and app Quit
+  on their usual keys and changes the palette to **Control + Command + P**. Other
+  settings, rules, and unrelated shortcuts are preserved. These preferences are
+  saved in the ordinary JSON config and can be changed there.
+- Custom palette rows expose labels, selection, and press actions to assistive
+  technology. Camera controls use standard accessible native buttons. The UI uses native setup controls, semantic
+  colors, and macOS contrast/transparency preferences. Reduce Motion is observed
+  at runtime. End-to-end testing with a person using VoiceOver remains necessary.
+- **Open Tana2D when I log in** uses macOS Login Items. If macOS requests approval,
+  setup opens the correct settings page. Startup reloads Tana2D’s helper itself.
+- **Quit Tana2D** stops managing windows and restores surviving tracked windows.
+  The optional legacy migration helper below has a separate recovery journal.
 
-1. Build and run your existing yabai installation at
-   `/opt/homebrew/bin/yabai`. Tana does not edit its configuration.
-2. Manually load the existing yabai scripting addition. The per-user socket
-   `/tmp/yabai-sa_$USER.socket` must exist before a handoff can start.
-3. In **System Settings → Privacy & Security → Accessibility**, add the newly
-   packaged `build/Tana.app` and enable it. The bundle is a different
-   app identity from yabai, so yabai's existing grant does not grant this app.
-4. If you use `skhd`, ensure `/opt/homebrew/bin/skhd` is available. The session
-   handoff stops its launchd service temporarily to avoid global shortcut
-   conflicts and starts it again only if it was running before the handoff.
-   A running Loop utility is also quit temporarily because it can compete with
-   the Option trackpad gestures; its observed executable path and PID are
-   recorded and it is reopened after restoration.
+Terminal and the default web browser are used unless launch commands are
+customized. Set `settings.showMenuBar` to `false` to use the hidden-menu-bar
+workflow. Set `settings.autofocus` to `off` to disable hover focus independently.
 
-You can inspect the new app's permission state without changing windows:
+## Diagnose without moving windows
 
 ```sh
-build/Tana.app/Contents/MacOS/tana --check-permissions
+/Applications/Tana2D.app/Contents/MacOS/tana2d --setup-status
+/Applications/Tana2D.app/Contents/MacOS/tana2d --check-backend
+open -n /Applications/Tana2D.app --args --setup
 ```
 
-If the check reports Accessibility is missing, launch the permission request
-yourself and approve it in System Settings:
+A failed setup stays open with the next action. Another running window manager
+must be quit first. Permission checks run in the launched app; calling a binary
+from Terminal can inherit Terminal’s access and is not proof of the app’s grant.
 
-```sh
-build/Tana.app/Contents/MacOS/tana --request-permissions
-```
+Tana2D installs its own payload at `/Library/ScriptingAdditions/tana2d.osax`, uses
+`/tmp/tana2d-sa_<user>.socket`, and stores the root-owned loader at
+`/Library/PrivilegedHelperTools/dev.tana2d.window-helper`. The restricted sudo rule
+is `/private/etc/sudoers.d/tana2d-<uid>`. These are independent of Tana’s and yabai’s files.
+Dock restarts trigger a bounded automatic reconnect using Tana2D’s loader.
 
-The session helper does not disable SIP, change TCC, destroy Spaces, or grant
-permissions automatically. The separately configured login launcher reuses the
-existing authorized yabai helper loader.
+## Optional migration from an existing yabai session
 
-## Start, inspect, and restore
-
-Use the session helper rather than starting the bundle directly when replacing
-a running yabai service:
-
-```sh
-python3 scripts/session.py preflight
-python3 scripts/session.py start
-python3 scripts/session.py status
-python3 scripts/session.py restore
-```
-
-`start` snapshots queried yabai window positions, space indexes, floating and
-layer state, and the observed yabai/skhd/Loop state before it stops a recognized
-launchd yabai service. It writes an owner-only, atomic recovery record at:
-
-```text
-~/Library/Application Support/Tana/recovery.json
-```
-
-It then stops `skhd` and Loop, opens the bundle with `open`, and requires the new daemon
-to answer `-m strip status`. A startup failure attempts a rollback using the
-record. `restore` quits the new daemon, restarts only services stopped by the
-session helper, and restores surviving windows' recorded space, floating/layer
-state, and floating frames where yabai accepts those commands. It leaves the
-recovery record in place with success or failure evidence.
-
-Inspect the planned mutations first:
+`scripts/session.py` is retained only for existing yabai users who want a recorded
+handoff and rollback. It is not part of standalone installation or startup.
+After setting up Tana2D’s app permission and helper, it can snapshot the old session,
+stop the recognized yabai/skhd services and Loop, and launch Tana2D:
 
 ```sh
 python3 scripts/session.py start --dry-run
-python3 scripts/session.py restore --dry-run
+python3 scripts/session.py start
+python3 scripts/session.py restore
 ```
 
-The helper uses its own recovery lock to prevent concurrent handoffs. The
-native daemon uses `/tmp/yabai_$USER.lock`, intentionally sharing yabai's lock
-so the two managers cannot run together. If your yabai launchd label is not
-one of the recognized labels, the helper refuses to stop an unmanaged process;
-stop it manually and preserve your recovery plan.
+Restoration restarts only the services it stopped and restores surviving windows
+where the old manager accepts the commands. The optional script still expects the
+old installation at `/opt/homebrew/bin/yabai`. Ordinary Tana2D startup never uses it.
 
-## Strip controls
+Old development-machine launch agents are not automatically deleted. Disable an
+old `dev.horizontalwm.login` launcher before enabling native Login Items to avoid
+duplicate startup attempts. `scripts/login.sh` remains a compatibility wrapper
+that simply opens Tana2D, without running yabai.
 
-Once running, use the packaged executable as the client:
+## Remove Tana2D
+
+Turn off **Open Tana2D when I log in**, then quit Tana2D. If you used the optional
+migration script, restore that session first. To remove the helper too, while the
+app is still installed:
 
 ```sh
-build/Tana.app/Contents/MacOS/tana -m strip status
-build/Tana.app/Contents/MacOS/tana -m strip left
-build/Tana.app/Contents/MacOS/tana -m strip right
-build/Tana.app/Contents/MacOS/tana -m strip center
-build/Tana.app/Contents/MacOS/tana -m strip width 720
+sudo /Applications/Tana2D.app/Contents/MacOS/tana2d --uninstall-sa
+sudo rm -f /Library/PrivilegedHelperTools/dev.tana2d.window-helper "/private/etc/sudoers.d/tana2d-$(id -u)"
 ```
 
-The full command set is `left`, `right`, `move-left`, `move-right`, `float`,
-`full`, `center`, `home`, `scroll <offset>`, `width <points>`, `pause`, and
-`reflow`. Tana defaults to autofocus and keeps eligible windows in one
-pinned active desktop. The menu describes the native trackpad actions.
+The helper is shared by Tana2D users on the Mac; remove it only when nobody else
+uses Tana2D. Then move Tana2D.app to Trash. Saved settings remain in Application
+Support unless you remove them yourself. Restart to unload any helper still in
+Dock; the offline guide explains how to restore normal SIP settings.
 
-Automated checks cover strip math, the actual layout and renderer against a fake WindowServer, floating and close transitions, and session-helper recovery logic.
-They do not verify real Accessibility delivery, scripting-addition behavior,
-physical trackpad gestures, window-server behavior, or recovery after a reboot.
-
-## Existing development-machine login startup
-
-On the development machine, `~/Library/LaunchAgents/dev.horizontalwm.login.plist`
-is enabled with RunAtLoad for the Aqua session. It runs `scripts/login.sh`, waits
-for an unlocked session and existing Accessibility access, checks the helper,
-then opens the signed app and waits for ready/backend status. If necessary it
-uses the existing passwordless `/opt/homebrew/bin/yabai --load-sa` authorization.
-It retries failed startup; it does not supervise the app after a successful launch.
-
-The `com.asmvik.yabai` and `com.koekeishiya.skhd` launch agents are disabled,
-and Loop’s Launch at login setting is off. Borders and SketchyBar remain enabled.
-The prior startup settings are recorded in
-`~/Library/Application Support/HorizontalWM/startup-change.json`.
-The launchd job was invoked and returned success with the manager ready; an
-actual reboot/login cycle has not been verified. Keep this checkout and bundle
-at their current paths because the launch agent references them.
-
-To disable this login launcher before switching back to another manager:
+## Package a release
 
 ```sh
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.horizontalwm.login.plist
-launchctl disable gui/$(id -u)/dev.horizontalwm.login
+scripts/release.sh --format dmg
 ```
 
-A session restore and startup configuration are separate: `session.py restore`
-does not remove this login agent or reverse the later startup changes.
+The result is `dist/Tana2D-0.4.0.dmg`, with Tana2D.app and an Applications shortcut.
+ZIP is the default format. Builds currently target the build machine’s
+architecture; the embedded helper includes its own supported architectures.
+For a public release use a Developer ID and a keychain notary profile:
+
+```sh
+TANA2D_SIGN_ID='Developer ID Application: …' TANA2D_NOTARIZE=1 TANA2D_NOTARY_PROFILE='…' scripts/release.sh --format dmg
+```
+
+Signing, notarization, installation on a clean Mac, real helper injection, login,
+and physical gesture/VoiceOver use are distinct acceptance checks. See
+[verification](VERIFICATION.md) for evidence and limitations.
