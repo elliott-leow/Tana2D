@@ -216,9 +216,10 @@ static void tana_setup_menu(void)
 {
     (void)sender; if(self.busy) return;
     NSDictionary *s=tana_setup_status();
-    self.status.stringValue=[NSString stringWithFormat:@"%@ Accessibility permission\n%@ Window helper\n%@ One connected display\n%@ Displays have separate Spaces",
+    self.status.stringValue=[NSString stringWithFormat:@"%@ Accessibility permission\n%@ Window helper\n%@ One connected display\n%@ Displays have separate Spaces\n%@ Window manager available",
         [s[@"accessibility"] boolValue]?@"Ready:":@"Needed:",[s[@"backend"] boolValue]?@"Ready:":@"Needed:",
-        [s[@"singleDisplay"] boolValue]?@"Ready:":@"Needed:",[s[@"separateSpaces"] boolValue]?@"Ready:":@"Needed:"];
+        [s[@"singleDisplay"] boolValue]?@"Ready:":@"Needed:",[s[@"separateSpaces"] boolValue]?@"Ready:":@"Needed:",
+        [s[@"otherManagerPID"] intValue]?@"Blocked:":@"Ready:"];
     self.start.enabled=!self.preview && (!self.startup || tana_setup_can_start(s));
     self.install.enabled=!self.preview && [s[@"security"] boolValue] && ![s[@"backend"] boolValue];
     self.login.enabled=!self.preview;
@@ -227,7 +228,11 @@ static void tana_setup_menu(void)
     self.lastStatus=s;
     if(self.preview) self.detail.stringValue=@"Preview only. Window management and privileged setup are disabled.";
     else if(![s[@"security"] boolValue] && ![s[@"backend"] boolValue]) self.detail.stringValue=@"macOS currently blocks the window helper. Keeping live off-screen windows and all animations requires a one-time change in macOS Recovery. Read the guide before deciding; Tana2D never changes these security settings for you.";
-    else if([s[@"otherManagerPID"] intValue]) self.detail.stringValue=@"A window manager is already running. Quit it before starting Tana2D. If this is your current Tana2D session, use its menu to open settings.";
+    else if([s[@"otherManagerPID"] intValue]) {
+        pid_t pid=[s[@"otherManagerPID"] intValue];
+        NSString *name=[NSRunningApplication runningApplicationWithProcessIdentifier:pid].localizedName ?: @"Another window manager";
+        self.detail.stringValue=[NSString stringWithFormat:@"%@ is still managing your windows (PID %d). Quit %@ to enable Start Tana2D. Your permissions are ready when the checks above say Ready.",name,pid,name];
+    }
     else if(![s[@"singleDisplay"] boolValue]) self.detail.stringValue=@"This version supports one display. Disconnect additional displays before starting.";
     else if(![s[@"separateSpaces"] boolValue]) self.detail.stringValue=@"Enable Displays have separate Spaces in System Settings → Desktop & Dock → Mission Control, then log out and back in.";
     else if(![s[@"normalDesktop"] boolValue]) self.detail.stringValue=@"Leave the full-screen app and switch to an ordinary desktop before starting Tana2D.";

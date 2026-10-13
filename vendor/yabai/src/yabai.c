@@ -1,7 +1,7 @@
 #ifndef SA_SOCKET_PATH_FMT
 #define SA_SOCKET_PATH_FMT      "/tmp/tana2d-sa_%s.socket"
 #endif
-#define SOCKET_PATH_FMT         "/tmp/tana_%s.socket"
+#define SOCKET_PATH_FMT         "/tmp/tana2d_%s.socket"
 #define LCFILE_PATH_FMT         "/tmp/yabai_%s.lock"
 
 #define SCRPT_ADD_LOAD_OPT      "--load-sa"

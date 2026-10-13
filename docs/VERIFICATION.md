@@ -26,12 +26,20 @@ configuration/layout directory, IPC sockets, privileged helper, and scripting
 addition installation are separate from Tana. The shared manager lock prevents
 simultaneous window management. Neither Tana nor HorizontalWM state is imported.
 
-## Live acceptance pending
+## Live activation and remaining acceptance
 
-The installed setup check reports the desktop locked, the new helper absent,
-and the original Tana manager still running. Tana2D has not taken over window
-management. macOS administrator approval for its helper and an unlocked desktop
-are required before live acceptance can run.
+Tana2D is now active on the target Mac with `ready:true`, `backend:true`,
+`paused:false`, an enabled input tap, and zero reported movement failures.
+The original Tana was shut down gracefully before activation.
+The visible camera panel's 100% and Fit all buttons were exercised. The reported
+fit-all projection contains every managed window within its screen margin.
+A command-dispatch array mismatch discovered on first activation was fixed and
+now has a compile-time size assertion. Status/input queries and rejection of an
+unknown command were checked against the active daemon without a crash.
+The manager IPC socket was corrected to its separate Tana2D namespace.
+Setup now lists the manager-lock check and identifies the blocking app and PID.
+
+Full gesture/drag acceptance remains pending.
 
 `make live-tools` builds disposable fixture windows and measurement/input probes.
 `python3 tests/live_plane_check.py` is the proposed live acceptance harness. It
