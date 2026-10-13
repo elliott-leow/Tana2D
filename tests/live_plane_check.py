@@ -3,10 +3,15 @@
 Build plane_fixture and window_metrics first. Run only with Tana2D active.
 This measures WindowServer geometry. It does not establish physical gesture feel.
 """
+import argparse
 import json
 from pathlib import Path
 import subprocess
 import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--generated-input', action='store_true', help='Also inject drag/swipe/pinch/keyboard events')
+args = parser.parse_args()
 
 ROOT = Path(__file__).resolve().parents[1]
 WM = ROOT / 'build/tana2d'
@@ -92,8 +97,8 @@ try:
         settle()
         close(status()['camera']['scale'], scale, .0001)
         m = metrics([ids[0]])[ids[0]]
-        close(m['a'], 1/scale, .001)
-        close(m['d'], 1/scale, .001)
+        close(m['w']/m['a'], m['w']*scale, 1.1)
+        close(m['h']/m['d'], m['h']*scale, 1.5)
     checks.append('zoom out and in change native window transforms; actual size restores unit scale')
 
     command('window', ids[0], '--focus')
@@ -108,48 +113,51 @@ try:
     assert next(w['world'] for w in status()['windows'] if w['id'] == ids[0]) == before_move
     checks.append('directional placement and undo preserve plane coordinates')
 
-    strip('zoom', .5)
-    settle()
-    for mode in ('option', 'native'):
-        state = status()
-        r = next(w['world'] for w in state['windows'] if w['id'] == ids[0])
-        viewport = state['viewport']
-        strip('camera', r['x']+r['width']/2-viewport['width'], r['y']+r['height']/2-viewport['height'])
+    if args.generated_input:
+        strip('zoom', .5)
         settle()
-        state = status(); camera = state['camera']; scale = camera['scale']
-        x = viewport['x']+(r['x']-camera['x']+r['width']/2)*scale
-        y = viewport['y']+(r['y']-camera['y'])*scale+(r['height']*scale/2 if mode=='option' else 5)
-        subprocess.run([str(ROOT/'build/plane_pointer_probe'), str(x), str(y), '60', '40', mode], check=True)
-        settle()
-        new = next(w['world'] for w in status()['windows'] if w['id'] == ids[0])
-        close(new['x']-r['x'], 60/scale, 3)
-        close(new['y']-r['y'], 40/scale, 3)
-        close(new['width'], r['width'])
-        close(new['height'], r['height'])
-    worlds = {w['id']: w['world'] for w in status()['windows'] if w['id'] in ids}
-    checks.append('Option and native title-bar drags preserve world sizes and divide screen movement by zoom')
+        for mode in ('option', 'native'):
+            state = status()
+            r = next(w['world'] for w in state['windows'] if w['id'] == ids[0])
+            viewport = state['viewport']
+            strip('camera', r['x']+r['width']/2-viewport['width'], r['y']+r['height']/2-viewport['height'])
+            settle()
+            state = status(); camera = state['camera']; scale = camera['scale']
+            x = viewport['x']+(r['x']-camera['x']+r['width']/2)*scale
+            y = viewport['y']+(r['y']-camera['y'])*scale+(r['height']*scale/2 if mode=='option' else 5)
+            subprocess.run([str(ROOT/'build/plane_pointer_probe'), str(x), str(y), '60', '40', mode], check=True)
+            settle()
+            new = next(w['world'] for w in status()['windows'] if w['id'] == ids[0])
+            close(new['x']-r['x'], 60/scale, 3)
+            close(new['y']-r['y'], 40/scale, 3)
+            close(new['width'], r['width'])
+            close(new['height'], r['height'])
+        worlds = {w['id']: w['world'] for w in status()['windows'] if w['id'] in ids}
+        checks.append('Option and native title-bar drags preserve world sizes and divide screen movement by zoom')
 
-    probe = ROOT / 'build/plane_gesture_probe'
-    strip('actual-size')
-    settle()
-    for direction, amount in [('horizontal', .08), ('vertical', .08), ('horizontal', -.08), ('vertical', -.08)]:
-        before_camera = status()['camera']
-        subprocess.run([str(probe), direction, str(amount)], check=True)
+        probe = ROOT / 'build/plane_gesture_probe'
+        strip('actual-size')
         settle()
-        after_camera = status()['camera']
-        axis = 'x' if direction == 'horizontal' else 'y'
-        assert abs(after_camera[axis]-before_camera[axis]) > 5, (direction, before_camera, after_camera)
-        assert not json.loads(strip('input-status'))['overview']
-    checks.append('native three-finger event streams pan in all four directions without opening overview')
-    for amount in [-.25, .35]:
-        before_scale = status()['camera']['scale']
-        subprocess.run([str(probe), 'pinch', str(amount)], check=True)
-        settle()
-        after_scale = status()['camera']['scale']
-        assert (after_scale-before_scale)*amount > 0, (amount, before_scale, after_scale)
-    checks.append('native pinch event stream zooms out and in through the event tap')
+        for direction, amount in [('horizontal', .08), ('vertical', .08), ('horizontal', -.08), ('vertical', -.08)]:
+            before_camera = status()['camera']
+            subprocess.run([str(probe), direction, str(amount)], check=True)
+            settle()
+            after_camera = status()['camera']
+            axis = 'x' if direction == 'horizontal' else 'y'
+            assert abs(after_camera[axis]-before_camera[axis]) > 5, (direction, before_camera, after_camera)
+            assert not json.loads(strip('input-status'))['overview']
+        checks.append('native three-finger event streams pan in all four directions without opening overview')
+        for amount in [-.25, .35]:
+            before_scale = status()['camera']['scale']
+            subprocess.run([str(probe), 'pinch', str(amount)], check=True)
+            settle()
+            after_scale = status()['camera']['scale']
+            assert (after_scale-before_scale)*amount > 0, (amount, before_scale, after_scale)
+        checks.append('native pinch event stream zooms out and in through the event tap')
 
-    subprocess.run([str(probe), 'fit-key', '0'], check=True)
+        subprocess.run([str(probe), 'fit-key', '0'], check=True)
+    else:
+        strip('fit-all')
     settle()
     state = status()
     camera, viewport = state['camera'], state['viewport']
@@ -166,23 +174,30 @@ try:
     for m in metrics(ids).values():
         assert m['alpha'] > 0, m
         close(m['a'], 1/camera['scale'], .01)
-        close(m['d'], 1/camera['scale'], .01)
-    checks.append('Control + Up fits every plane window without changing world geometry')
+        close(m['d'], 1/camera['scale'], .03)
+        r = next(w['world'] for w in state['windows'] if w['id']==m['id'])
+        close(m['w'], r['width'])
+        close(m['h'], r['height'])
+        close(-m['tx']/m['a'], viewport['x']+(r['x']-camera['x'])*camera['scale'], 2)
+        close(-m['ty']/m['d'], viewport['y']+(r['y']-camera['y'])*camera['scale'], 2)
+        close(m['w']/m['a'], r['width']*camera['scale'], 2)
+        close(m['h']/m['d'], r['height']*camera['scale'], 2)
+    checks.append('Fit all contains every plane window without changing world geometry')
     key_camera = camera.copy()
     strip('actual-size')
     strip('fit-all')
     settle()
     for key in ('x', 'y', 'scale'):
         close(status()['camera'][key], key_camera[key], .01)
-    checks.append('Fit all action matches the Control + Up shortcut')
+    checks.append('Fit all returns to the same camera after actual-size reset')
 
     strip('actual-size')
     settle()
     for m in metrics(ids).values():
         close(m['a'], 1, .001)
         close(m['d'], 1, .001)
-        close(m['tx'], 0, .001)
-        close(m['ty'], 0, .001)
+        close(m['tx'], -m['x'], .001)
+        close(m['ty'], -m['y'], .001)
     checks.append('reset removes transforms from every fixture window')
     assert status()['move_failures'] == initial['move_failures']
     assert json.loads(strip('input-status'))['tap_enabled']

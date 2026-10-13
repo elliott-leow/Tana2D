@@ -69,7 +69,7 @@ static bool hwm_render(struct view *view, double now)
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 hwm_visibility_set(window,true,frame);
             }
-            bool resize = !hwm_plane_fit_active && (CGRectIsNull(last) || fabs(last.size.width-base.size.width) >= 1 || fabs(last.size.height-base.size.height) >= 1);
+            bool resize = (CGRectIsNull(last) || fabs(last.size.width-base.size.width) >= 1 || fabs(last.size.height-base.size.height) >= 1);
             bool move = revealing || resize || CGRectIsNull(last) || !CGPointEqualToPoint(last.origin, base.origin);
             if (move && travelling && !resize && !window->strip_size_pending && !CGRectIsNull(last) &&
                 !CGRectIntersectsRect(last,visible) && !CGRectIntersectsRect(frame,visible)) {
@@ -79,7 +79,7 @@ static bool hwm_render(struct view *view, double now)
             if (move) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 if(window->strip_plane_scaled && !CGRectIsNull(last)) {
-                    scripting_addition_scale_window(window->id,last.origin.x-3*last.size.width,last.origin.y,4*last.size.width,last.size.height);
+                    scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
                     window->strip_plane_scaled=false;
                 }
                 // Position first, through WindowServer: it bypasses the on-screen
@@ -100,10 +100,10 @@ static bool hwm_render(struct view *view, double now)
             }
             if(hwm_plane_fit_active && (move || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale)) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
-                if(scripting_addition_scale_window(window->id,frame.origin.x-3*frame.size.width,frame.origin.y,4*frame.size.width,frame.size.height)) { window->strip_plane_scaled=true; window->strip_last_plane_scale=plane_scale; }
+                if(scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) { window->strip_plane_scaled=true; window->strip_last_plane_scale=plane_scale; }
             } else if(!hwm_plane_fit_active && window->strip_plane_scaled) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
-                scripting_addition_scale_window(window->id,base.origin.x-3*base.size.width,base.origin.y,4*base.size.width,base.size.height);
+                scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
                 window->strip_plane_scaled=false;
             }
             if(!hidden) {
@@ -114,7 +114,7 @@ static bool hwm_render(struct view *view, double now)
                 ++hwm_resize_operations;
                 // Size goes through Accessibility, handed off so that this frame
                 // never waits for the application to answer.
-                hwm_resize_submit(window,frame,CGRectIsNull(last) || fabs(last.size.height-frame.size.height)>=1);
+                hwm_resize_submit(window,base,CGRectIsNull(last) || fabs(last.size.height-base.size.height)>=1);
                 window->strip_size_pending = true;
                 window->strip_size_sent_at = now;
             }
@@ -127,14 +127,16 @@ static bool hwm_render(struct view *view, double now)
                     CGRect actual = CGRectNull;
                     hwm_batch_settle();
                     bool measured=SLSGetWindowBounds(g_connection,window->id,&actual)==kCGErrorSuccess;
-                    if(measured && !CGPointEqualToPoint(actual.origin,frame.origin))
-                        scripting_addition_move_window(window->id,frame.origin.x,frame.origin.y);
+                    if(measured && !CGPointEqualToPoint(actual.origin,base.origin))
+                        scripting_addition_move_window(window->id,base.origin.x,base.origin.y);
+                    window->strip_last_plane_scale=-1; active=true;
                     scripting_addition_set_layer(window->id,LAYER_BELOW);
                     if (measured &&
                         isfinite(actual.size.width) && actual.size.width >= 160 &&
-                        actual.size.width-window->strip_width > 1) {
+                        (fabs(actual.size.width-window->strip_width)>1 || fabs(actual.size.height-window->strip_height)>1)) {
                         window->strip_min_width=fmax(window->strip_min_width,actual.size.width);
                         hwm_column_width(view,window,actual.size.width);
+                        if(isfinite(actual.size.height) && actual.size.height>=100) window->strip_height=actual.size.height;
                         window->strip_full_width = false;
                         window->strip_last_frame = actual;
                         if(batched) hwm_batch_end();
@@ -194,7 +196,7 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
          * Any other AX move can be AppKit clamping an offscreen surface back
          * onto a display edge, so retain the persisted world point and force
          * the renderer to submit its projection again. */
-        window->strip_last_frame=CGRectNull;
+        window->strip_last_frame.origin=actual.origin;
         hwm_wake();
     }
     return true;

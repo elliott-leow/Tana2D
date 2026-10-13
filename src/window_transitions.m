@@ -64,8 +64,7 @@ static void hwm_plane_reset_transform(struct window *w)
         return;
     }
     hwm_batch_begin();
-    if(scripting_addition_scale_window(w->id,base.origin.x-3*base.size.width,base.origin.y,
-                                       4*base.size.width,base.size.height)) w->strip_plane_scaled=false;
+    if(scripting_addition_set_plane_transform(w->id,NAN,NAN,1)) w->strip_plane_scaled=false;
     hwm_batch_end();
 }
 
@@ -197,7 +196,7 @@ static bool hwm_render_closing(double now)
         if(!w->strip_close_pending) continue;
         double t=(now-w->strip_close_start)/HWMCloseDuration;
         if(t<1) {
-            if(hwm_close_shrink && hwm_duration>.01) hwm_scale_center(w->id,&w->strip_close_scaled,1-.08*horizontal_ease(t));
+            if(hwm_close_shrink && hwm_duration>.01 && !w->strip_plane_scaled) hwm_scale_center(w->id,&w->strip_close_scaled,1-.08*horizontal_ease(t));
             active=true;
         } else {
             w->strip_close_pending=false;

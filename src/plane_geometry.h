@@ -92,4 +92,29 @@ static inline bool hwm_plane_reveal(HWMPlaneCamera camera,HWMPlaneRect world,HWM
     return next.x!=camera.x || next.y!=camera.y;
 }
 
+/* Magnetize adjacent edges, with optional top/bottom or left/right alignment.
+ * The caller expresses the range in world units, keeping its screen radius
+ * consistent at every zoom. Rectangles away from one another stay untouched. */
+static inline HWMPlanePoint hwm_plane_snap_neighbor(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range)
+{
+    HWMPlanePoint best={moving.x,moving.y}; double cost=INFINITY;
+    double xs[2]={other.x-moving.width-gap,other.x+other.width+gap};
+    double ys[2]={other.y-moving.height-gap,other.y+other.height+gap};
+    bool overlap_y=moving.y+moving.height>=other.y-range && moving.y<=other.y+other.height+range;
+    bool overlap_x=moving.x+moving.width>=other.x-range && moving.x<=other.x+other.width+range;
+    for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
+        if(axis==0 ? !overlap_y : !overlap_x) continue;
+        double delta=axis==0?xs[side]-moving.x:ys[side]-moving.y;
+        if(fabs(delta)>range) continue;
+        HWMPlanePoint candidate={axis==0?xs[side]:moving.x,axis==1?ys[side]:moving.y};
+        double a=axis==0?other.y-moving.y:other.x-moving.x;
+        double b=axis==0?other.y+other.height-moving.height-moving.y:other.x+other.width-moving.width-moving.x;
+        double align=fabs(a)<=fabs(b)?a:b;
+        if(fabs(align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
+        double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
+        if(distance<cost) { best=candidate; cost=distance; }
+    }
+    return best;
+}
+
 #endif

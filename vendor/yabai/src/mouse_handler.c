@@ -64,6 +64,9 @@ static MOUSE_HANDLER(mouse_handler)
         // the strip reads the live cursor position each frame regardless.
         if (!atomic_exchange(&horizontal_dragged_queued, true))
             event_loop_post(&g_event_loop, MOUSE_DRAGGED, (void *) CFRetain(event), 0);
+        // Once plane dragging starts, AppKit must stop moving the same surface.
+        // Mouse-up still reaches the app to finish its title-bar interaction.
+        if(horizontal_owns_native_drag()) return NULL;
     } break;
     case kCGEventMouseMoved: {
         uint8_t mod = mouse_mod_from_cgflags(CGEventGetFlags(event));

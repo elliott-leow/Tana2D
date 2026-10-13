@@ -31,6 +31,17 @@ int main(void)
     near(hwm_plane_project_physical(-1e100,0,12,1),-HWM_PLANE_PHYSICAL_LIMIT);
     near(hwm_plane_project_physical(1e100,1e100,12,1),12);
     near(hwm_plane_physical_size(INFINITY),1);
+    HWMPlaneRect neighbor={500,200,400,300};
+    HWMPlanePoint snap=hwm_plane_snap_neighbor((HWMPlaneRect){925,210,300,250},neighbor,12,24);
+    near(snap.x,912); near(snap.y,200);
+    snap=hwm_plane_snap_neighbor((HWMPlaneRect){186,190,300,250},neighbor,12,24);
+    near(snap.x,188); near(snap.y,200);
+    snap=hwm_plane_snap_neighbor((HWMPlaneRect){508,527,300,250},neighbor,12,24);
+    near(snap.x,500); near(snap.y,512);
+    snap=hwm_plane_snap_neighbor((HWMPlaneRect){950,200,300,250},neighbor,12,24);
+    near(snap.x,950); near(snap.y,200); // Outside the magnet releases freely.
+    snap=hwm_plane_snap_neighbor((HWMPlaneRect){925,2000,300,250},neighbor,12,24);
+    near(snap.x,925); near(snap.y,2000); // An unrelated distant row cannot attract.
     puts("plane geometry tests passed");
     return 0;
 }

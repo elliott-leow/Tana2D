@@ -33,12 +33,12 @@ require testing on the target Mac.
 
 | Input | Action |
 | --- | --- |
-| Three-finger swipe | Pan horizontally or vertically |
+| Three-finger swipe | Pan in any direction, including diagonals |
 | Pinch | Zoom in or out |
 | Control + Up | Fit all plane windows |
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
-| Drag a title bar, or Option-drag a window | Place a window freely on the plane |
+| Drag a title bar, or Option-drag a window | Place a window; nearby edges snap together |
 | Option + Command + F | Fit the focused window |
 | Option + Command + 0 | Return to actual size |
 | Option + Command + Z | Undo an arrangement change |

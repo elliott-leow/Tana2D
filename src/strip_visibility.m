@@ -2,6 +2,7 @@
  * a WindowServer move. Keep it transparent until it has been positioned for
  * re-entry. Do not order it out: that changes application/window lifecycle. */
 static NSMutableDictionary *hwm_visibility_companions;
+static NSMutableDictionary *hwm_external_border_surfaces;
 static double hwm_visibility_scan=-100, hwm_visibility_frame=-100;
 
 static bool hwm_visibility_owned(uint32_t wid,pid_t pid)
@@ -39,24 +40,22 @@ static void hwm_visibility_prepare(struct view *view,double now)
             [hwm_visibility_companions removeObjectForKey:key];
     }
     if(!hwm_borders_external) return;
+    if(!hwm_external_border_surfaces) hwm_external_border_surfaces=[NSMutableDictionary new];
     CFArrayRef list=CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID);
     for(NSDictionary *entry in (NSArray *)list) {
         if(![entry[(id)kCGWindowOwnerName] isEqualToString:@"borders"]) continue;
-        uint32_t wid=[entry[(id)kCGWindowNumber] unsignedIntValue];
-        if(hwm_visibility_companions[@(wid)]) continue;
-        CGRect border=CGRectNull;
-        if(!CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)entry[(id)kCGWindowBounds],&border)) continue;
-        table_for(struct window *w,g_window_manager.window, {
-            if(!view_find_window_node(view,w->id) && !window_check_flag(w,WINDOW_FLOAT)) continue;
-            CGRect parent=CGRectNull;
-            if(SLSGetWindowBounds(g_connection,w->id,&parent)!=kCGErrorSuccess) continue;
-            double pad=(border.size.width-parent.size.width)*.5;
-            if(pad<0 || pad>64 || fabs(border.size.height-parent.size.height-2*pad)>2 ||
-               fabs(CGRectGetMidX(border)-CGRectGetMidX(parent))>2 || fabs(CGRectGetMidY(border)-CGRectGetMidY(parent))>2) continue;
-            hwm_visibility_record(w,wid,[entry[(id)kCGWindowOwnerPID] intValue],border,parent);
-        })
+        NSNumber *key=entry[(id)kCGWindowNumber]; uint32_t wid=key.unsignedIntValue;
+        pid_t pid=[entry[(id)kCGWindowOwnerPID] intValue];
+        if(!hwm_visibility_owned(wid,pid)) continue;
+        float alpha=0; if(SLSGetWindowAlpha(g_connection,wid,&alpha)!=kCGErrorSuccess) continue;
+        NSDictionary *saved=hwm_external_border_surfaces[key];
+        if(!saved || [saved[@"pid"] intValue]!=pid)
+            hwm_external_border_surfaces[key]=@{@"pid":@(pid),@"alpha":@(alpha)};
+        if(alpha>0) scripting_addition_set_opacity(wid,0,0);
     }
     if(list) CFRelease(list);
+    (void)view;
+
 }
 
 static void hwm_visibility_attached(struct window *w,CGRect parent)
@@ -105,6 +104,12 @@ static void hwm_visibility_set(struct window *w,bool hidden,CGRect frame)
 
 static void hwm_visibility_restore_all(void)
 {
+    for(NSNumber *wid in hwm_external_border_surfaces) {
+        NSDictionary *saved=hwm_external_border_surfaces[wid];
+        if(hwm_visibility_owned(wid.unsignedIntValue,[saved[@"pid"] intValue]))
+            scripting_addition_set_opacity(wid.unsignedIntValue,[saved[@"alpha"] floatValue],0);
+    }
+    [hwm_external_border_surfaces removeAllObjects];
     table_for(struct window *w,g_window_manager.window, {
         hwm_visibility_set(w,false,CGRectNull);
     })

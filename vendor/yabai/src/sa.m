@@ -527,6 +527,8 @@ bool scripting_addition_scale_window(uint32_t wid, float x, float y, float w, fl
     return sa_payload_send(SA_OPCODE_WINDOW_SCALE);
 }
 
+#include "misc/plane_transform.h"
+
 bool scripting_addition_swap_window_proxy_in(struct window_animation *animation_list, int animation_count)
 {
     uint32_t dummy_wid = 0;

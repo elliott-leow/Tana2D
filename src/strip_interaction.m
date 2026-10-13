@@ -12,14 +12,21 @@ static void horizontal_mouse_down(struct window *w, CGPoint p)
     if(!hwm_ready || hwm_paused || hwm_overview_active || !w) return;
     struct view *v=window_manager_find_managed_window(&g_window_manager,w);
     if(!v || v->layout!=VIEW_STRIP || g_mouse_state.current_action==MOUSE_MODE_MOVE) return;
-    CGRect f=g_mouse_state.window_frame;
+    CGRect f=g_mouse_state.window_frame, hit=f;
+    CGRect bounds=hwm_bounds(v);
+    hit.origin.x=bounds.origin.x+(f.origin.x-bounds.origin.x)*hwm_plane_scale;
+    hit.origin.y=bounds.origin.y+(f.origin.y-bounds.origin.y)*hwm_plane_scale;
+    hit.size.width*=hwm_plane_scale; hit.size.height*=hwm_plane_scale;
     unsigned direction=0;
-    if(g_mouse_state.current_action==MOUSE_MODE_RESIZE) direction=g_mouse_state.direction;
+    if(g_mouse_state.current_action==MOUSE_MODE_RESIZE) {
+        direction=(p.x<CGRectGetMidX(hit)?HANDLE_LEFT:HANDLE_RIGHT)|(p.y<CGRectGetMidY(hit)?HANDLE_TOP:HANDLE_BOTTOM);
+        g_mouse_state.direction=direction;
+    }
     else {
-        if(fabs(p.x-CGRectGetMinX(f))<=9) direction|=HANDLE_LEFT;
-        if(fabs(p.x-CGRectGetMaxX(f))<=9) direction|=HANDLE_RIGHT;
-        if(fabs(p.y-CGRectGetMinY(f))<=6) direction|=HANDLE_TOP;
-        if(fabs(p.y-CGRectGetMaxY(f))<=9) direction|=HANDLE_BOTTOM;
+        if(fabs(p.x-CGRectGetMinX(hit))<=9) direction|=HANDLE_LEFT;
+        if(fabs(p.x-CGRectGetMaxX(hit))<=9) direction|=HANDLE_RIGHT;
+        if(fabs(p.y-CGRectGetMinY(hit))<=6) direction|=HANDLE_TOP;
+        if(fabs(p.y-CGRectGetMaxY(hit))<=9) direction|=HANDLE_BOTTOM;
     }
     if(!direction) return;
     hwm_edge_window=w->id; hwm_edge_origin=f; hwm_edge_direction=direction;

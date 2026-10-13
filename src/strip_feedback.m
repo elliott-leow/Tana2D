@@ -13,7 +13,7 @@ static double hwm_border_spin;       /* seconds per turn of the outline's gradie
 static double hwm_dim_strength;      /* darkness laid over unfocused tiles; 0 is off */
 static double hwm_parallax;          /* how far the wallpaper may slide, as a share of the screen; 0 is off */
 static _Atomic bool hwm_borders_external; /* an external border tool is running */
-static bool hwm_border_on(void) { return hwm_border_mode==1 || (hwm_border_mode==2 && !hwm_borders_external); }
+static bool hwm_border_on(void) { return hwm_border_mode!=0; }
 
 static bool hwm_external_borders_running(void)
 {
@@ -514,7 +514,7 @@ static void hwm_feedback_tick(struct view *view,double now)
         if(hwm_dim_strength>0 && w->id!=hwm_edge_window) [dim addObject:@[@(w->id),[NSValue valueWithRect:shown],@(w==focus)]];
         if(w==focus || w->strip_no_border) continue;
         if(w->strip_attention) [asking addObject:[NSValue valueWithRect:shown]];
-        else if(borders) [others addObject:[NSValue valueWithRect:shown]];
+        // Only the focused window needs an outline on the plane.
     }
     // One bar per tabbed column, sitting in the space the layout reserves above it.
     for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int j=0;j<n->window_count;j++) {

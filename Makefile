@@ -28,6 +28,10 @@ test:
 	./build/overview_geometry_test
 	$(CC) -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/plane_geometry_test.c -o build/plane_geometry_test
 	./build/plane_geometry_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_gesture_test.c -o build/plane_gesture_test
+	./build/plane_gesture_test
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_transform_test.m -framework Cocoa -o build/plane_transform_test
+	./build/plane_transform_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/strip_runtime_test.m -framework Cocoa -o build/strip_runtime_test
 	./build/strip_runtime_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc tests/overview_input_test.m -framework Cocoa -framework QuartzCore -o build/overview_input_test

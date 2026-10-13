@@ -150,7 +150,7 @@ static void hwm_layout(struct view *view, bool animate)
         struct window *w=window_manager_find_window(&g_window_manager,node->window_list[index]);
         if(!w || w->strip_close_ghost) continue;
         CGRect source=w->strip_last_frame;
-        if(CGRectIsNull(source) && SLSGetWindowBounds(g_connection,w->id,&source)!=kCGErrorSuccess) source=w->frame;
+        if((CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0) && SLSGetWindowBounds(g_connection,w->id,&source)!=kCGErrorSuccess) source=w->frame;
         if(CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0)
             source=CGRectMake(bounds.origin.x,bounds.origin.y,fmax(320,bounds.size.width*.5),fmax(180,bounds.size.height*.6));
         if(!w->strip_initialized) {

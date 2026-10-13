@@ -10,6 +10,7 @@ static bool horizontal_event(CGEventType type, CGEventRef event);
 static void horizontal_focused(struct window *window, struct view *view);
 static bool horizontal_drop(struct window *window, CGPoint point);
 static bool horizontal_drag(CGEventRef event);
+static bool horizontal_owns_native_drag(void);
 static uint64_t horizontal_destination(struct window *window, uint64_t sid);
 static void horizontal_space_changed(void);
 static void horizontal_command(FILE *rsp, char *message);
