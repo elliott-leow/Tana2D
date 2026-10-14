@@ -4,7 +4,7 @@ static NSDictionary *hwm_default_shortcuts(void)
       @"left":@"alt+cmd+left",@"right":@"alt+cmd+right",@"up":@"alt+cmd+up",@"down":@"alt+cmd+down",
       @"move-left":@"shift+alt+cmd+left",@"move-right":@"shift+alt+cmd+right",
       @"move-up":@"shift+alt+cmd+up",@"move-down":@"shift+alt+cmd+down",
-      @"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
+      @"maximize":@"shift+cmd+return",@"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
       @"float":@"cmd+space",@"float-alt":@"alt+cmd+space",
       @"center":@"alt+cmd+c",@"home":@"alt+cmd+h",@"close":@"cmd+q",
       @"terminal":@"cmd+return",@"browser":@"shift+cmd+w",
@@ -281,8 +281,12 @@ static void hwm_place_new(struct view *view,struct window *w,NSDictionary *rule)
      * available. This changes only the new point; existing windows never make
      * room or get reordered. */
     w->strip_placed=true; w->strip_shelf=0; w->strip_column=w->id;
-    double width=w->strip_width>0?w->strip_width:fmax(320,bounds.size.width*.5);
-    double height=w->strip_height>0?w->strip_height:fmax(180,bounds.size.height*.65);
+    CGRect native=CGRectNull;
+    bool measured=SLSGetWindowBounds(g_connection,w->id,&native)==kCGErrorSuccess &&
+                  isfinite(native.size.width) && isfinite(native.size.height) &&
+                  native.size.width>=160 && native.size.height>=100;
+    double width=measured?native.size.width:(w->frame.size.width>0?w->frame.size.width:fmax(160,w->strip_width));
+    double height=measured?native.size.height:(w->frame.size.height>0?w->frame.size.height:fmax(100,w->strip_height));
     struct window *anchor=w->strip_rule_anchor!=w->id ? hwm_tile(w->strip_rule_anchor) : NULL;
     if(!anchor) anchor=window_manager_find_window(&g_window_manager,g_window_manager.focused_window_id);
     if(anchor && anchor!=w && view_find_window_node(view,anchor->id)) {
@@ -463,6 +467,8 @@ static bool hwm_plane_direction_action(const char *name)
     }
     return true;
 }
+#include "plane_actions.m"
+
 static bool hwm_named_action(const char *name)
 {
     if(!name) return false;
@@ -479,6 +485,7 @@ static bool hwm_named_action(const char *name)
     if(strcmp(name,"left") && strcmp(name,"right")) hwm_nav_flush();
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
     if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }
+    if(strcmp(name,"maximize")==0) { hwm_plane_maximize(hwm_view()); return true; }
     if(strcmp(name,"fit-all")==0) { hwm_plane_fit_all(hwm_view()); return true; }
     if(strcmp(name,"fit-focused")==0) { hwm_plane_fit_focused(hwm_view()); return true; }
     if(strcmp(name,"actual-size")==0) { hwm_plane_actual_size(hwm_view()); return true; }

@@ -100,6 +100,18 @@ try:
         close(m['w']/m['a'], m['w']*scale, 1.1)
         close(m['h']/m['d'], m['h']*scale, 1.5)
     checks.append('zoom out and in change native window transforms; actual size restores unit scale')
+    strip('zoom', .5); settle()
+    before = metrics([ids[0]])[ids[0]]
+    strip('pan', 80, 60); settle()
+    after = metrics([ids[0]])[ids[0]]
+    close(after['x']-before['x'], -40)
+    close(after['y']-before['y'], -30)
+    close(after['a'], before['a'], .00001)
+    close(after['d'], before['d'], .00001)
+    close(-after['tx']/after['a'], after['x'])
+    close(-after['ty']/after['d'], after['y'])
+    checks.append('panning at half zoom retains scale and translates native/display origins together')
+    strip('actual-size'); settle()
 
     command('window', ids[0], '--focus')
     settle()
@@ -199,6 +211,18 @@ try:
         close(m['tx'], -m['x'], .001)
         close(m['ty'], -m['y'], .001)
     checks.append('reset removes transforms from every fixture window')
+    command('window', ids[0], '--focus'); settle()
+    strip('zoom', .5); settle()
+    strip('maximize'); settle()
+    full = status()
+    close(full['camera']['scale'], 1, .00001)
+    w = next(w['world'] for w in full['windows'] if w['id']==ids[0])
+    m = metrics([ids[0]])[ids[0]]
+    close(w['width'], viewport['width']); close(w['height'], viewport['height'])
+    close(m['x'], viewport['x']); close(m['y'], viewport['y'])
+    close(m['w'], viewport['width']); close(m['h'], viewport['height'])
+    close(m['a'], 1, .001); close(m['d'], 1, .001)
+    checks.append('maximize resets zoom to 100 percent and fills the usable screen with the active window')
     assert status()['move_failures'] == initial['move_failures']
     assert json.loads(strip('input-status'))['tap_enabled']
     report['result'] = 'pass'

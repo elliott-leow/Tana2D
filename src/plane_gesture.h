@@ -28,7 +28,7 @@ static inline bool hwm_plane_gesture_sample(HWMPlaneGesture *g,uintptr_t device,
         dx+=(contacts[i].x-g->contacts[found].x)/3;
         dy+=(contacts[i].y-g->contacts[found].y)/3;
     }
-    if(continuous && hypot(dx,dy)<.15) {
+    if(continuous) {
         out->x-=dx*width*gain/camera.scale;
         out->y+=dy*width*aspect*gain/camera.scale;
     }

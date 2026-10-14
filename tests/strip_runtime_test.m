@@ -33,7 +33,8 @@ struct window {
     double strip_from_x,strip_from_y,strip_from_width,strip_from_height;
     double strip_vel_x,strip_vel_y,strip_vel_width,strip_vel_height;
     double strip_start,strip_last_offset,strip_last_camera_y,strip_last_plane_scale,strip_size_sent_at;
-    bool strip_initialized,strip_full_width,strip_size_pending,strip_tab_parked,strip_offscreen;
+    bool strip_size_confirmed;
+    bool strip_initialized,strip_placed,strip_full_width,strip_size_pending,strip_tab_parked,strip_offscreen;
     int layer;
     bool floating,strip_float_animating,strip_close_pending;
     CGRect strip_float_from,strip_float_last,strip_float_target;
@@ -131,6 +132,18 @@ static void hwm_drag_started(struct window *w) { hwm_drag_window=w->id; }
 #include "../src/strip_interaction.m"
 #include "../src/strip_renderer.m"
 #include "../src/window_transitions.m"
+static double hwm_drag_snap_x,hwm_drag_snap_y,hwm_drag_snap_time,hwm_motion_scale=1;
+static uint32_t hwm_drag_snap_neighbor;
+static bool hwm_drag_finishing;
+static struct window *hwm_tile(uint32_t id) { return window_manager_find_window(&g_window_manager,id); }
+#include "../src/plane_drag.m"
+static bool hwm_suspended;
+static uint32_t hwm_preserve_focus_window;
+static double hwm_preserve_focus_until;
+static struct window *hwm_action_window(void) { return &windows[0]; }
+static void hwm_plane_set_camera(struct view *v,double x,double y,bool animate) { (void)animate; v->strip_offset=x; test_camera_y=y; }
+#include "../src/plane_actions.m"
+
 
 static void reset(void)
 {
@@ -499,6 +512,83 @@ static void test_plane_camera_and_fit(void)
     assert(w->strip_offscreen && w->strip_world_y==420);
 }
 
+static void test_maximize_at_actual_size(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.5; hwm_plane_fit_active=true;
+    view.strip_offset=1000; test_camera_y=-200;
+    w->strip_world_x=42; w->strip_world_y=67;
+    hwm_plane_maximize(&view); hwm_render(&view,clock_now);
+    assert(hwm_plane_scale==1 && !hwm_plane_fit_active);
+    assert(view.strip_offset==42 && test_camera_y==67);
+    assert(w->strip_width==1200 && w->strip_height==900);
+    assert(CGRectEqualToRect(actual[0],hwm_bounds(&view)));
+    assert(undo_captures==1 && hwm_preserve_focus_window==w->id);
+}
+static void test_final_resize_confirmation(void)
+{
+    reset(); struct window *w=&windows[0];
+    w->strip_size_pending=true; w->strip_size_confirmed=false;
+    w->strip_size_sent_at=clock_now-1;
+    actual[0].size.width=417; clock_now+=1;
+    hwm_render(&view,clock_now);
+    assert(w->strip_width==400 && w->strip_size_confirmed && w->strip_size_pending);
+    assert(actual[0].size.width==400);
+    clock_now+=.3; hwm_render(&view,clock_now);
+    assert(w->strip_width==400 && !w->strip_size_pending);
+}
+
+static void test_drag_submission_and_magnetic_release(void)
+{
+    const double zooms[]={.5,1,2};
+    for(int z=0;z<3;z++) {
+        reset(); struct window *w=&windows[0];
+        windows[1].strip_world_x=500; windows[1].strip_world_y=0;
+        windows[2].strip_world_x=10000; windows[3].strip_world_x=20000;
+        w->strip_world_x=0; w->strip_world_y=0;
+        hwm_plane_scale=zooms[z]; hwm_plane_fit_active=hwm_plane_scale!=1;
+        hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=clock_now;
+        hwm_drag_snap_neighbor=0; hwm_drag_finishing=false;
+        scale_calls=0; ax_calls=0; int before=moves;
+        for(int step=1;step<=120;step++) {
+            clock_now+=1.0/120;
+            assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
+            assert(w->strip_world_x>=80 && w->strip_world_x<=88);
+            assert(actual[0].origin.x==round(12+w->strip_world_x*hwm_plane_scale));
+        }
+        hwm_drag_finishing=true;
+        assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
+        hwm_drag_finishing=false;
+        assert(fabs(w->strip_world_x+400+12-windows[1].strip_world_x)<.001);
+        assert(w->strip_world_y==0 && moves==before+121 && ax_calls==0);
+        assert(scale_calls==(hwm_plane_scale==1?0:1));
+        clock_now+=1.0/120;
+        assert(hwm_drag_submit_plane(&view,w,CGPointMake(88,0)));
+        assert(hwm_drag_snap_neighbor==windows[1].id);
+        assert(fabs(w->strip_world_x-88)<.001);
+        clock_now+=1.0/120;
+        assert(hwm_drag_submit_plane(&view,w,CGPointMake(96,0)));
+        assert(fabs(w->strip_world_x-88)<.001);
+    }
+}
+
+static void test_scaled_pan_keeps_transform(void)
+{
+    reset(); hwm_plane_scale=.5; hwm_plane_fit_active=true;
+    clock_now+=2; hwm_render(&view,clock_now);
+    int before=scale_calls; ax_calls=0;
+    for(int i=1;i<=120;i++) {
+        view.strip_offset=i; test_camera_y=i*.5; clock_now+=1.0/120;
+        hwm_render(&view,clock_now);
+        assert(scale_calls==before && ax_calls==0);
+        assert(actual[0].origin.x==round(12+(windows[0].strip_world_x-i)*.5));
+        assert(actual[0].origin.y==round(51+(windows[0].strip_world_y-i*.5)*.5));
+    }
+    hwm_layout(&view,true);
+    assert(fabs(windows[0].strip_from_x-windows[0].strip_world_x)<=1);
+    assert(fabs(windows[0].strip_from_y-windows[0].strip_world_y)<=1);
+}
+
 static void test_position_echo_does_not_resize(void)
 {
     reset(); clock_now+=2; hwm_render(&view,clock_now);
@@ -536,9 +626,8 @@ static void test_zoomed_edge_hit(void)
     reset(); struct window *w=&windows[0];
     g_mouse_state.window=w; g_mouse_state.window_frame=actual[0];
     hwm_plane_scale=.5; hwm_plane_fit_active=true;
-    CGRect b=hwm_bounds(&view),f=actual[0];
-    CGPoint edge=CGPointMake(b.origin.x+(f.origin.x-b.origin.x+f.size.width)*.5,
-                             b.origin.y+(f.origin.y-b.origin.y+f.size.height*.5)*.5);
+    CGRect f=actual[0];
+    CGPoint edge=CGPointMake(f.origin.x+f.size.width*.5,f.origin.y+f.size.height*.25);
     horizontal_mouse_down(w,edge);
     assert(hwm_edge_window==w->id && (hwm_edge_direction&HANDLE_RIGHT));
     hwm_edge_window=0;
@@ -552,6 +641,14 @@ static void test_plane_native_initial_sizes(void)
     hwm_layout(&view,false);
     assert(windows[0].strip_width==978 && windows[0].strip_height==1049);
     assert(windows[0].strip_world_x==108 && windows[0].strip_world_y==99);
+    windows[0].strip_initialized=false; windows[0].strip_last_frame=CGRectZero;
+    windows[0].frame=CGRectMake(30,60,978,519); actual[0]=CGRectZero;
+    hwm_layout(&view,false);
+    assert(windows[0].strip_width==978 && windows[0].strip_height==519);
+    windows[0].strip_initialized=false; windows[0].strip_placed=true;
+    windows[0].strip_world_x=-700; windows[0].strip_world_y=850;
+    hwm_layout(&view,false);
+    assert(windows[0].strip_world_x==-700 && windows[0].strip_world_y==850);
 }
 
 static void test_plane_native_resize(void)
@@ -578,6 +675,10 @@ int main(void)
     @autoreleasepool {
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
+    test_scaled_pan_keeps_transform();
+    test_drag_submission_and_magnetic_release();
+    test_maximize_at_actual_size();
+    test_final_resize_confirmation();
     test_plane_transform_cleanup();
     test_plane_native_resize();
     test_plane_native_initial_sizes();

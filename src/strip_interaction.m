@@ -13,9 +13,6 @@ static void horizontal_mouse_down(struct window *w, CGPoint p)
     struct view *v=window_manager_find_managed_window(&g_window_manager,w);
     if(!v || v->layout!=VIEW_STRIP || g_mouse_state.current_action==MOUSE_MODE_MOVE) return;
     CGRect f=g_mouse_state.window_frame, hit=f;
-    CGRect bounds=hwm_bounds(v);
-    hit.origin.x=bounds.origin.x+(f.origin.x-bounds.origin.x)*hwm_plane_scale;
-    hit.origin.y=bounds.origin.y+(f.origin.y-bounds.origin.y)*hwm_plane_scale;
     hit.size.width*=hwm_plane_scale; hit.size.height*=hwm_plane_scale;
     unsigned direction=0;
     if(g_mouse_state.current_action==MOUSE_MODE_RESIZE) {
@@ -53,8 +50,8 @@ static bool hwm_edge_update(struct window *w, struct view *v)
     if(!hwm_edge_changed) { hwm_undo_capture(); hwm_edge_changed=true; }
     w->strip_width=fmax(160,actual.size.width);
     w->strip_height=fmax(100,actual.size.height);
-    w->strip_world_x=hwm_edge_world_x+actual.origin.x-hwm_edge_origin.origin.x;
-    w->strip_world_y=hwm_edge_world_y+actual.origin.y-hwm_edge_origin.origin.y;
+    w->strip_world_x=hwm_edge_world_x+(actual.origin.x-hwm_edge_origin.origin.x)/hwm_plane_scale;
+    w->strip_world_y=hwm_edge_world_y+(actual.origin.y-hwm_edge_origin.origin.y)/hwm_plane_scale;
     w->strip_last_frame=actual; w->strip_last_offset=v->strip_offset;
     w->strip_size_pending=false;
     hwm_layout(v,false);

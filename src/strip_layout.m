@@ -150,12 +150,17 @@ static void hwm_layout(struct view *view, bool animate)
         struct window *w=window_manager_find_window(&g_window_manager,node->window_list[index]);
         if(!w || w->strip_close_ghost) continue;
         CGRect source=w->strip_last_frame;
-        if((CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0) && SLSGetWindowBounds(g_connection,w->id,&source)!=kCGErrorSuccess) source=w->frame;
+        if(CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0) {
+            if(SLSGetWindowBounds(g_connection,w->id,&source)!=kCGErrorSuccess ||
+               CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0) source=w->frame;
+        }
         if(CGRectIsNull(source) || source.size.width<=0 || source.size.height<=0)
             source=CGRectMake(bounds.origin.x,bounds.origin.y,fmax(320,bounds.size.width*.5),fmax(180,bounds.size.height*.6));
         if(!w->strip_initialized) {
-            w->strip_world_x=source.origin.x-bounds.origin.x+view->strip_offset;
-            w->strip_world_y=source.origin.y-bounds.origin.y+hwm_plane_camera_y(now);
+            if(!w->strip_placed) {
+                w->strip_world_x=(source.origin.x-bounds.origin.x)/hwm_plane_scale+view->strip_offset;
+                w->strip_world_y=(source.origin.y-bounds.origin.y)/hwm_plane_scale+hwm_plane_camera_y(now);
+            }
             w->strip_width=fmax(160,source.size.width); w->strip_height=fmax(100,source.size.height);
             w->strip_shelf=0; w->strip_column=w->id;
         }
@@ -176,10 +181,11 @@ static void hwm_layout(struct view *view, bool animate)
          * by a resize/reflow jumping a tile along y. */
         double source_camera_y=w->strip_initialized ? w->strip_last_camera_y : hwm_plane_camera_y(now);
         double source_shift=w->strip_last_shift;
+        double source_scale=w->strip_last_plane_scale>0 ? w->strip_last_plane_scale : 1;
         bool restoring_tab=false;
         if(animate && !CGRectIsNull(source) && source.size.width>0 && source.size.height>0) {
-            w->strip_from_x=source.origin.x-bounds.origin.x+source_offset;
-            w->strip_from_y=source.origin.y-bounds.origin.y-source_shift+source_camera_y;
+            w->strip_from_x=(source.origin.x-bounds.origin.x)/source_scale+source_offset;
+            w->strip_from_y=(source.origin.y-bounds.origin.y-source_shift)/source_scale+source_camera_y;
             w->strip_from_width=source.size.width; w->strip_from_height=source.size.height;
         } else {
             w->strip_from_x=w->strip_world_x; w->strip_from_y=w->strip_world_y;

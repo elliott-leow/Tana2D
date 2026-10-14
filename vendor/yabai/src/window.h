@@ -123,6 +123,7 @@ struct window
     double strip_last_plane_scale;
     bool strip_initialized, strip_full_width, strip_tab_parked, strip_offscreen;
     bool strip_size_pending;
+    bool strip_size_confirmed;
     double strip_size_sent_at;
     CGRect strip_original_frame;
     uint64_t strip_original_space;

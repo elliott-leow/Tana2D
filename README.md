@@ -3,6 +3,9 @@
 A macOS window manager with an unbounded two-dimensional workspace. Derived from
 [Tana](https://github.com/elliott-leow/Tana), developed as a separate project.
 
+Experimental: scrolling and dragging are still under repair. See the
+[verification record](docs/VERIFICATION.md) for current failures and tested limits.
+
 Windows occupy positions on a plane. Move the camera horizontally or vertically
 with a three-finger swipe, and pinch to zoom in or out. **Control + Up** fits every managed window,
 preserving its position and relative size. There are no workspace walls.
@@ -33,6 +36,7 @@ require testing on the target Mac.
 
 | Input | Action |
 | --- | --- |
+| Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Pan in any direction, including diagonals |
 | Pinch | Zoom in or out |
 | Control + Up | Fit all plane windows |

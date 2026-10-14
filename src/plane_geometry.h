@@ -95,7 +95,7 @@ static inline bool hwm_plane_reveal(HWMPlaneCamera camera,HWMPlaneRect world,HWM
 /* Magnetize adjacent edges, with optional top/bottom or left/right alignment.
  * The caller expresses the range in world units, keeping its screen radius
  * consistent at every zoom. Rectangles away from one another stay untouched. */
-static inline HWMPlanePoint hwm_plane_snap_neighbor(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range)
+static inline bool hwm_plane_snap_neighbor_target(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range,HWMPlanePoint *out)
 {
     HWMPlanePoint best={moving.x,moving.y}; double cost=INFINITY;
     double xs[2]={other.x-moving.width-gap,other.x+other.width+gap};
@@ -114,7 +114,32 @@ static inline HWMPlanePoint hwm_plane_snap_neighbor(HWMPlaneRect moving,HWMPlane
         double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
         if(distance<cost) { best=candidate; cost=distance; }
     }
-    return best;
+    *out=best;
+    return isfinite(cost);
+}
+
+static inline HWMPlanePoint hwm_plane_snap_neighbor(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range)
+{
+    HWMPlanePoint result;
+    hwm_plane_snap_neighbor_target(moving,other,gap,range,&result);
+    return result;
+}
+
+typedef struct { int side; double began; } HWMPlaneEdgePan;
+static inline HWMPlanePoint hwm_plane_edge_pan(HWMPlaneEdgePan *state,HWMPlaneRect bounds,HWMPlanePoint pointer,double now,double scale)
+{
+    const double band=16;
+    double x=0,y=0;
+    if(pointer.x<bounds.x+band) x=-fmin(1,(bounds.x+band-pointer.x)/band);
+    else if(pointer.x>bounds.x+bounds.width-band) x=fmin(1,(pointer.x-bounds.x-bounds.width+band)/band);
+    if(pointer.y<bounds.y+band) y=-fmin(1,(bounds.y+band-pointer.y)/band);
+    else if(pointer.y>bounds.y+bounds.height-band) y=fmin(1,(pointer.y-bounds.y-bounds.height+band)/band);
+    int side=(x<0?-1:x>0?1:0)+(y<0?-3:y>0?3:0);
+    if(!side || side!=state->side) { state->side=side; state->began=now; }
+    double held=now-state->began;
+    if(!side || held<=.25 || scale<=0) return (HWMPlanePoint){0,0};
+    double rate=600*fmin(1,(held-.25)/.3)/scale;
+    return (HWMPlanePoint){x*rate,y*rate};
 }
 
 #endif

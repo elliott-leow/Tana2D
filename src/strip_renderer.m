@@ -52,12 +52,13 @@ static bool hwm_render(struct view *view, double now)
             double height = hwm_window_sample(window->strip_from_height,window->strip_height,window->strip_vel_height,elapsed,1,&unused);
             double width = hwm_window_sample(window->strip_from_width,window->strip_width,window->strip_vel_width,elapsed,1,&unused);
             if (t < 1) active = true;
-            /* Base geometry stays at its real size; fit/pinch use the helper's
-             * transient WindowServer transform so zoom never rewrites window
-             * sizes or the persisted plane arrangement. */
+            /* Native origins equal displayed origins; sizes stay unscaled.
+             * SLSMoveWindowWithGroup preserves the scale and translates it.
+             * Panning therefore needs one move, without a visible unit-scale
+             * intermediate or synchronous transform queries. */
             double own_offset=offset, shift=0;
-            CGRect base=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,1)),
-                                   round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,1)),
+            CGRect base=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
+                                   round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,plane_scale)),
                                    round(hwm_plane_physical_size(width)),round(hwm_plane_physical_size(height)));
             CGRect frame=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
                                     round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,plane_scale)),
@@ -78,10 +79,6 @@ static bool hwm_render(struct view *view, double now)
             }
             if (move) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
-                if(window->strip_plane_scaled && !CGRectIsNull(last)) {
-                    scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
-                    window->strip_plane_scaled=false;
-                }
                 // Position first, through WindowServer: it bypasses the on-screen
                 // constraints that would otherwise destroy an infinite strip, and
                 // puts the top edge where the new size will be measured from.
@@ -98,7 +95,7 @@ static bool hwm_render(struct view *view, double now)
                 window->strip_last_camera_y = camera_y;
                 window->strip_last_shift = shift;
             }
-            if(hwm_plane_fit_active && (move || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale)) {
+            if(hwm_plane_fit_active && (resize || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale)) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 if(scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) { window->strip_plane_scaled=true; window->strip_last_plane_scale=plane_scale; }
             } else if(!hwm_plane_fit_active && window->strip_plane_scaled) {
@@ -106,6 +103,7 @@ static bool hwm_render(struct view *view, double now)
                 scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
                 window->strip_plane_scaled=false;
             }
+            window->strip_last_plane_scale=plane_scale;
             if(!hidden) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 hwm_visibility_set(window,false,frame);
@@ -116,6 +114,7 @@ static bool hwm_render(struct view *view, double now)
                 // never waits for the application to answer.
                 hwm_resize_submit(window,base,CGRectIsNull(last) || fabs(last.size.height-base.size.height)>=1);
                 window->strip_size_pending = true;
+                window->strip_size_confirmed = false;
                 window->strip_size_sent_at = now;
             }
             node->area = (struct area) { frame.origin.x, frame.origin.y, frame.size.width, frame.size.height };
@@ -134,6 +133,15 @@ static bool hwm_render(struct view *view, double now)
                     if (measured &&
                         isfinite(actual.size.width) && actual.size.width >= 160 &&
                         (fabs(actual.size.width-window->strip_width)>1 || fabs(actual.size.height-window->strip_height)>1)) {
+                        // A final AX write can lose to an app's delayed resize
+                        // while its origin is moving. Confirm the requested final
+                        // size once before treating an intermediate as a limit.
+                        if(!window->strip_size_confirmed) {
+                            window->strip_size_confirmed=true; window->strip_size_pending=true;
+                            window->strip_size_sent_at=now;
+                            hwm_resize_submit(window,base,true);
+                            active=true; continue;
+                        }
                         window->strip_min_width=fmax(window->strip_min_width,actual.size.width);
                         hwm_column_width(view,window,actual.size.width);
                         if(isfinite(actual.size.height) && actual.size.height>=100) window->strip_height=actual.size.height;

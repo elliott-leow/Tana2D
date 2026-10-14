@@ -1,3 +1,4 @@
+static void hwm_plane_border_hide(void);
 /* Passive, click-through feedback. AppKit is confined to the main queue. */
 #include <libproc.h>
 
@@ -455,10 +456,9 @@ static CGRect hwm_feedback_plane_frame(struct view *view,struct window *w)
 {
     CGRect frame=w->strip_last_frame;
     if(CGRectIsNull(frame) || w->strip_offscreen) return CGRectNull;
-    CGRect bounds=hwm_bounds(view);
-    frame.origin.x=bounds.origin.x+(frame.origin.x-bounds.origin.x)*hwm_plane_scale;
-    frame.origin.y=bounds.origin.y+(frame.origin.y-bounds.origin.y)*hwm_plane_scale;
-    frame.size.width*=hwm_plane_scale; frame.size.height*=hwm_plane_scale;
+    (void)view;
+    double scale=w->strip_last_plane_scale>0?w->strip_last_plane_scale:1;
+    frame.size.width*=scale; frame.size.height*=scale;
     return frame;
 }
 static CGRect hwm_feedback_frame(struct view *view,struct window *w,CGRect screen)
@@ -475,6 +475,7 @@ static CGRect hwm_feedback_frame(struct view *view,struct window *w,CGRect scree
 static NSDictionary *hwm_feedback_last;
 static void hwm_feedback_hide(void)
 {
+    hwm_plane_border_hide();
     if(!hwm_feedback_last) return;
     [hwm_feedback_last release]; hwm_feedback_last=nil;
     dispatch_async(dispatch_get_main_queue(),^{ [[TanaFeedback shared] hide]; });
@@ -561,7 +562,7 @@ static void hwm_feedback_tick(struct view *view,double now)
     // A dragged or edge-resized window is moved by the pointer every event; an
     // outline drawn from here would trail it, so it gets none until it lands.
     bool travelling=false;
-    if(borders && focus && focus->id!=hwm_drag_window && focus->id!=hwm_edge_window && !focus->strip_no_border) {
+    if(false && borders && focus && focus->id!=hwm_drag_window && focus->id!=hwm_edge_window && !focus->strip_no_border) {
         CGRect f=hwm_feedback_frame(view,focus,screen);
         double span=hwm_border_travel_span(), elapsed=now-hwm_border_travel_start;
         if(!CGRectIsNull(f) && hwm_border_travel && elapsed<span && hwm_border_from_id!=focus->id) {

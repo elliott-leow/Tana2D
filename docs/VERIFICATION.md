@@ -25,15 +25,33 @@ in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 - External `borders` surfaces were observed at zero alpha while Tana2D owns the
   desktop. Tana2D draws one focused outline and restores external alpha on quit.
 
-## Live state and remaining acceptance
+## Latest repair status and unresolved behavior
 
-Tana2D is installed and active on the target Mac. The manager reports a ready
-backend, an enabled input tap, and zero movement failures. Raw multitouch device
-registration succeeds. Physical diagonal/circular swipes and magnetic title-bar
-or Option drags still require user acceptance; registration and mathematical
-checks alone do not prove physical gesture feel. Native dragging now suppresses
-further AppKit drag events after the plane owns the drag; mouse-up still reaches
-AppKit to end the interaction.
+The user still reports jumping during scrolling and broken dragging/snapping.
+Earlier geometry passes do not establish that these visible failures are fixed.
+The latest build passes `make all test` (15 native executables and 20 Python
+checks), including actual-size maximize, scale-preserving pan, exact-edge snap
+retention, fast continuous gesture samples, and native-size initialization.
+
+Recent changes keep a pan's native transform in place, move the focused outline
+in the presentation batch, avoid display-geometry queries during dragging, and
+add Command+Shift+Return for 100% zoom plus a window filling the usable screen.
+Exact-edge snapping now retains its neighbor and eases the displayed position,
+preventing the correction offset from pushing a window past the acquired edge.
+
+The last interactive build recorded a 51.093 ms maximum frame and a 60 Hz display
+callback. macOS reports a 60 Hz active mode, and all enumerated display modes
+report 60 Hz. Neither sustained 120 fps nor glitch-free physical interaction is
+verified. A 45-second passive trace contained no movement and therefore did not
+reproduce the reported problem. The desktop then locked; Tana2D reports suspended
+input. The latest repair is installed on disk; restart and live acceptance await
+an unlocked desktop. The prior manager process remains running.
+
+Remaining work: reproduce a physical scroll and title-bar/Option drag, correlate
+visible jumps with native geometry, verify acquired-edge retention on screen,
+and investigate the initial AppKit drag handoff if it still moves the surface
+before Tana2D takes ownership. Automated pointer routing did not exercise that
+physical input path and is not counted as acceptance.
 
 `make live-tools` builds disposable fixture windows and measurement probes.
 `python3 tests/live_plane_check.py` checks live native geometry without generating

@@ -21,6 +21,9 @@ static double hwm_display_left;
 static bool hwm_backend_ok = true;
 static uint64_t hwm_space;
 static CVDisplayLinkRef hwm_display_link;
+static _Atomic bool hwm_ca_clock_running;
+static _Atomic double hwm_ca_target_time,hwm_display_hz,hwm_display_max_hz;
+static void hwm_ca_stop(void);
 static dispatch_source_t hwm_fallback_timer;
 static _Atomic bool hwm_suspended;
 static _Atomic bool hwm_overview_active;
@@ -140,6 +143,7 @@ static uint32_t hwm_drop_target;
 static HStripPlacement hwm_drop_placement;
 static CGPoint hwm_drag_point;
 static double hwm_drag_tick_time;
+static HWMPlaneEdgePan hwm_drag_edge_pan;
 static bool hwm_drag_cancelled,hwm_drag_shadow;
 /* Worst time per tick section since the last `profile-reset`, in ms. */
 enum { HWM_PROF_DRAG, HWM_PROF_RENDER, HWM_PROF_EXTRAS, HWM_PROF_PREVIEW, HWM_PROF_FEEDBACK, HWM_PROF_TICK_DRAGGING, HWM_PROF_COUNT };
@@ -296,7 +300,7 @@ static double hwm_frame_time(double now)
 {
     static mach_timebase_info_data_t base;
     if(!base.denom) mach_timebase_info(&base);
-    double target=(double)__atomic_load_n(&hwm_vsync_host,__ATOMIC_RELAXED)*base.numer/base.denom/1e9;
+    double target=hwm_ca_clock_running ? hwm_ca_target_time : (double)__atomic_load_n(&hwm_vsync_host,__ATOMIC_RELAXED)*base.numer/base.denom/1e9;
     return target>now && target-now<.05 ? target : now;
 }
 /* "Now" for anything that restarts an animation: never earlier than the frame
@@ -322,7 +326,8 @@ static CGRect hwm_screen(struct view *view)
     double now=hwm_now();
     // Never in the middle of a swipe or a glide: the answer cannot change
     // there, and asking costs a frame's worth of round trips.
-    bool moving=view->strip_scrolling || __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED);
+    bool moving=view->strip_scrolling || hwm_plane_y_scrolling || g_mouse_state.window ||
+                __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED);
     if(view->sid!=sid || (now-hwm_screen_stamp>2 && !(moving && hwm_screen_stamp>0))) {
         sid=view->sid; hwm_screen_stamp=now;
         uint32_t display=space_display_id(view->sid);
@@ -524,17 +529,18 @@ static void hwm_drag_started(struct window *window)
     if(CGRectIsNull(actual)) SLSGetWindowBounds(g_connection,window->id,&actual);
     if(view && !CGRectIsNull(actual)) {
         CGRect bounds=hwm_bounds(view);
-        hwm_drag_world_origin=CGPointMake(actual.origin.x-bounds.origin.x+hwm_drag_camera_x,
-                                          actual.origin.y-bounds.origin.y+hwm_drag_camera_y);
+        hwm_drag_world_origin=CGPointMake((actual.origin.x-bounds.origin.x)/hwm_plane_scale+hwm_drag_camera_x,
+                                          (actual.origin.y-bounds.origin.y)/hwm_plane_scale+hwm_drag_camera_y);
     }
     hwm_drag_scale=hwm_plane_scale;
     hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=hwm_now(); hwm_drag_snap_neighbor=0;
-    hwm_drag_tick_time=hwm_now();
+    hwm_drag_tick_time=hwm_now(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
     scripting_addition_set_layer(window->id,LAYER_NORMAL);
 }
 
 static uint32_t hwm_edge_window;
 #include "strip_feedback.m"
+#include "plane_border.m"
 #include "strip_interaction.m"
 #include "strip_visibility.m"
 #include "strip_renderer.m"
@@ -603,6 +609,7 @@ static void horizontal_tick(void)
     active |= hwm_render_pops(frame);
     mark=hwm_prof_mark(HWM_PROF_EXTRAS,mark);
     active |= hwm_preview_render(frame);
+    hwm_plane_border_tick(view,frame);
     hwm_batch_release();
     mark=hwm_prof_mark(HWM_PROF_PREVIEW,mark);
     active |= hwm_nav_pending || hwm_settle_pending;
@@ -1485,57 +1492,7 @@ static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
                                              hwm_plane_camera_y(hwm_now())-hwm_drag_camera_y);
     return CGPointMake(world.x,world.y);
 }
-static CGPoint hwm_drag_snap(struct view *view,struct window *window,CGPoint raw)
-{
-    HWMPlaneRect moving={raw.x,raw.y,window->strip_width,window->strip_height};
-    HWMPlanePoint best={raw.x,raw.y}; double distance=INFINITY; uint32_t target=0;
-    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
-        struct window *other=hwm_tile(n->window_list[i]);
-        if(!other || other==window || other->strip_close_ghost) continue;
-        double range=(other->id==hwm_drag_snap_neighbor?38:24)/hwm_plane_scale;
-        HWMPlanePoint candidate=hwm_plane_snap_neighbor(moving,(HWMPlaneRect){other->strip_world_x,other->strip_world_y,other->strip_width,other->strip_height},view->window_gap,range);
-        double d=hypot(candidate.x-raw.x,candidate.y-raw.y);
-        if(d==0) continue;
-        if(other->id==hwm_drag_snap_neighbor) d*=.65;
-        if(d<distance) { best=candidate; distance=d; target=other->id; }
-    }
-    double now=hwm_now(),dt=fmax(0,now-hwm_drag_snap_time); hwm_drag_snap_time=now;
-    double blend=hwm_drag_finishing || hwm_motion_scale==0 ? 1 : 1-exp(-dt/.045);
-    hwm_drag_snap_x+=(best.x-raw.x-hwm_drag_snap_x)*blend;
-    hwm_drag_snap_y+=(best.y-raw.y-hwm_drag_snap_y)*blend;
-    hwm_drag_snap_neighbor=target;
-    return CGPointMake(raw.x+hwm_drag_snap_x,raw.y+hwm_drag_snap_y);
-}
-static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoint world)
-{
-    if(!view || !window || !isfinite(world.x) || !isfinite(world.y)) return false;
-    world=hwm_drag_snap(view,window,world);
-    CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()), camera_y=hwm_plane_camera_y(hwm_now()), scale=hwm_plane_scale;
-    CGRect base=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,1)),
-                           round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,1)),
-                           round(hwm_plane_physical_size(window->strip_width)),round(hwm_plane_physical_size(window->strip_height)));
-    CGRect projected=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
-                                round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
-                                round(hwm_plane_physical_size(window->strip_width*scale)),round(hwm_plane_physical_size(window->strip_height*scale)));
-    CGRect last=window->strip_last_frame;
-    hwm_batch_begin();
-    if(window->strip_plane_scaled && !CGRectIsNull(last)) {
-        scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
-        window->strip_plane_scaled=false;
-    }
-    bool ok=scripting_addition_move_window(window->id,base.origin.x,base.origin.y);
-    if(ok && fabs(scale-1)>.001) {
-        ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
-        window->strip_plane_scaled=ok;
-    }
-    hwm_batch_end();
-    if(!ok) { ++hwm_move_failures; hwm_backend_ok=false; return false; }
-    window->strip_world_x=world.x; window->strip_world_y=world.y;
-    window->strip_from_x=world.x; window->strip_from_y=world.y;
-    window->strip_last_frame=base; window->strip_last_offset=camera_x; window->strip_last_camera_y=camera_y; window->strip_last_shift=0;
-    window->strip_start=hwm_now()-hwm_duration;
-    return true;
-}
+#include "plane_drag.m"
 static bool horizontal_owns_native_drag(void)
 {
     return hwm_ready && !hwm_paused && hwm_drag_window!=0;
@@ -1609,18 +1566,12 @@ static void hwm_drag_autoscroll(struct view *view,double now)
         }
     }
     if(hwm_drag_move_pending) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
-    CGRect bounds=hwm_bounds(view); double speed=0, vertical=0;
-    if(hwm_drag_point.x<bounds.origin.x+56) speed=-fmin(1,(bounds.origin.x+56-hwm_drag_point.x)/56);
-    else if(hwm_drag_point.x>CGRectGetMaxX(bounds)-56) speed=fmin(1,(hwm_drag_point.x-CGRectGetMaxX(bounds)+56)/56);
-    if(hwm_drag_point.y<bounds.origin.y+56) vertical=-fmin(1,(bounds.origin.y+56-hwm_drag_point.y)/56);
-    else if(hwm_drag_point.y>CGRectGetMaxY(bounds)-56) vertical=fmin(1,(hwm_drag_point.y-CGRectGetMaxY(bounds)+56)/56);
-    // Holding a window against an edge keeps accelerating, so carrying it the
-    // length of a long strip takes a moment rather than a slow crawl.
-    static double edge_since; static int edge_side;
-    int side=speed<0?-1:speed>0?1:0;
-    if(side!=edge_side) { edge_side=side; edge_since=now; }
-    if(speed || vertical) hwm_plane_set_camera(view,view->strip_offset+speed*900*(1+fmin(5,(now-edge_since)*2.5))*dt,
-                                                hwm_plane_y+vertical*900*(1+fmin(5,(now-edge_since)*2.5))*dt,false);
+    CGRect bounds=hwm_bounds(view);
+    HWMPlanePoint velocity=hwm_plane_edge_pan(&hwm_drag_edge_pan,
+        (HWMPlaneRect){bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height},
+        (HWMPlanePoint){hwm_drag_point.x,hwm_drag_point.y},now,hwm_plane_scale);
+    if(velocity.x || velocity.y)
+        hwm_plane_set_camera(view,view->strip_offset+velocity.x*dt,hwm_plane_y+velocity.y*dt,false);
 }
 static void hwm_cancel_drag(void)
 {
@@ -1733,9 +1684,9 @@ static void horizontal_command(FILE *rsp, char *message)
         fwrite(json.bytes,1,json.length,rsp); fputc('\n',rsp); [snapshot release]; return;
     }
     if(token_equals(command,"profile") || token_equals(command,"profile-reset")) {
-        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f}\n",
+        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f,\"border_window\":%u,\"display_hz\":%.2f}\n",
                 (unsigned long long)hwm_ax_resizes_sent,(unsigned long long)hwm_ax_resizes_coalesced,(double)hwm_ax_resize_max_ms,hwm_prof[HWM_PROF_DRAG],hwm_prof[HWM_PROF_RENDER],hwm_prof[HWM_PROF_EXTRAS],hwm_prof[HWM_PROF_PREVIEW],hwm_prof[HWM_PROF_FEEDBACK],hwm_prof[HWM_PROF_TICK_DRAGGING],
-                (unsigned long long)hwm_prof_drag_ticks,(unsigned long long)hwm_prof_drag_events,(unsigned long long)hwm_feedback_shows,(double)hwm_feedback_show_max_ms,hwm_max_frame_ms);
+                (unsigned long long)hwm_prof_drag_ticks,(unsigned long long)hwm_prof_drag_events,(unsigned long long)hwm_feedback_shows,(double)hwm_feedback_show_max_ms,hwm_max_frame_ms,hwm_plane_border_id,(double)hwm_display_hz);
         if(token_equals(command,"profile-reset")) { memset(hwm_prof,0,sizeof(hwm_prof)); hwm_prof_drag_ticks=0; hwm_prof_drag_events=0; hwm_feedback_shows=0; hwm_feedback_show_max_ms=0; hwm_ax_resizes_sent=0; hwm_ax_resizes_coalesced=0; hwm_ax_resize_max_ms=0; hwm_max_frame_ms=0; hwm_slow_frames=0; hwm_frames=0; }
         return;
     }
@@ -1845,7 +1796,7 @@ static NSArray *hwm_command_sections(void)
       @[@"Camera",@[@[@"fit-all",@"Fit all windows"],@[@"fit-focused",@"Fit focused window"],@[@"actual-size",@"Actual size (100%)"],@[@"home",@"Return to origin"]]],
       @[@"Navigate",@[@[@"left",@"Focus left"],@[@"right",@"Focus right"],@[@"up",@"Focus above"],@[@"down",@"Focus below"],@[@"previous",@"Previous window"],@[@"center",@"Center window"]]],
       @[@"Arrange",@[@[@"move-left",@"Move left"],@[@"move-right",@"Move right"],@[@"move-up",@"Move up"],@[@"move-down",@"Move down"],@[@"arrange-grid",@"Arrange in grid"],@[@"preset-width",@"Cycle window width"],@[@"undo",@"Undo arrangement"]]],
-      @[@"Window",@[@[@"float",@"Float / tile"],@[@"close",@"Close window"],@[@"terminal",@"New terminal"],@[@"browser",@"Open browser"]]],
+      @[@"Window",@[@[@"maximize",@"Fill screen at 100%"],@[@"float",@"Float / tile"],@[@"close",@"Close window"],@[@"terminal",@"New terminal"],@[@"browser",@"Open browser"]]],
       @[@"Tana2D",@[@[@"setup",@"Setup & Settings…"],@[@"reload-config",@"Reload config file"],@[@"pause",@"Pause / resume"]]]];
 }
 static NSArray *hwm_palette_commands(void)
@@ -2085,7 +2036,7 @@ static void horizontal_window_added(struct window *window)
 static void hwm_shutdown(void)
 {
     if (!hwm_ready) return;
-    dispatch_sync(dispatch_get_main_queue(), ^{ hwm_mt_end(); });
+    dispatch_sync(dispatch_get_main_queue(), ^{ hwm_mt_end(); hwm_ca_stop(); });
     horizontal_overview_done();
     hwm_preview_hide_immediately();
     hwm_feedback_hide();
@@ -2203,6 +2154,7 @@ static void horizontal_resume(void)
     if(focus) horizontal_focused(focus,window_manager_find_managed_window(&g_window_manager,focus));
 }
 
+#include "plane_clock.m"
 static void hwm_start_clock(void)
 {
     if(!hwm_fallback_timer) {
@@ -2217,21 +2169,16 @@ static void hwm_start_clock(void)
             // With the display clock running this timer only paces the
             // housekeeping sweep. It becomes the frame clock, at frame rate,
             // only for as long as the display clock is not running.
-            bool stand_in=hwm_stop_requested || !hwm_display_link || !CVDisplayLinkIsRunning(hwm_display_link);
+            bool stand_in=hwm_stop_requested || (!hwm_ca_clock_running && (!hwm_display_link || !CVDisplayLinkIsRunning(hwm_display_link)));
             if(stand_in!=fast) {
                 fast=stand_in;
-                dispatch_source_set_timer(hwm_fallback_timer,dispatch_time(DISPATCH_TIME_NOW,0),fast?NSEC_PER_SEC/60:NSEC_PER_SEC/10,(fast?1:10)*NSEC_PER_MSEC);
+                dispatch_source_set_timer(hwm_fallback_timer,dispatch_time(DISPATCH_TIME_NOW,0),fast?NSEC_PER_SEC/120:NSEC_PER_SEC/10,(fast?1:10)*NSEC_PER_MSEC);
             }
             if(stand_in) hwm_display_tick(NULL,NULL,NULL,0,NULL,NULL);
         });
         dispatch_resume(hwm_fallback_timer);
     }
-    if(hwm_display_link && CVDisplayLinkIsRunning(hwm_display_link)) return;
-    if(hwm_display_link) { CVDisplayLinkRelease(hwm_display_link); hwm_display_link=NULL; }
-    CVReturn result=CVDisplayLinkCreateWithActiveCGDisplays(&hwm_display_link);
-    if(result==kCVReturnSuccess) result=CVDisplayLinkSetOutputCallback(hwm_display_link,hwm_display_tick,NULL);
-    if(result==kCVReturnSuccess) result=CVDisplayLinkStart(hwm_display_link);
-    if(result!=kCVReturnSuccess) warn("Tana2D: display clock unavailable; waiting for display wake.\n");
+    dispatch_async(dispatch_get_main_queue(), ^{ hwm_ca_start(); });
 }
 
 static void horizontal_ordered(uint32_t wid)

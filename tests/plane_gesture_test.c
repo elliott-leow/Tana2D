@@ -32,5 +32,11 @@ int main(void) {
         assert(hwm_plane_gesture_sample(&g,1,contacts,3,2,1600,.625,1,camera,&out));
         near(out.x,camera.x); near(out.y,camera.y);
     }
-    puts("plane gesture tests passed: 24 directions, both zooms, contact transitions");
+    HWMPlaneGesture fast={0}; HWMPlaneCamera camera={0,0,1},out;
+    HWMPlaneContact fingers[3]={{1,.1,.2},{2,.2,.3},{3,.3,.4}};
+    assert(hwm_plane_gesture_sample(&fast,1,fingers,3,1,1600,.625,1,camera,&out));
+    for(int i=0;i<3;i++) fingers[i].x+=.2;
+    assert(hwm_plane_gesture_sample(&fast,1,fingers,3,1.01,1600,.625,1,camera,&out));
+    near(out.x,-320);
+    puts("plane gesture tests passed: 24 directions, both zooms, fast motion, contact transitions");
 }
