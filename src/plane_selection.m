@@ -21,3 +21,15 @@ static void hwm_plane_choose_at(CGPoint point)
     hwm_plane_transition_to(view,target->strip_world_x+(target->strip_width-bounds.size.width)*.5,
                            target->strip_world_y+(target->strip_height-bounds.size.height)*.5,1,true);
 }
+/* Settle the camera after a pan without activating a window or posting any
+ * input. Empty canvas stays where the user left it. */
+static void hwm_plane_magnet_at(struct view *view,CGPoint point)
+{
+    if(!view || !hwm_magnetic_centering || hwm_plane_selecting || hwm_drag_window || hwm_edge_window) return;
+    struct window *target=window_manager_find_window_at_point(&g_window_manager,point);
+    if(!target || !view_find_window_node(view,target->id) || target->strip_offscreen || target->strip_close_ghost) return;
+    CGRect bounds=hwm_bounds(view);
+    hwm_hold_focus();
+    hwm_plane_transition_to(view,target->strip_world_x+target->strip_width*.5-bounds.size.width/(2*hwm_plane_scale),
+                           target->strip_world_y+target->strip_height*.5-bounds.size.height/(2*hwm_plane_scale),hwm_plane_scale,true);
+}

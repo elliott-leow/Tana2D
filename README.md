@@ -7,8 +7,8 @@ Experimental: scrolling and dragging are still under repair. See the
 [verification record](docs/VERIFICATION.md) for current failures and tested limits.
 
 Windows occupy positions on a plane. Move the camera horizontally or vertically
-with a three-finger swipe, and pinch to zoom in or out. **Control + Up** fits every managed window,
-preserving its position and relative size. There are no workspace walls.
+with a three-finger swipe, and pinch to zoom in or out. **Control + Enter** or **Control + Up** zooms out so you can click a window to
+center at 100%, preserving its size. Four-finger swipes up or down do the same. There are no workspace walls.
 
 Tana2D projects native windows through an animated WindowServer compositor backend. It is not a
 set of macOS Spaces or a screenshot-only overview.
@@ -39,8 +39,10 @@ require testing on the target Mac.
 | Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Pan in any direction, including diagonals |
 | Pinch | Zoom in or out |
-| Control + Return | Zoom out, then click a window to center it at 100% without resizing it |
-| Control + Up | Fit all plane windows |
+| Control + Return / Control + Up | Zoom out, then click a window to center it at 100% without resizing it |
+| Four-finger swipe up or down | Open the same click-to-center mode |
+| Command + Return | Open Terminal |
+| Command + Shift + W | Open Firefox |
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
 | Drag a title bar, or Option-drag a window | Place a window; nearby edges snap together |
@@ -57,6 +59,9 @@ existing windows.
 Camera commands animate position and zoom together. Command + Shift + Return also
 animates the active window’s size. Escape cancels click-to-select mode; macOS
 Reduce Motion disables these transitions.
+
+After a three-finger pan, the camera eases toward the window under the pointer.
+Empty canvas stays where you leave it. Hovering does not change keyboard focus.
 
 The camera panel is movable. **Fit all** preserves every window's world position
 and uses the tight bounding rectangle of the arrangement, with a small screen

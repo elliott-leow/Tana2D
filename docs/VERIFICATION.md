@@ -87,3 +87,25 @@ directory, IPC sockets, privileged helper, and scripting addition paths are
 separate from Tana. The shared manager lock prevents simultaneous management.
 Tana/HorizontalWM state is not imported. Layout version 3 ignores invalid size
 caches from version 2 and recovers actual native dimensions.
+
+## Input update on October 14, 2026
+
+Control+Up now invokes the same selection mode as Control+Return. Four-finger
+vertical swipes invoke it once per contact session; tests cover both directions,
+contact reordering/replacement, stale frames, multiple devices, horizontal motion,
+and finger-lift suppression. Three-finger pan release eases the camera toward the
+window under the pointer, preserves zoom, and does not activate or resize it.
+Empty canvas remains in place. `settings.magneticCentering` controls that behavior.
+
+Hover focus and focus-after-scroll are off in the local configuration. Synthetic
+focus-event records now use per-call buffers instead of a shared mutable buffer
+across the event loop and focus queue. This removes a code-level race; it does not
+establish that the user's reported phantom-key behavior was reproduced.
+Command+Return opens Terminal and Command+Shift+W opens Firefox explicitly.
+
+This update passed `make all test` (15 native executables and 20 Python tests),
+signed packaging, installation, and startup. Live checks confirmed the selection
+alias enters selection mode without changing world geometry, hover focus is off,
+there are no shortcut conflicts or helper move failures, and the launcher actions
+activate Terminal and Firefox. Physical four-finger recognition and magnetic feel
+remain unverified; app-targeted automation bypasses the global input tap.

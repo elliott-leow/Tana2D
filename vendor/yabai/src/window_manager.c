@@ -1269,6 +1269,7 @@ struct window *window_manager_find_second_cousin_for_managed_window(struct windo
 
 static void window_manager_make_key_window(ProcessSerialNumber *window_psn, uint32_t window_id)
 {
+    uint8_t event_bytes[0xf8];
     //
     // :SynthesizedEvent
     //
@@ -1278,31 +1279,32 @@ static void window_manager_make_key_window(ProcessSerialNumber *window_psn, uint
     // annotated to flow to an application.
     //
 
-    memset(g_event_bytes, 0, 0xf8);
-    g_event_bytes[0x04] = 0xf8;
-    g_event_bytes[0x3a] = 0x10;
-    memcpy(g_event_bytes + 0x3c, &window_id, sizeof(uint32_t));
-    memset(g_event_bytes + 0x20, 0xff, 0x10);
+    memset(event_bytes, 0, 0xf8);
+    event_bytes[0x04] = 0xf8;
+    event_bytes[0x3a] = 0x10;
+    memcpy(event_bytes + 0x3c, &window_id, sizeof(uint32_t));
+    memset(event_bytes + 0x20, 0xff, 0x10);
 
-    g_event_bytes[0x08] = 0x01;
-    SLPSPostEventRecordTo(window_psn, g_event_bytes);
+    event_bytes[0x08] = 0x01;
+    SLPSPostEventRecordTo(window_psn, event_bytes);
 
-    g_event_bytes[0x08] = 0x02;
-    SLPSPostEventRecordTo(window_psn, g_event_bytes);
+    event_bytes[0x08] = 0x02;
+    SLPSPostEventRecordTo(window_psn, event_bytes);
 }
 
 void window_manager_focus_window_without_raise(ProcessSerialNumber *window_psn, uint32_t window_id)
 {
     TIME_FUNCTION;
+    uint8_t event_bytes[0xf8];
 
     if (psn_equals(window_psn, &g_window_manager.focused_window_psn)) {
-        memset(g_event_bytes, 0, 0xf8);
-        g_event_bytes[0x04] = 0xf8;
-        g_event_bytes[0x08] = 0x0d;
+        memset(event_bytes, 0, 0xf8);
+        event_bytes[0x04] = 0xf8;
+        event_bytes[0x08] = 0x0d;
 
-        g_event_bytes[0x8a] = 0x02;
-        memcpy(g_event_bytes + 0x3c, &g_window_manager.focused_window_id, sizeof(uint32_t));
-        SLPSPostEventRecordTo(&g_window_manager.focused_window_psn, g_event_bytes);
+        event_bytes[0x8a] = 0x02;
+        memcpy(event_bytes + 0x3c, &g_window_manager.focused_window_id, sizeof(uint32_t));
+        SLPSPostEventRecordTo(&g_window_manager.focused_window_psn, event_bytes);
 
         //
         // @hack
@@ -1313,9 +1315,9 @@ void window_manager_focus_window_without_raise(ProcessSerialNumber *window_psn, 
 
         usleep(40000);
 
-        g_event_bytes[0x8a] = 0x01;
-        memcpy(g_event_bytes + 0x3c, &window_id, sizeof(uint32_t));
-        SLPSPostEventRecordTo(window_psn, g_event_bytes);
+        event_bytes[0x8a] = 0x01;
+        memcpy(event_bytes + 0x3c, &window_id, sizeof(uint32_t));
+        SLPSPostEventRecordTo(window_psn, event_bytes);
     }
 
     _SLPSSetFrontProcessWithOptions(window_psn, window_id, kCPSUserGenerated);

@@ -1,17 +1,4 @@
-static NSDictionary *hwm_default_shortcuts(void)
-{
-    return @{
-      @"left":@"alt+cmd+left",@"right":@"alt+cmd+right",@"up":@"alt+cmd+up",@"down":@"alt+cmd+down",
-      @"move-left":@"shift+alt+cmd+left",@"move-right":@"shift+alt+cmd+right",
-      @"move-up":@"shift+alt+cmd+up",@"move-down":@"shift+alt+cmd+down",
-      @"maximize":@"shift+cmd+return",@"select-window":@"ctrl+return",@"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
-      @"float":@"cmd+space",@"float-alt":@"alt+cmd+space",
-      @"center":@"alt+cmd+c",@"home":@"alt+cmd+h",@"close":@"cmd+q",
-      @"terminal":@"cmd+return",@"browser":@"shift+cmd+w",
-      @"previous":@"alt+cmd+tab",@"undo":@"alt+cmd+z",@"preset-width":@"alt+cmd+r",
-      @"commands":@"ctrl+alt+p",@"pause":@"ctrl+alt+shift+p",@"reload-config":@"ctrl+alt+r"
-    };
-}
+#include "plane_shortcuts.h"
 static NSArray *hwm_width_presets(void)
 {
     TanaConfigSnapshot *snapshot=[hwm_config copySnapshot];
@@ -64,11 +51,12 @@ static bool hwm_config_reload(bool announce)
     if(![@[@"center",@"column",@"none"] containsObject:snap]) [problems addObject:@"settings.snap must be center, column or none"];
     hwm_magnet=[snapshot numberAt:@"snapMagnet" fallback:.1 minimum:0 maximum:.6];
     hwm_snap_threshold=[snapshot numberAt:@"snapThreshold" fallback:.15 minimum:.02 maximum:.6];
+    hwm_magnetic_centering=[snapshot boolAt:@"magneticCentering" fallback:YES];
     hwm_swipe_gain=[snapshot numberAt:@"swipeGain" fallback:1 minimum:.4 maximum:3];
     NSString *placement=[[snapshot stringAt:@"newWindowPlacement" fallback:@"center-gap"] lowercaseString];
     hwm_new_placement=[placement isEqual:@"end"] ? 2 : [placement isEqual:@"beside-focused"] ? 1 : 0;
     if(![@[@"center-gap",@"beside-focused",@"end"] containsObject:placement]) [problems addObject:@"settings.newWindowPlacement must be center-gap, beside-focused or end"];
-    NSString *follow=[[snapshot stringAt:@"focusAfterScroll" fallback:@"pointer"] lowercaseString];
+    NSString *follow=[[snapshot stringAt:@"focusAfterScroll" fallback:@"none"] lowercaseString];
     hwm_focus_follow=[follow isEqual:@"none"] ? 0 : [follow isEqual:@"center"] ? 1 : 2;
     if(![@[@"center",@"pointer",@"none"] containsObject:follow]) [problems addObject:@"settings.focusAfterScroll must be center, pointer or none"];
     hwm_hud_enabled=[snapshot boolAt:@"hud" fallback:YES];
@@ -149,7 +137,7 @@ static void hwm_config_begin(void)
     if(![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         NSString *directory=path.stringByDeletingLastPathComponent;
         [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL];
-        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"pointer-movement",@"showStripMap":@NO,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
+        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"off",@"showStripMap":@NO,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
         int fd=open(path.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
         if(fd>=0) { write(fd,data.bytes,data.length); close(fd); }
     }
@@ -486,7 +474,7 @@ static bool hwm_named_action(const char *name)
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
     if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }
     if(strcmp(name,"maximize")==0) { hwm_plane_maximize(hwm_view()); return true; }
-    if(strcmp(name,"select-window")==0) {
+    if((strcmp(name,"select-window")==0 || strcmp(name,"select-window-alt")==0)) {
         if(hwm_paused || hwm_suspended) return true;
         hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
     }

@@ -160,7 +160,7 @@ static void hwm_plane_transition_to(struct view *v,double x,double y,double scal
 }
 static void hwm_plane_actual_size(struct view *v) { hwm_plane_transition_to(v,v->strip_offset,test_camera_y,1,true); }
 #include "../src/plane_actions.m"
-static bool hwm_plane_selecting,hwm_nav_pending;
+static bool hwm_plane_selecting,hwm_nav_pending,hwm_magnetic_centering=true;
 static uint32_t hwm_nav_window;
 static double hwm_nav_time;
 static struct window *selection_hit;
@@ -739,6 +739,16 @@ static void test_plane_click_to_center(void)
     hwm_plane_choose_at(CGPointMake(100,100));
     assert(!hwm_plane_selecting && hwm_nav_window==windows[1].id);
     selection_hit=NULL;
+    hwm_nav_pending=false; hwm_plane_selecting=false;
+    hwm_plane_scale=.5; view.strip_offset=50; test_camera_y=80;
+    hwm_plane_magnet_at(&view,CGPointMake(100,100));
+    assert(view.strip_offset==50 && test_camera_y==80); // No window, no pull.
+    selection_hit=w; hwm_plane_magnet_at(&view,CGPointMake(100,100));
+    assert(view.strip_offset==-1740 && test_camera_y==-330 && hwm_plane_scale==.5);
+    assert(!hwm_nav_pending && ax_calls==0 && moves==0); // Camera only, no focus or resize.
+    hwm_plane_selecting=true; view.strip_offset=50;
+    hwm_plane_magnet_at(&view,CGPointMake(100,100)); assert(view.strip_offset==50);
+    hwm_plane_selecting=false; selection_hit=NULL;
 }
 
 int main(void)

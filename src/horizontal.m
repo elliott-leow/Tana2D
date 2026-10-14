@@ -120,6 +120,7 @@ static double hwm_plane_y_initial_velocity, hwm_plane_y_current_velocity;
 static bool hwm_plane_y_scrolling;
 #include "plane_gesture.h"
 static HWMPlaneGesture hwm_plane_gesture;
+static HWMPlaneSelectionGesture hwm_selection_gesture;
 static double hwm_plane_scale=1;
 static bool hwm_camera_animating;
 static HWMPlaneCamera hwm_camera_from,hwm_camera_target;
@@ -128,6 +129,7 @@ static _Atomic bool hwm_plane_selecting;
 static bool hwm_plane_select_click;
 static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate);
 static bool hwm_plane_fit_active;
+static bool hwm_magnetic_centering=true;
 static void hwm_plane_set_camera(struct view *view,double x,double y,bool animate);
 static void hwm_plane_fit_all(struct view *view);
 static void hwm_plane_fit_focused(struct view *view);
@@ -138,7 +140,7 @@ static void hwm_feedback_navigation(bool wall);
 static void hwm_feedback_focus(struct window *previous,struct window *next);
 static void hwm_feedback_tick(struct view *view,double now);
 static void hwm_feedback_hide(void);
-static _Atomic bool hwm_pointer_focus=true;
+static _Atomic bool hwm_pointer_focus=false;
 static uint64_t hwm_frames, hwm_slow_frames, hwm_move_failures, hwm_resize_operations;
 static _Atomic uint64_t hwm_key_actions;
 static double hwm_max_frame_ms;
@@ -973,13 +975,8 @@ static void hwm_action(int action)
     }
     if(action==HWM_OVERVIEW_CANCEL) { horizontal_overview_select(0,0); return; }
     if (action==HWM_TERMINAL || action==HWM_BROWSER) {
-        if(action==HWM_BROWSER && !hwm_browser_command) {
-            dispatch_async(dispatch_get_main_queue(),^{
-                NSWorkspace *workspace=NSWorkspace.sharedWorkspace;
-                NSURL *browser=[workspace URLForApplicationToOpenURL:[NSURL URLWithString:@"https://example.com"]];
-                if(browser) [workspace openApplicationAtURL:browser configuration:[NSWorkspaceOpenConfiguration configuration] completionHandler:nil];
-            });
-        } else hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -a Terminal") : hwm_browser_command);
+        hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -a Terminal")
+                                       : (hwm_browser_command ?: @"open -b org.mozilla.firefox"));
         return;
     }
     if (action == HWM_QUIT) { hwm_shutdown(); return; }
@@ -1161,11 +1158,14 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         CGEventFlags flags = CGEventGetFlags(event);
         CGEventFlags modifiers=flags&(kCGEventFlagMaskCommand|kCGEventFlagMaskAlternate|kCGEventFlagMaskControl|kCGEventFlagMaskShift);
         int code=(int)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);
-        /* This is intentionally fixed rather than configurable: Control-Up is
-         * the compact way to fit the plane, never Mission Control or a second
-         * rearranging overview. Pinch is the only other zoom input. */
+        // Reserve Control-Up for the same animated chooser as Control-Return.
         if(code==126 && modifiers==kCGEventFlagMaskControl) {
-            hwm_keys[code]=true; event_loop_post(&g_event_loop,HORIZONTAL_INPUT,strdup("fit-all"),HWM_NAMED_ACTION); return true;
+            hwm_keys[code]=true;
+            if(!CGEventGetIntegerValueField(event,kCGKeyboardEventAutorepeat)) {
+                ++hwm_key_actions;
+                event_loop_post(&g_event_loop,HORIZONTAL_INPUT,strdup("select-window"),HWM_NAMED_ACTION);
+            }
+            return true;
         }
         if(code==53 && hwm_drag_window) {
             hwm_keys[code]=true;
@@ -1201,7 +1201,7 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         if (phase == 1) hwm_swiping = true;
         if (!hwm_swiping) return false;
         hwm_swipe_time = read_os_timer();
-        // The raw three-contact stream owns both camera axes.
+        // Raw contacts own three-finger pan and four-finger selection.
         if (phase == 4 || phase == 8) hwm_swiping = false;
         return true;
     }
@@ -1326,6 +1326,13 @@ static void horizontal_input(void *context, int action)
         HWMPlaneTouchFrame *sample=context;
         struct view *view=hwm_view();
         if(view && !hwm_paused && !hwm_suspended && !mission_control_is_active()) {
+            bool select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
+            if(select || hwm_selection_gesture.engaged || sample->count>=4) {
+                hwm_plane_gesture.active=false;
+                __atomic_store_n(&__pending_gesture,false,__ATOMIC_RELEASE);
+                if(select) { hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(view); }
+                free(sample); return;
+            }
             double now=hwm_now(); CGRect bounds=hwm_bounds(view);
             HWMPlaneCamera camera={hwm_offset(view,now),hwm_plane_camera_y(now),hwm_plane_scale},target;
             if(hwm_plane_gesture_sample(&hwm_plane_gesture,sample->device,sample->contacts,sample->count,
@@ -1338,11 +1345,13 @@ static void horizontal_input(void *context, int action)
                 if(!hwm_plane_gesture.active) {
                     hwm_focus_after_scroll=false;
                     __atomic_store_n(&__last_gesture_time,read_os_timer(),__ATOMIC_RELEASE);
+                    CGPoint pointer;
+                    if(SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer);
                 }
                 hwm_input_log[hwm_input_log_count%HWM_FRAME_LOG].time=sample->time;
                 hwm_input_log[hwm_input_log_count++%HWM_FRAME_LOG].offset=target.x;
             }
-        } else hwm_plane_gesture.active=false;
+        } else { hwm_plane_gesture.active=false; hwm_selection_gesture=(HWMPlaneSelectionGesture){0}; }
         free(sample); return;
     }
     if (action != HWM_EVENT) { hwm_action(action); return; }

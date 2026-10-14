@@ -162,7 +162,7 @@ static TanaConfigSnapshot *tana_snapshot(NSDictionary *document, NSDictionary *d
     if (!mod) { [diagnostics addObject:@"settings.mod is not a modifier list such as \"alt+cmd\""]; mod=NSEventModifierFlagOption|NSEventModifierFlagCommand; }
     tana_mod_mask=mod;
     if (tana_number([settings objectForKey:@"motionStrength"],&candidate) && candidate>=0 && candidate<=1) motion=candidate;
-    NSString *focus=tana_lower([settings objectForKey:@"autofocus"]); TanaAutofocusMode autofocus=[focus isEqual:@"off"] ? TanaAutofocusOff : [focus isEqual:@"after-scroll"] ? TanaAutofocusAfterScroll : TanaAutofocusPointerMovement;
+    NSString *focus=tana_lower([settings objectForKey:@"autofocus"]); TanaAutofocusMode autofocus=[focus isEqual:@"pointer-movement"] ? TanaAutofocusPointerMovement : [focus isEqual:@"after-scroll"] ? TanaAutofocusAfterScroll : TanaAutofocusOff;
     BOOL showStripMap=tana_bool([settings objectForKey:@"showStripMap"],NO);
     NSArray *inputWidths=[settings objectForKey:@"stripWidths"]; NSMutableArray *widths=[NSMutableArray array];
     if ([inputWidths isKindOfClass:[NSArray class]]) for (id value in inputWidths) if (tana_number(value,&candidate) && candidate>0 && candidate<=1) [widths addObject:@(candidate)];

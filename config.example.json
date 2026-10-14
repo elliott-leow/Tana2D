@@ -1,7 +1,9 @@
 {
   "settings": {
     "motionStrength": 1,
-    "autofocus": "pointer-movement",
+    "autofocus": "off",
+    "focusAfterScroll": "none",
+    "magneticCentering": true,
     "showMenuBar": true,
     "showStripMap": false,
     "stripWidths": [
@@ -53,10 +55,9 @@
     },
     "commands": {
       "terminal": "open -a Terminal",
-      "browser": "open -a Safari"
+      "browser": "open -b org.mozilla.firefox"
     },
     "swipeGain": 1,
-    "focusAfterScroll": "pointer",
     "dimInactive": 0.2,
     "attention": "badge",
     "haptics": true,
@@ -74,7 +75,7 @@
     "move-right": "mod+shift+right",
     "move-up": "mod+shift+up",
     "move-down": "mod+shift+down",
-    "fit-all": "ctrl+up",
+    "select-window-alt": "ctrl+up",
     "maximize": "shift+cmd+return",
     "select-window": "ctrl+return",
     "fit-focused": "mod+f",

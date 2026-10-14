@@ -9,7 +9,7 @@ typedef struct {
     float angle,major,minor; HWM_MTVector absolute; int reserved2,reserved3; float density;
 } HWM_MTTouch;
 typedef struct {
-    uintptr_t device; HWMPlaneContact contacts[3]; int count;
+    uintptr_t device; HWMPlaneContact contacts[4]; int count;
     double time,aspect;
 } HWMPlaneTouchFrame;
 static CFArrayRef hwm_mt_devices;
@@ -24,7 +24,7 @@ static int hwm_mt_callback(void *device,HWM_MTTouch *touches,int count,double ti
     if(!hwm_ready || hwm_paused || hwm_suspended || hwm_overview_active) return 0;
     HWMPlaneTouchFrame sample={.device=(uintptr_t)device,.time=hwm_now(),.aspect=.625};
     for(int i=0;i<count;i++) if(touches[i].state==3 || touches[i].state==4) {
-        if(sample.count<3) sample.contacts[sample.count]=(HWMPlaneContact){touches[i].identifier,touches[i].normalized.position.x,touches[i].normalized.position.y};
+        if(sample.count<4) sample.contacts[sample.count]=(HWMPlaneContact){touches[i].identifier,touches[i].normalized.position.x,touches[i].normalized.position.y};
         ++sample.count;
     }
     int width=0,height=0;

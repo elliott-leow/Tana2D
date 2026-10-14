@@ -36,4 +36,35 @@ static inline bool hwm_plane_gesture_sample(HWMPlaneGesture *g,uintptr_t device,
     for(int i=0;i<3;i++) g->contacts[i]=contacts[i];
     return true;
 }
+/* A four-finger vertical swipe selects once, then stays latched until all
+ * contacts lift. Contact replacement and stale frames establish a new baseline. */
+typedef struct {
+    bool tracking,fired,engaged;
+    uintptr_t device;
+    HWMPlaneContact contacts[4];
+    double time,dx,dy;
+} HWMPlaneSelectionGesture;
+static inline bool hwm_plane_selection_gesture_sample(HWMPlaneSelectionGesture *g,uintptr_t device,
+                                                       const HWMPlaneContact *contacts,int count,double time)
+{
+    if(!g || !isfinite(time)) return false;
+    if(g->engaged && device!=g->device) return false;
+    if(count==0) { *g=(HWMPlaneSelectionGesture){0}; return false; }
+    if(count!=4) { g->tracking=false; return false; }
+    for(int i=0;i<4;i++) if(!isfinite(contacts[i].x) || !isfinite(contacts[i].y)) return false;
+    bool continuous=g->tracking && time>=g->time && time-g->time<.2;
+    double dx=0,dy=0;
+    if(continuous) for(int i=0;i<4;i++) {
+        int found=-1;
+        for(int j=0;j<4;j++) if(contacts[i].id==g->contacts[j].id) found=j;
+        if(found<0) { continuous=false; break; }
+        dx+=(contacts[i].x-g->contacts[found].x)/4;
+        dy+=(contacts[i].y-g->contacts[found].y)/4;
+    }
+    if(continuous) { g->dx+=dx; g->dy+=dy; } else { g->dx=0; g->dy=0; }
+    g->tracking=true; g->engaged=true; g->device=device; g->time=time;
+    for(int i=0;i<4;i++) g->contacts[i]=contacts[i];
+    if(!g->fired && fabs(g->dy)>=.045 && fabs(g->dy)>fabs(g->dx)*1.3) { g->fired=true; return true; }
+    return false;
+}
 #endif
