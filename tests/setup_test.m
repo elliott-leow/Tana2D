@@ -8,7 +8,7 @@
 #include <assert.h>
 #define MAXLEN 1024
 #define SA_SOCKET_PATH_FMT "/tmp/tana2d-test-%s.socket"
-#define OSAX_VERSION "0.5.0"
+#define OSAX_VERSION "0.5.1"
 #define OSAX_ATTRIB_PLANE_TRANSFORM 0x80
 static char g_sa_socket_file[MAXLEN];
 static bool scripting_addition_request_handshake(char *v,size_t n,uint32_t *a) { (void)v;(void)n;(void)a;return false; }

@@ -64,3 +64,5 @@ live-tools:
 	$(CC) tests/window_metrics.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/window_metrics
 	$(CC) tests/plane_gesture_probe.m -framework Cocoa -o build/plane_gesture_probe
 	$(CC) tests/plane_pointer_probe.m -framework Cocoa -o build/plane_pointer_probe
+
+	$(CC) -fno-objc-arc tests/live_transform_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_transform_transaction

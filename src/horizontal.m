@@ -572,8 +572,8 @@ static void hwm_drag_started(struct window *window)
     hwm_drag_camera_x=view?hwm_offset(view,hwm_now()):0;
     hwm_drag_camera_y=hwm_plane_camera_y(hwm_now());
     hwm_drag_world_origin=CGPointMake(window->strip_world_x,window->strip_world_y);
-    /* This is the untransformed native frame. A live query can report the
-     * compositor-scaled bounds while zoom is active. */
+    /* This cache stores the last displayed origin and unscaled size. Use it
+     * rather than the independent native anchor to keep the grab point stable. */
     CGRect actual=window->strip_last_frame;
     if(CGRectIsNull(actual)) SLSGetWindowBounds(g_connection,window->id,&actual);
     if(view && !CGRectIsNull(actual)) {
@@ -857,29 +857,7 @@ static void hwm_nav_to(struct view *view,struct window *target)
     hwm_feedback_focus(NULL,target);
 }
 
-static void hwm_plane_choose_at(CGPoint point)
-{
-    struct view *view=hwm_view(); if(!view || !hwm_plane_selecting) return;
-    struct window *target=window_manager_find_window_at_point(&g_window_manager,point);
-    if(!target || !view_find_window_node(view,target->id)) target=NULL;
-    // Empty space keeps selection open. Use displayed geometry so a click
-    // during the zoom animation selects the surface actually under the pointer.
-    for(struct window_node *n=window_node_find_first_leaf(view->root);!target && n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
-        struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
-        if(!w || w->strip_close_ghost || w->strip_offscreen) continue;
-        CGRect frame=w->strip_last_frame;
-        frame.size.width*=w->strip_last_plane_scale; frame.size.height*=w->strip_last_plane_scale;
-        if(CGRectContainsPoint(frame,point)) { target=w; break; }
-    }
-    if(!target) return;
-    hwm_plane_selecting=false; hwm_hold_focus();
-    CGRect bounds=hwm_bounds(view);
-    hwm_nav_window=target->id; hwm_nav_time=hwm_now(); hwm_nav_pending=true;
-    hwm_last_input=hwm_now(); hwm_preserve_focus_window=target->id; hwm_preserve_focus_until=hwm_now()+1;
-    hwm_feedback_focus(NULL,target);
-    hwm_plane_transition_to(view,target->strip_world_x+(target->strip_width-bounds.size.width)*.5,
-                           target->strip_world_y+(target->strip_height-bounds.size.height)*.5,1,true);
-}
+#include "plane_selection.m"
 /* When the strip is moved under a still pointer, the window that ends up
  * beneath it takes focus without the pointer having to move. Which window
  * that will be is known the moment the camera is given its destination
@@ -1696,7 +1674,7 @@ static void horizontal_command(FILE *rsp, char *message)
     struct token command = get_token(&message);
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.0\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.1\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1817,11 +1795,11 @@ static void horizontal_command(FILE *rsp, char *message)
     struct view *view = hwm_view();
     if (token_equals(command,"input-status")) {
         CFMachPortRef tap=__atomic_load_n(&g_mouse_state.handle,__ATOMIC_RELAXED);
-        fprintf(rsp,"{\"tap_enabled\":%s,\"key_actions\":%llu,\"suspended\":%s,\"overview\":%s,\"overview_renderer\":\"native\",\"overview_windows\":%u,\"overview_frames\":%llu,\"overview_frames_over_8ms\":%llu,\"overview_max_frame_ms\":%.3f,\"overview_queue_max_ms\":%.3f,\"overview_flush_max_ms\":%.3f,\"overview_present_max_ms\":%.3f,\"overview_begin_ms\":%.3f,\"vertical_progress\":%.4f,\"overview_closing\":%s,\"overview_animating\":%s,\"overview_gesture_active\":%s,\"mission_control\":%s}\n",tap&&CGEventTapIsEnabled(tap)?"true":"false",(unsigned long long)hwm_key_actions,hwm_suspended?"true":"false",hwm_overview_active?"true":"false",(unsigned)hwm_overview_window_count,(unsigned long long)hwm_overview_frames,(unsigned long long)hwm_overview_slow_frames,hwm_overview_max_frame_ms,hwm_overview_queue_max_ms,hwm_overview_flush_max_ms,hwm_overview_present_max_ms,hwm_overview_begin_ms,hwm_vertical_last_progress,hwm_overview_closing?"true":"false",hwm_overview_animating?"true":"false",hwm_overview_gesture_active?"true":"false",mission_control_is_active()?"true":"false"); return;
+        fprintf(rsp,"{\"tap_enabled\":%s,\"key_actions\":%llu,\"suspended\":%s,\"selecting\":%s,\"overview\":%s,\"overview_renderer\":\"native\",\"overview_windows\":%u,\"overview_frames\":%llu,\"overview_frames_over_8ms\":%llu,\"overview_max_frame_ms\":%.3f,\"overview_queue_max_ms\":%.3f,\"overview_flush_max_ms\":%.3f,\"overview_present_max_ms\":%.3f,\"overview_begin_ms\":%.3f,\"vertical_progress\":%.4f,\"overview_closing\":%s,\"overview_animating\":%s,\"overview_gesture_active\":%s,\"mission_control\":%s}\n",tap&&CGEventTapIsEnabled(tap)?"true":"false",(unsigned long long)hwm_key_actions,hwm_suspended?"true":"false",hwm_plane_selecting?"true":"false",hwm_overview_active?"true":"false",(unsigned)hwm_overview_window_count,(unsigned long long)hwm_overview_frames,(unsigned long long)hwm_overview_slow_frames,hwm_overview_max_frame_ms,hwm_overview_queue_max_ms,hwm_overview_flush_max_ms,hwm_overview_present_max_ms,hwm_overview_begin_ms,hwm_vertical_last_progress,hwm_overview_closing?"true":"false",hwm_overview_animating?"true":"false",hwm_overview_gesture_active?"true":"false",mission_control_is_active()?"true":"false"); return;
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.0\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.1\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {

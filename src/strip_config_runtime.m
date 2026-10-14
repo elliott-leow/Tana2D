@@ -490,7 +490,7 @@ static bool hwm_named_action(const char *name)
         if(hwm_paused || hwm_suspended) return true;
         hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
     }
-    if(strcmp(name,"fit-all")==0) { hwm_plane_fit_all(hwm_view()); return true; }
+    if(strcmp(name,"fit-all")==0) { hwm_plane_selecting=false; hwm_plane_fit_all(hwm_view()); return true; }
     if(strcmp(name,"fit-focused")==0) { hwm_plane_fit_focused(hwm_view()); return true; }
     if(strcmp(name,"actual-size")==0) { hwm_plane_actual_size(hwm_view()); return true; }
     if(strncmp(name,"exec:",5)==0) { hwm_spawn(@(name+5)); return true; }

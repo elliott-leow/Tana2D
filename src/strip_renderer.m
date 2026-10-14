@@ -62,6 +62,23 @@ static bool hwm_render(struct view *view, double now)
                 hwm_visibility_set(window,true,frame);
             }
             bool resize = (CGRectIsNull(last) || fabs(last.size.width-base.size.width) >= 1 || fabs(last.size.height-base.size.height) >= 1);
+            // AppKit limits AX size to the room remaining after the native
+            // anchor. Relocate that anchor only for an explicit growing resize,
+            // then restore the displayed projection in the same hidden batch.
+            // Camera movement and dragging never take this path.
+            bool anchor_moved=false;
+            CGPoint anchor=window->frame.origin;
+            if(resize && !CGRectIsNull(last)) {
+                if(window->strip_width>window->frame.size.width && anchor.x+window->strip_width>CGRectGetMaxX(screen)) anchor.x=bounds.origin.x;
+                if(window->strip_height>window->frame.size.height && anchor.y+window->strip_height>CGRectGetMaxY(screen)) anchor.y=bounds.origin.y;
+                if(!CGPointEqualToPoint(anchor,window->frame.origin)) {
+                    if(!batched) { hwm_batch_begin(); batched=true; }
+                    if(!scripting_addition_move_window(window->id,anchor.x,anchor.y)) {
+                        ++hwm_move_failures; hwm_backend_ok=false; hwm_batch_end(); return false;
+                    }
+                    window->frame.origin=anchor; anchor_moved=true;
+                }
+            }
             bool move = revealing || resize || CGRectIsNull(last) || !CGPointEqualToPoint(last.origin, base.origin);
             if (move && travelling && !resize && !window->strip_size_pending && !CGRectIsNull(last) &&
                 !CGRectIntersectsRect(last,visible) && !CGRectIntersectsRect(frame,visible)) {
@@ -86,6 +103,7 @@ static bool hwm_render(struct view *view, double now)
                 hwm_visibility_set(window,false,frame);
             }
             if (resize) {
+                if(anchor_moved) hwm_batch_settle();
                 ++hwm_resize_operations;
                 // Size goes through Accessibility, handed off so that this frame
                 // never waits for the application to answer.

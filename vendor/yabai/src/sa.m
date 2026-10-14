@@ -431,8 +431,8 @@ static bool scripting_addition_send_bytes(char *bytes, int length)
 }
 
 /* The plane payload replies with one byte: 1 after its single absolute
- * transform transaction commits, 0 for malformed input or a transaction
- * failure. Unlike legacy commands, this makes backend failure observable. */
+ * transform transaction is submitted, 0 for malformed input or failure to
+ * create the transaction. Unlike legacy commands, this makes backend failure observable. */
 static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length)
 {
     long long start = hwm_sa_monotonic_ms();

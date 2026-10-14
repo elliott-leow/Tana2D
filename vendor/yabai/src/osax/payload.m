@@ -62,8 +62,8 @@ extern void SLSMoveWindowsToManagedSpace(int cid, CFArrayRef window_list, uint64
 extern void SLSShowSpaces(int cid, CFArrayRef space_list);
 extern void SLSHideSpaces(int cid, CFArrayRef space_list);
 extern CFTypeRef SLSTransactionCreate(int cid);
-extern CGError SLSTransactionCommit(CFTypeRef transaction, int synchronous);
-extern CGError SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
+extern void SLSTransactionCommit(CFTypeRef transaction, int synchronous);
+extern void SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
 extern CGError SLSSetWindowSubLevel(int cid, uint32_t wid, int level);
@@ -639,17 +639,14 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     if (!hwm_plane_transform_packet_decode(message, length, transforms, SA_PLANE_TRANSFORM_MAX_RECORDS, &count)) return false;
     CFTypeRef transaction = SLSTransactionCreate(SLSMainConnectionID());
     if (!transaction) return false;
-    bool success = true;
-    for (uint16_t index = 0; index < count; ++index) {
-        if (SLSTransactionSetWindowTransform(transaction, transforms[index].wid, 0, 0,
-                                             hwm_plane_transform_matrix(transforms[index])) != kCGErrorSuccess) {
-            success = false;
-            break;
-        }
-    }
-    if (success && SLSTransactionCommit(transaction, 0) != kCGErrorSuccess) success = false;
+    // These transaction functions return void on current macOS. Treating
+    // register contents as CGError falsely rejected successfully queued work.
+    for (uint16_t index = 0; index < count; ++index)
+        SLSTransactionSetWindowTransform(transaction, transforms[index].wid, 0, 0,
+                                        hwm_plane_transform_matrix(transforms[index]));
+    SLSTransactionCommit(transaction, 0);
     CFRelease(transaction);
-    return success;
+    return true;
 }
 
 static void do_window_move(char *message)

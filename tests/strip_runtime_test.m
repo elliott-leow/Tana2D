@@ -66,7 +66,7 @@ static CGRect actual[4],projected[4];
 static double test_scales[4];
 static double clock_now=10;
 static int ax_calls,moves,disable_calls,update_depth;
-static bool move_fails;
+static bool move_fails,clamp_native_sizes;
 static float alphas[4];
 static int close_calls;
 static double hwm_now(void) { return clock_now; }
@@ -109,7 +109,9 @@ static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
 static void window_manager_resize_window(struct window *w,double width,double height) {
-    ++ax_calls; actual[w->id-1].size=CGSizeMake(width,height);
+    ++ax_calls;
+    if(clamp_native_sizes) { width=fmin(width,1224-actual[w->id-1].origin.x); height=fmin(height,963-actual[w->id-1].origin.y); }
+    actual[w->id-1].size=CGSizeMake(width,height);
     projected[w->id-1].size=CGSizeMake(width*test_scales[w->id-1],height*test_scales[w->id-1]);
 }
 static void hwm_column_width(struct view *v,struct window *w,double width) { (void)v; w->strip_width=width; }
@@ -158,6 +160,15 @@ static void hwm_plane_transition_to(struct view *v,double x,double y,double scal
 }
 static void hwm_plane_actual_size(struct view *v) { hwm_plane_transition_to(v,v->strip_offset,test_camera_y,1,true); }
 #include "../src/plane_actions.m"
+static bool hwm_plane_selecting,hwm_nav_pending;
+static uint32_t hwm_nav_window;
+static double hwm_nav_time;
+static struct window *selection_hit;
+
+static struct window *window_manager_find_window_at_point(void *manager,CGPoint point) { (void)manager; (void)point; return selection_hit; }
+static void hwm_feedback_focus(void *old,struct window *next) { (void)old; (void)next; }
+#include "../src/plane_selection.m"
+
 
 
 static void reset(void)
@@ -167,7 +178,7 @@ static void reset(void)
     view=(struct view){.layout=VIEW_STRIP,.window_gap=12,.root=nodes};
     clock_now=10; hwm_last_input=0; __pending_gesture=false;
     hwm_move_failures=0; hwm_resize_operations=0; ax_calls=0; moves=0; disable_calls=0; update_depth=0;
-    hwm_backend_ok=true; move_fails=false;
+    hwm_backend_ok=true; move_fails=false; clamp_native_sizes=false;
     hwm_shelf=0; hwm_shelf_from=0; hwm_shelf_start=-100; hwm_shelf_holding=false; memset(hwm_shelf_offsets,0,sizeof(hwm_shelf_offsets));
     g_mouse_state.window=NULL; close_calls=0; hwm_edge_window=0; hwm_edge_neighbor=0; undo_captures=0;
     for(int i=0;i<4;i++) {
@@ -533,12 +544,14 @@ static void test_maximize_at_actual_size(void)
     hwm_plane_scale=.5; hwm_plane_fit_active=true;
     view.strip_offset=1000; test_camera_y=-200;
     w->strip_world_x=42; w->strip_world_y=67;
+    clamp_native_sizes=true;
     hwm_plane_maximize(&view); hwm_render(&view,clock_now);
     assert(hwm_plane_scale==1 && !hwm_plane_fit_active);
     assert(view.strip_offset==42 && test_camera_y==67);
     assert(w->strip_width==1200 && w->strip_height==900);
     clock_now+=1; hwm_render(&view,clock_now); clock_now+=.3; hwm_render(&view,clock_now);
     assert(CGRectEqualToRect(projected[0],hwm_bounds(&view)));
+    assert(moves==1 && CGPointEqualToPoint(actual[0].origin,hwm_bounds(&view).origin));
     assert(undo_captures==1 && hwm_preserve_focus_window==w->id);
 }
 static void test_final_resize_confirmation(void)
@@ -706,9 +719,32 @@ static void test_native_anchor_is_independent_of_projection(void)
     assert(projected[0].origin.y==round(51+(windows[0].strip_world_y-test_camera_y)*.75));
 }
 
+static void test_plane_click_to_center(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.5; hwm_plane_fit_active=true;
+    w->strip_world_x=-740; w->strip_world_y=420;
+    w->strip_width=400; w->strip_height=300;
+    w->strip_last_frame=CGRectMake(50,60,400,300); w->strip_last_plane_scale=.5;
+    w->strip_offscreen=false; hwm_plane_selecting=true; selection_hit=NULL;
+    for(int i=1;i<4;i++) windows[i].strip_offscreen=true;
+    hwm_plane_choose_at(CGPointMake(800,800));
+    assert(hwm_plane_selecting); // Empty canvas does not choose a window.
+    hwm_plane_choose_at(CGPointMake(100,100));
+    assert(!hwm_plane_selecting && hwm_nav_pending && hwm_nav_window==w->id);
+    assert(hwm_plane_scale==1 && view.strip_offset==-1140 && test_camera_y==120);
+    assert(w->strip_width==400 && w->strip_height==300 && ax_calls==0 && moves==0);
+    // A real WindowServer hit selects the topmost window in overlapping surfaces.
+    hwm_plane_selecting=true; selection_hit=&windows[1]; windows[1].strip_offscreen=false;
+    hwm_plane_choose_at(CGPointMake(100,100));
+    assert(!hwm_plane_selecting && hwm_nav_window==windows[1].id);
+    selection_hit=NULL;
+}
+
 int main(void)
 {
     @autoreleasepool {
+    test_plane_click_to_center();
     test_native_anchor_is_independent_of_projection();
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
