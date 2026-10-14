@@ -457,6 +457,28 @@ static bool hwm_plane_direction_action(const char *name)
 }
 #include "plane_actions.m"
 
+/* `hwm_named_action` is also the daemon's fall-through parser. Keep this
+ * recognition side-effect free so status and unknown tokens cannot commit a
+ * pending navigation cursor merely by being inspected. Commands handled above
+ * this helper intentionally preserve their existing no-flush behavior. */
+static bool hwm_named_action_requires_navigation_flush(const char *name)
+{
+    if(!name) return false;
+    if(!strcmp(name,"reload-config") || !strcmp(name,"arrange-grid") || !strcmp(name,"maximize") ||
+       !strcmp(name,"select-window") || !strcmp(name,"select-window-alt") || !strcmp(name,"fit-all") ||
+       !strcmp(name,"fit-focused") || !strcmp(name,"actual-size") || !strcmp(name,"quit") ||
+       !strcmp(name,"commands") || !strcmp(name,"palette") || !strcmp(name,"remember-width") ||
+       !strcmp(name,"remember-floating") || !strcmp(name,"remember-beside") || !strcmp(name,"float") ||
+       !strcmp(name,"full") || !strcmp(name,"center") || !strcmp(name,"home") || !strcmp(name,"pause") ||
+       !strcmp(name,"reflow") || !strcmp(name,"close") || !strcmp(name,"terminal") || !strcmp(name,"browser") ||
+       !strcmp(name,"swap-left") || !strcmp(name,"swap-right") || !strcmp(name,"float-alt") || !strcmp(name,"full-alt") || !strcmp(name,"terminal-keypad") ||
+       !strcmp(name,"full-keypad") || !strcmp(name,"undo") || !strcmp(name,"preset-width") ||
+       !strcmp(name,"previous") || !strcmp(name,"utility-mark") || !strcmp(name,"utility") ||
+       !strcmp(name,"mark") || !strcmp(name,"jump-mark")) return true;
+    return !strncmp(name,"exec:",5) || !strncmp(name,"jump:",5) ||
+           !strncmp(name,"layout-load:",12) || !strncmp(name,"layout-save:",12);
+}
+
 static bool hwm_named_action(const char *name)
 {
     if(!name) return false;
@@ -469,8 +491,10 @@ static bool hwm_named_action(const char *name)
     if(strcmp(name,"setup")==0) {
         dispatch_async(dispatch_get_main_queue(),^{ [[TanaSetup shared] showForStartup:NO preview:NO]; }); return true;
     }
-    // Every command except further navigation acts on the window the cursor reached.
-    if(strcmp(name,"left") && strcmp(name,"right")) hwm_nav_flush();
+    // Every recognized command below acts on the window the cursor reached.
+    // Do not flush while probing an unknown or read-only daemon token.
+    if(!hwm_named_action_requires_navigation_flush(name)) return false;
+    hwm_nav_flush();
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
     if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }
     if(strcmp(name,"maximize")==0) { hwm_plane_maximize(hwm_view()); return true; }
