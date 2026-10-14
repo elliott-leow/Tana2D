@@ -67,6 +67,29 @@ static void test_multi_neighbor_snap(void)
     assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){1000,1000,40,50},one,1,12,24,&snap));
 }
 
+static void test_snap_has_radial_bound(void)
+{
+    const double scales[]={.1,.25,.5,.7,1,2,4};
+    HWMPlaneRect neighbor={100,100,100,100};
+    for(size_t z=0;z<sizeof(scales)/sizeof(scales[0]);z++) {
+        double scale=scales[z],range=12/scale;
+        for(int ix=-60;ix<=60;ix++) for(int iy=-60;iy<=60;iy++) {
+            HWMPlaneRect moving={212+ix*.25/scale,100+iy*.25/scale,40,50};
+            HWMPlanePoint target;
+            if(hwm_plane_snap_neighbors_target(moving,&neighbor,1,12,range,&target)) {
+                assert(hypot(target.x-moving.x,target.y-moving.y)<=range);
+                assert(!hwm_plane_rects_overlap((HWMPlaneRect){target.x,target.y,40,50},neighbor));
+            } else { near(target.x,moving.x); near(target.y,moving.y); }
+        }
+        HWMPlaneRect moving={212+12/scale,100,40,50};
+        HWMPlanePoint target;
+        assert(hwm_plane_snap_neighbors_target(moving,&neighbor,1,12,range,&target));
+        near(target.x,212);
+        moving.x+=.001/scale;
+        assert(!hwm_plane_snap_neighbors_target(moving,&neighbor,1,12,range,&target));
+    }
+}
+
 int main(void)
 {
     HWMPlaneCamera from={-600,300,.2},to={200,-90,1};
@@ -85,6 +108,7 @@ int main(void)
     near(fallback.x,from.x); near(fallback.y,from.y); near(fallback.scale,from.scale);
     test_edge_pan_hold();
     test_multi_neighbor_snap();
+    test_snap_has_radial_bound();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);
     near(camera.x,-900); near(camera.y,640); /* plane has no walls */

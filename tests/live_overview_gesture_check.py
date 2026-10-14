@@ -57,6 +57,18 @@ def closed():
 
 
 try:
+    # A native overview replaces the plane click-to-center mode. Otherwise
+    # the stale selector would claim a later title-bar press as a plane drag.
+    gesture('select-window', 0)
+    wait_for(lambda: state()['selecting'])
+    command('overview-progress', 1)
+    wait_for(lambda: state()['overview'])
+    assert not state()['selecting'], state()
+    command('overview-cancel')
+    closed()
+    assert not state()['selecting'], state()
+    report['checks'].append('opening native overview clears prior plane selection ownership')
+
     # Regression: a begin during close used to clear animating permanently.
     command('overview-progress', 1)
     command('overview-cancel')

@@ -50,9 +50,9 @@ static HWMPlanePointerPress *hwm_pointer_sample_find_time_locked(int button,uint
     }
     return found;
 }
-/* Capture a queued drag's own event point and its press generation. It returns
- * false only for an explicitly aborted press; callers may separately request
- * that generation's final coalesced drag after physical mouse-up. */
+/* Capture a queued drag's own event point and its press generation. An event
+ * whose retained press has been evicted is not safe to route to a newer owner,
+ * so it fails closed just like an explicitly aborted press. */
 static bool hwm_pointer_sample_drag_event(CGEventRef event,CGPoint *point,uint64_t *generation)
 {
     if(!event || !point) return false;
@@ -65,7 +65,7 @@ static bool hwm_pointer_sample_drag_event(CGEventRef event,CGPoint *point,uint64
     if(press) { found_generation=press->generation; aborted=press->aborted; }
     os_unfair_lock_unlock(&hwm_pointer_sample_lock);
     if(generation) *generation=found_generation;
-    return !aborted;
+    return found_generation && !aborted;
 }
 static uint64_t hwm_pointer_sample_generation_for_event(CGEventType type)
 {

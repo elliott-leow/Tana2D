@@ -111,6 +111,10 @@ static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
             break;
         }
         os_unfair_lock_unlock(&hwm_resize_hit_lock);
+        /* At normal scale AppKit owns the title bar, including its top band.
+         * Capturing that press as resize steals the native drag's mouse-down.
+         * Side/bottom edges and zoomed-out corner handles remain available. */
+        if(camera_scale>=.70 && (direction&HANDLE_TOP)) return false;
         if(!direction) return false;
     }
     HWMPlaneResizeInput *input=malloc(sizeof(*input));
@@ -131,6 +135,7 @@ static void hwm_plane_resize_input(HWMPlaneResizeInput *input)
         if(hwm_resize_owned) hwm_plane_resize_abort_interaction(NULL,false);
         struct window *w=window_manager_find_window(&g_window_manager,input->id);
         if(w && view_find_window_node(view,w->id) && !hwm_paused && !hwm_suspended) {
+            (void)hwm_ax_cancel_resize(w->id);
             bool displayed_camera=isfinite(input->camera_x) && isfinite(input->camera_y) &&
                 isfinite(input->camera_scale) && input->camera_scale>0;
             if(displayed_camera) hwm_plane_transition_to(view,input->camera_x,input->camera_y,input->camera_scale,false);

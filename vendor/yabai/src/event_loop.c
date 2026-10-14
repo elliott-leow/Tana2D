@@ -1306,8 +1306,8 @@ static EVENT_HANDLER(MOUSE_DRAGGED)
     if (button == kCGMouseButtonLeft || button == kCGMouseButtonRight)
         atomic_store(&horizontal_dragged_queued[button], false);
     firefox_discovery_drag();
-    if (horizontal_drag(context)) goto out;
     if (mission_control_is_active()) goto out;
+    if (horizontal_drag(context)) goto out;
     if (!g_mouse_state.window)       goto out;
 
     if (!__sync_bool_compare_and_swap(&g_mouse_state.window->id_ptr, &g_mouse_state.window->id, &g_mouse_state.window->id)) {
@@ -1530,6 +1530,7 @@ out:
 static EVENT_HANDLER(MISSION_CONTROL_SHOW_ALL_WINDOWS)
 {
     debug("%s:\n", __FUNCTION__);
+    horizontal_mission_control_enter();
     g_mission_control_mode = MISSION_CONTROL_MODE_SHOW_ALL_WINDOWS;
     event_signal_push(SIGNAL_MISSION_CONTROL_ENTER, (void*)(uintptr_t)g_mission_control_mode);
 }
@@ -1537,6 +1538,7 @@ static EVENT_HANDLER(MISSION_CONTROL_SHOW_ALL_WINDOWS)
 static EVENT_HANDLER(MISSION_CONTROL_SHOW_FRONT_WINDOWS)
 {
     debug("%s:\n", __FUNCTION__);
+    horizontal_mission_control_enter();
     g_mission_control_mode = MISSION_CONTROL_MODE_SHOW_FRONT_WINDOWS;
     event_signal_push(SIGNAL_MISSION_CONTROL_ENTER, (void*)(uintptr_t)g_mission_control_mode);
 }
@@ -1544,6 +1546,7 @@ static EVENT_HANDLER(MISSION_CONTROL_SHOW_FRONT_WINDOWS)
 static EVENT_HANDLER(MISSION_CONTROL_SHOW_DESKTOP)
 {
     debug("%s:\n", __FUNCTION__);
+    horizontal_mission_control_enter();
     g_mission_control_mode = MISSION_CONTROL_MODE_SHOW_DESKTOP;
     event_signal_push(SIGNAL_MISSION_CONTROL_ENTER, (void*)(uintptr_t)g_mission_control_mode);
 }
@@ -1551,6 +1554,7 @@ static EVENT_HANDLER(MISSION_CONTROL_SHOW_DESKTOP)
 static EVENT_HANDLER(MISSION_CONTROL_ENTER)
 {
     debug("%s:\n", __FUNCTION__);
+    horizontal_mission_control_enter();
     g_mission_control_mode = MISSION_CONTROL_MODE_SHOW;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.1f * NSEC_PER_SEC), dispatch_get_main_queue(), ^{

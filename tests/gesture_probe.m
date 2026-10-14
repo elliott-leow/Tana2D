@@ -5,7 +5,7 @@
 #include <unistd.h>
 // Controlled integration-test input. Run only with Tana2D active.
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr,"usage: gesture_probe swipe <progress> | vertical <progress> | vertical-begin/change/end/cancel <progress> | resize <points> | key <keycode>\n"); return 2; }
+    if (argc != 3) { fprintf(stderr,"usage: gesture_probe swipe <progress> | vertical <progress> | vertical-begin/change/end/cancel <progress> | resize <points> | key <keycode> | select-window <ignored>\n"); return 2; }
     double value = strtod(argv[2],NULL);
     if (!isfinite(value)) return 2;
     if (!strncmp(argv[1],"vertical-",9)) {
@@ -33,12 +33,15 @@ int main(int argc, char **argv) {
         CGEventRef e = CGEventCreateScrollWheelEvent(NULL,kCGScrollEventUnitPixel,2,(int)value,0);
         CGEventSetFlags(e,kCGEventFlagMaskAlternate);
         CGEventPost(kCGHIDEventTap,e); CFRelease(e);
-    } else if (!strcmp(argv[1],"key")) {
-        CGEventRef e = CGEventCreateKeyboardEvent(NULL,(CGKeyCode)value,true);
-        CGEventSetFlags(e,kCGEventFlagMaskAlternate|kCGEventFlagMaskCommand);
+    } else if (!strcmp(argv[1],"key") || !strcmp(argv[1],"select-window")) {
+        CGEventFlags flags=!strcmp(argv[1],"select-window") ? kCGEventFlagMaskControl :
+            kCGEventFlagMaskAlternate|kCGEventFlagMaskCommand;
+        CGKeyCode key=!strcmp(argv[1],"select-window") ? 36 : (CGKeyCode)value;
+        CGEventRef e = CGEventCreateKeyboardEvent(NULL,key,true);
+        CGEventSetFlags(e,flags);
         CGEventPost(kCGHIDEventTap,e); CFRelease(e); usleep(30000);
-        e=CGEventCreateKeyboardEvent(NULL,(CGKeyCode)value,false);
-        CGEventSetFlags(e,kCGEventFlagMaskAlternate|kCGEventFlagMaskCommand);
+        e=CGEventCreateKeyboardEvent(NULL,key,false);
+        CGEventSetFlags(e,flags);
         CGEventPost(kCGHIDEventTap,e); CFRelease(e);
     } else return 2;
     return 0;

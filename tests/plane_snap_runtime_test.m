@@ -59,7 +59,7 @@ static void test_release_commits_gap_at_each_zoom(void)
 
 static void test_missed_and_blocked_releases_do_not_snap(void)
 {
-    snap_scene(1,25); /* One world unit beyond the 24-point radius. */
+    snap_scene(1,25); /* Well beyond the 12-screen-point radius. */
     struct window *moving=&windows[0];
     assert(hwm_drag_submit_plane(&view,moving,CGPointMake(213,100)));
     hwm_drag_release(&view,moving);
@@ -73,6 +73,29 @@ static void test_missed_and_blocked_releases_do_not_snap(void)
     assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
     hwm_drag_release(&view,moving);
     assert(moving->strip_world_x==194 && moving->strip_world_y==100);
+}
+
+static void test_snap_ignores_offscreen_neighbors_and_bounds_rounding(void)
+{
+    snap_scene(1,6);
+    struct window *moving=&windows[0];
+    /* World-near windows on a different part of the plane are not magnets. */
+    moving->strip_world_x+=10000; windows[1].strip_world_x+=10000;
+    CGPoint target;
+    assert(!hwm_drag_snap_target(&view,moving,&target));
+    const double scales[]={.5,.7,1,2};
+    for(size_t z=0;z<sizeof(scales)/sizeof(scales[0]);z++) {
+        double scale=scales[z];
+        for(int dx=-24;dx<=24;dx++) for(int dy=-24;dy<=24;dy++) {
+            snap_scene(scale,dx*.5/scale);
+            moving=&windows[0]; moving->strip_world_y+=dy*.5/scale;
+            if(hwm_drag_snap_target(&view,moving,&target)) {
+                double sx=round(12+target.x*scale)-round(12+moving->strip_world_x*scale);
+                double sy=round(51+target.y*scale)-round(51+moving->strip_world_y*scale);
+                assert(hypot(sx,sy)<=12);
+            }
+        }
+    }
 }
 
 static void test_native_release_waits_to_snap_and_interrupt_does_not(void)
@@ -92,6 +115,8 @@ static void test_native_release_waits_to_snap_and_interrupt_does_not(void)
     clock_now+=.06; hwm_drag_native_finish_tick(&view,moving,clock_now);
     assert(hwm_drag_native && moving->strip_world_x==raw);
     clock_now+=.01; hwm_drag_native_finish_tick(&view,moving,clock_now);
+    assert(hwm_drag_native && moving->strip_world_x==raw);
+    clock_now+=.09; hwm_drag_native_finish_tick(&view,moving,clock_now);
     assert(!hwm_drag_native && !hwm_drag_window);
     assert(moving->strip_world_x==188 && moving->strip_world_y==100);
 
@@ -108,6 +133,7 @@ int main(void)
         test_held_drag_and_preview_target();
         test_release_commits_gap_at_each_zoom();
         test_missed_and_blocked_releases_do_not_snap();
+        test_snap_ignores_offscreen_neighbors_and_bounds_rounding();
         test_native_release_waits_to_snap_and_interrupt_does_not();
         puts("plane snap runtime tests passed");
     }

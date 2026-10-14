@@ -41,7 +41,7 @@ static void hwm_plane_pick_drag_dequeue(uint64_t generation)
 static bool hwm_plane_pick_input_prepare(HWMPlanePickInput *input)
 {
     hwm_plane_pick_queued_drag_allowed=false; hwm_plane_pick_dispatch_generation=0;
-    if(!input || hwm_pointer_sample_generation_is_aborted(input->generation)) return false;
+    if(!input || hwm_overview_active || hwm_pointer_sample_generation_is_aborted(input->generation)) return false;
     if(input->type==kCGEventLeftMouseDragged) {
         hwm_plane_pick_drag_dequeue(input->generation);
         CGPoint point;
@@ -58,6 +58,9 @@ static bool hwm_plane_pick_input_prepare(HWMPlanePickInput *input)
 }
 static bool hwm_plane_pick_event(CGEventType type,CGEventRef event)
 {
+    /* The native overview owns its complete pointer stream.  In particular,
+     * an idle plane-selection mode must not reclaim a card press. */
+    if(hwm_overview_active) return false;
     if((type==kCGEventLeftMouseDown && (hwm_plane_selecting || hwm_plane_center_click(event))) ||
        (hwm_plane_select_click && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp))) {
         CGPoint point=CGEventGetLocation(event);

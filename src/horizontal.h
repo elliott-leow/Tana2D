@@ -29,6 +29,7 @@ static void horizontal_unmanaging(struct window *window);
 static void horizontal_removing(struct window *window, bool whole_app);
 
 static void horizontal_resume(void);
+static void horizontal_mission_control_enter(void);
 
 static void horizontal_hover_received(struct window *window);
 

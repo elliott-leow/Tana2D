@@ -47,12 +47,12 @@ try:
             last=(start['displayedX']+100*scale,start['displayedY']+16*scale)
             strip('fixture-pointer',moving,mode,0,*last);active=True
             if mode==0:
-                last=(last[0]+308*scale,last[1]+3*scale)
+                last=(last[0]+300*scale+8,last[1]+3)
             else:
-                subprocess.check_call([str(ROOT/'build/Tana2DFixture.app/Contents/MacOS/plane_fixture'),'move',str(start['nativeX']+308*scale),str(start['nativeY']+3*scale)])
+                subprocess.check_call([str(ROOT/'build/Tana2DFixture.app/Contents/MacOS/plane_fixture'),'move',str(start['nativeX']+300*scale+8),str(start['nativeY']+3)])
                 time.sleep(.05)
             strip('fixture-pointer',moving,mode,1,*last)
-            held=world(moving);near(held['x'],10008,1/scale);near(held['y'],10003,1/scale)
+            held=world(moving);near(held['x'],10000+8/scale,1/scale);near(held['y'],10000+3/scale,1/scale)
             if scale==.5 and mode==0:subprocess.check_call(['screencapture','-x',str(ROOT/'build/snap-held.png')])
             strip('fixture-pointer',moving,mode,2,*last);active=False
             released=settled(moving);w=world(moving)

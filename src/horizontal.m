@@ -771,7 +771,7 @@ static void horizontal_focused(struct window *window, struct view *view)
     hwm_hold_focus();
     scripting_addition_set_layer(window->id,window_check_flag(window,WINDOW_FLOAT)?LAYER_ABOVE:LAYER_BELOW);
     // Focus that lands on another strip (the Dock, Command-Tab, a mark) brings that strip into view.
-    if (hwm_shelf_of(window)!=hwm_shelf && ((view && view->layout==VIEW_STRIP && view_find_window_node(view,window->id)) || window->strip_float_homed)) {
+    if (!hwm_plane_pointer_owned() && hwm_shelf_of(window)!=hwm_shelf && ((view && view->layout==VIEW_STRIP && view_find_window_node(view,window->id)) || window->strip_float_homed)) {
         hwm_shelf_go(hwm_shelf_of(window),false);
         if (view && hwm_shelf==hwm_shelf_of(window) && view_find_window_node(view,window->id)) hwm_scroll(view,hwm_center_target(view,window),true);
         return;
@@ -1721,6 +1721,9 @@ static void horizontal_command(FILE *rsp, char *message)
         if(hwm_plane_pointer_owned()) { daemon_fail(rsp,"finish the active pointer interaction before zooming\n"); return; }
         double scale; if(!hwm_number(get_token(&message),&scale) || scale<.001 || scale>4) { daemon_fail(rsp,"zoom must be between 0.001 and 4\n"); return; }
         struct view *view=hwm_view(); if(!view) return;
+        /* Finish sampling the previous zoom before assigning the new scale.
+         * Otherwise hwm_scroll's camera stop restores the old animated scale. */
+        hwm_plane_camera_stop(view,hwm_now());
         CGRect b=hwm_bounds(view); double old=hwm_plane_scale;
         double cx=view->strip_target_offset+b.size.width/(2*old), cy=hwm_plane_y_target+b.size.height/(2*old);
         hwm_plane_scale=scale; hwm_plane_fit_active=fabs(scale-1)>.001;
@@ -1774,7 +1777,8 @@ static void horizontal_command(FILE *rsp, char *message)
             @"navigationPending":@(hwm_nav_pending),@"navigationWindow":@(hwm_nav_window),@"focusedWindow":@(g_window_manager.focused_window_id),
             @"nativeX":@(actual.origin.x),@"nativeY":@(actual.origin.y),@"nativeWidth":@(actual.size.width),@"nativeHeight":@(actual.size.height),
             @"worldWidth":@(w->strip_width),@"worldHeight":@(w->strip_height),@"nativeResizeEvents":@(w->strip_native_resize_events),
-            @"nativeResizePending":@(w->strip_native_resize_pending),@"sizePending":@(w->strip_size_pending),@"resizeBusy":@(hwm_resize_busy(w)),
+            @"worldX":@(w->strip_world_x),@"worldY":@(w->strip_world_y),@"cachedX":@(w->strip_last_frame.origin.x),@"cachedY":@(w->strip_last_frame.origin.y),
+            @"nativeResizePending":@(w->strip_native_resize_pending),@"nativeMovePending":@(w->strip_native_move_pending),@"sizePending":@(w->strip_size_pending),@"resizeBusy":@(hwm_resize_busy(w)),
             @"transformDirty":@(w->strip_transform_dirty),@"scale":@(w->strip_last_plane_scale),@"edge":@(hwm_edge_window==w->id),
             @"drag":@(hwm_drag_window==w->id),@"nativeDrag":@(hwm_drag_window==w->id && hwm_drag_native),@"hiddenTab":@(hwm_workflow_tab_hidden(w)),@"layout":@(view?view->layout:0)};
         NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];

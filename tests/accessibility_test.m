@@ -6,6 +6,24 @@
 
 #include "../src/strip_hud.m"
 
+static void test_palette_toggle_filters_commands(void)
+{
+    TanaPalette *palette=[TanaPalette new];
+    NSArray *commands=@[@[@"fit-all",@"Fit all windows",@"Control Return"],
+                        @[@"focus-left",@"Focus left",@"Left Arrow"],
+                        @[@"overview",@"Window overview",@"Space"]];
+    [palette toggleWithCommands:commands run:^(NSString *name) { (void)name; }];
+    assert(palette.list.rows.count==3U);
+    assert([palette.list.rows[0][0] isEqual:@"fit-all"]);
+
+    palette.field.stringValue=@"overview";
+    [palette controlTextDidChange:[NSNotification notificationWithName:@"test" object:palette.field]];
+    assert(palette.list.rows.count==1U);
+    assert([palette.list.rows[0][0] isEqual:@"overview"]);
+    [palette close];
+    [palette release];
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -34,6 +52,7 @@ int main(void)
         assert([[row accessibilityLabel] isEqual:@""]);
         assert([palette.list accessibilityChildren].count==1U);
         [ran release];
+        test_palette_toggle_filters_commands();
         puts("accessibility tests passed");
     }
     return 0;

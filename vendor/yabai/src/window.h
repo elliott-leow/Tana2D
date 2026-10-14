@@ -125,7 +125,7 @@ struct window
     double strip_native_resize_until;
     unsigned int strip_native_resize_events;
     bool strip_size_pending;
-    bool strip_native_resize_pending,strip_transform_dirty;
+    bool strip_native_resize_pending,strip_native_move_pending,strip_transform_dirty;
     bool strip_size_confirmed;
     double strip_size_sent_at;
     CGRect strip_original_frame;

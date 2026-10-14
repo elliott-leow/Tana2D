@@ -16,7 +16,11 @@
 @public
     AXUIElementRef window, app;
     CGSize size;
-    BOOL pending, running;
+    /* `epoch` identifies the newest coalesced request.  A native interaction
+     * advances `cancel_through` without waiting for this queue: a runner that
+     * has claimed but not issued that epoch drops it at the final fence. */
+    uint64_t epoch, claimed_epoch, cancel_through;
+    BOOL pending, claimed, issued, running;
 }
 @end
 @implementation TanaAXJob
@@ -28,6 +32,11 @@ static NSMutableDictionary *hwm_ax_jobs;   /* window id -> TanaAXJob */
 static NSMutableDictionary *hwm_ax_titles; /* window id -> @[title, @(time), @(fetching)] */
 static _Atomic uint64_t hwm_ax_resizes_sent, hwm_ax_resizes_coalesced;
 static _Atomic double hwm_ax_resize_max_ms;
+
+#ifdef HWM_AX_TESTING
+/* Test-only deterministic gap between dequeue and the final issue fence. */
+static void (^hwm_ax_test_before_issue)(uint64_t epoch);
+#endif
 
 static dispatch_queue_t hwm_ax_queue(void)
 {
@@ -45,13 +54,30 @@ static void hwm_ax_run(TanaAXJob *job)
     for(;;) {
         os_unfair_lock_lock(&hwm_ax_lock);
         if(!job->pending) { job->running=NO; os_unfair_lock_unlock(&hwm_ax_lock); break; }
-        CGSize size=job->size; job->pending=NO;
+        CGSize size=job->size;
+        uint64_t epoch=job->epoch;
+        job->pending=NO; job->claimed=YES; job->claimed_epoch=epoch;
         os_unfair_lock_unlock(&hwm_ax_lock);
-        uint64_t began=read_os_timer();
+#ifdef HWM_AX_TESTING
+        if(hwm_ax_test_before_issue) hwm_ax_test_before_issue(epoch);
+#endif
+        /* AXValue creation is local.  The lock below is the issue boundary:
+         * cancellation can still win until `issued` becomes true, but never
+         * waits for an AX round trip that has already crossed that boundary. */
         CFTypeRef value=AXValueCreate(kAXValueTypeCGSize,(void *)&size);
-        if(value) { AXUIElementSetAttributeValue(job->window,kAXSizeAttribute,value); CFRelease(value); }
+        os_unfair_lock_lock(&hwm_ax_lock);
+        bool cancelled=epoch<=job->cancel_through;
+        if(job->claimed && job->claimed_epoch==epoch) job->claimed=NO;
+        if(!cancelled && value) job->issued=YES;
+        os_unfair_lock_unlock(&hwm_ax_lock);
+        if(cancelled || !value) { if(value) CFRelease(value); continue; }
+        uint64_t began=read_os_timer();
+        AXUIElementSetAttributeValue(job->window,kAXSizeAttribute,value); CFRelease(value);
         double ms=(double)(read_os_timer()-began)*1000/(double)read_os_freq();
         ++hwm_ax_resizes_sent; if(ms>hwm_ax_resize_max_ms) hwm_ax_resize_max_ms=ms;
+        os_unfair_lock_lock(&hwm_ax_lock);
+        job->issued=NO;
+        os_unfair_lock_unlock(&hwm_ax_lock);
     }
     if(enhanced) AXUIElementSetAttributeValue(job->app,kAXEnhancedUserInterface,kCFBooleanTrue);
 }
@@ -74,11 +100,27 @@ static void hwm_ax_resize(uint32_t wid,AXUIElementRef window,AXUIElementRef app,
         hwm_ax_jobs[@(wid)]=job;
     }
     if(job->pending) ++hwm_ax_resizes_coalesced;
-    job->size=size; job->pending=YES;
+    job->size=size; job->pending=YES; ++job->epoch;
     bool start=!job->running;
     if(start) { job->running=YES; [job retain]; }
     os_unfair_lock_unlock(&hwm_ax_lock);
     if(start) dispatch_async(hwm_ax_queue(),^{ hwm_ax_run(job); [job release]; });
+}
+
+/* Discard a queued/coalesced resize when native interaction takes ownership.
+ * Returns false only when an AX SetSize has already passed the issue fence and
+ * therefore cannot be interrupted without blocking the caller. */
+static bool hwm_ax_cancel_resize(uint32_t wid)
+{
+    if(!wid) return true;
+    os_unfair_lock_lock(&hwm_ax_lock);
+    TanaAXJob *job=hwm_ax_jobs[@(wid)];
+    if(!job) { os_unfair_lock_unlock(&hwm_ax_lock); return true; }
+    job->cancel_through=job->epoch;
+    job->pending=NO;
+    bool cancellable=!job->issued;
+    os_unfair_lock_unlock(&hwm_ax_lock);
+    return cancellable;
 }
 
 /* True while a size request for this window has not been answered yet. */

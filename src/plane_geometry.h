@@ -152,9 +152,9 @@ static inline bool hwm_plane_snap_candidate_clear(HWMPlaneRect moving,HWMPlanePo
 }
 
 /* Choose the closest adjacent edge among all neighbors.  `range` and `gap`
- * are world-space distances; a caller wanting a 24-screen-point magnet passes
- * 24/scale.  Alignment to either perpendicular edge is included only when it
- * is also within range.  Candidates colliding with any neighbor are rejected.
+ * are world-space distances. The Euclidean displacement, including optional
+ * perpendicular alignment, never exceeds range. Candidates colliding with
+ * any neighbor are rejected.
  */
 static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
                                                    size_t count,double gap,double range,HWMPlanePoint *out)
@@ -181,10 +181,11 @@ static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWM
             double a=axis==0 ? other.y-moving.y : other.x-moving.x;
             double b=axis==0 ? other.y+other.height-moving.height-moving.y : other.x+other.width-moving.width-moving.x;
             double align=fabs(a)<=fabs(b) ? a : b;
-            if(fabs(align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
+            if(hypot(delta,align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
             if(!isfinite(candidate.x) || !isfinite(candidate.y) ||
                !hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count)) continue;
             double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
+            if(distance>range) continue;
             /* Lexicographic ties make selection stable even if the window list is reordered. */
             if(distance<cost || (distance==cost &&
                (candidate.x<best.x || (candidate.x==best.x && candidate.y<best.y)))) {

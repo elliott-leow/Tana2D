@@ -1,5 +1,10 @@
 static CGRect hwm_feedback_plane_frame(struct view *view,struct window *w)
 {
+    if(w->id==hwm_drag_window && hwm_drag_native) return hwm_drag_native_displayed;
+    if(w->strip_native_move_pending) {
+        CGRect shown;
+        return hwm_plane_displayed_frame(w->id,&shown) ? shown : CGRectNull;
+    }
     CGRect frame=w->strip_last_frame;
     if(CGRectIsNull(frame) || w->strip_offscreen) return CGRectNull;
     (void)view;

@@ -39,7 +39,7 @@ static void test_fast_edge_press_does_not_inherit_old_delta(void)
     g_mouse_state.window=second;
     g_mouse_state.window_frame=second->frame;
     g_mouse_state.current_action=MOUSE_MODE_NONE;
-    CGPoint edge=second->strip_last_frame.origin;
+    CGPoint edge=CGPointMake(CGRectGetMaxX(second->strip_last_frame),CGRectGetMidY(second->strip_last_frame));
     horizontal_mouse_down(second,edge);
     assert(!hwm_resize_owned && hwm_edge_window==second->id);
     hwm_plane_resize_tick(&view,clock_now+.01);

@@ -1,25 +1,19 @@
 static bool horizontal_drag(CGEventRef event)
 {
+    int button=hwm_pointer_sample_button(CGEventGetType(event));
+    /* MOUSE_DOWN can reject a second button while the legacy state belongs to
+     * the first. Its queued drags must not subsequently move that owner. */
+    if(hwm_mouse_pointer_button!=-1 && button!=hwm_mouse_pointer_button) return true;
     struct window *window=g_mouse_state.window;
     struct view *view=window?window_manager_find_managed_window(&g_window_manager,window):NULL;
     if(!hwm_ready || hwm_paused || !view || view->layout!=VIEW_STRIP) return false;
     CGPoint point; uint64_t generation;
     if(!hwm_pointer_sample_drag_event(event,&point,&generation)) return true;
-    /* Mouse-up can reach the tap before this queued drag.  A nonzero
-     * generation came from this event's timestamp, so it is the retained
-     * final sample of a real press; the global fence still rejects unknown
-     * callbacks and autoscroll remains fenced below. */
-    /* The legacy release bit belongs only to the left-button stream. Right
-     * modifier drags have their own sampler generation and must not inherit a
-     * previous left up. */
-    bool released=CGEventGetType(event)==kCGEventLeftMouseDragged && atomic_load(&hwm_drag_release_pending);
-    if(hwm_drag_cancelled || (released && !generation)) return true;
-    if(released) {
-        /* Coalescing after mouse-up may leave this callback behind a later
-         * drag of the same press. Commit that press's terminal drag, never a
-         * newer global cursor or a later press. */
-        (void)hwm_pointer_sample_drag_for_generation(generation,0,&point,NULL);
-    }
+    if(hwm_drag_cancelled) return true;
+    /* The event queue deliberately retains one drag while the tap continues
+     * sampling. Read the newest point for this exact press even if a later
+     * left-down already cleared the legacy release fence. */
+    (void)hwm_pointer_sample_drag_for_generation(generation,0,&point,NULL);
     /* Do this before starting or moving anything. A newer physical press must
      * not overwrite a held session's owner generation. If a native release is
      * still settling, finish its accepted frame before the new press opens. */
@@ -50,10 +44,13 @@ static bool horizontal_drag(CGEventRef event)
         // The input queue is coalesced; read the latest event point and present now.
         // Waiting for the next display callback would add a frame of latency.
     }
-    if(!hwm_drag_window && g_mouse_state.current_action==MOUSE_MODE_NONE) {
-        CGRect actual=CGRectNull; SLSGetWindowBounds(g_connection,window->id,&actual);
-        if(!CGRectIsNull(actual) && hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3 &&
-           hypot(actual.origin.x-g_mouse_state.window_frame.origin.x,actual.origin.y-g_mouse_state.window_frame.origin.y)>2) {
+    if(!hwm_drag_window && g_mouse_state.current_action==MOUSE_MODE_NONE &&
+       CGEventGetType(event)==kCGEventLeftMouseDragged) {
+        /* Observe the native stream before waiting for AX/native bounds to
+         * move. AppKit may publish those only after mouse-up; the public
+         * displayed surface is sampled while the renderer leaves it alone.
+         * Body selections also pass through, but never snap without a move. */
+        if(hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3) {
             bool opened=!hwm_drag_window;
             hwm_drag_started(window);
             if(opened && hwm_drag_window==window->id) hwm_drag_pointer_generation=generation;

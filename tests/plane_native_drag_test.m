@@ -94,6 +94,90 @@ static void test_native_deadline_does_not_snap_without_a_displayed_sample(void)
     clock_now+=.151; hwm_drag_autoscroll(&view,clock_now);
     assert(!hwm_drag_window && !hwm_drag_native);
     assert(w->strip_world_x==unsnapped.x && w->strip_world_y==unsnapped.y);
+    assert(w->strip_native_move_pending);
+    int before=plane_transform_calls[0];
+    projected[0].origin=CGPointMake(900,300);
+    hwm_render(&view,clock_now+.01);
+    assert(plane_transform_calls[0]==before && projected[0].origin.x==900);
+    presentation_unavailable=false;
+    hwm_render(&view,clock_now+.02);
+    assert(!w->strip_native_move_pending);
+    assert(projected[0].origin.x==900 && projected[0].origin.y==300);
+    assert(w->strip_world_x==888 && w->strip_world_y==249);
+}
+
+static void native_press_and_motion(struct window *w,CGPoint point)
+{
+    g_mouse_state.window=w; g_mouse_state.window_frame=actual[w->id-1];
+    g_mouse_state.current_action=MOUSE_MODE_NONE; g_mouse_state.down_location=point;
+    CGEventRef down=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDown,point,kCGMouseButtonLeft);
+    CGEventSetTimestamp(down,native_timestamp+=10);
+    hwm_pointer_sample_event(kCGEventLeftMouseDown,down);
+    hwm_mouse_pointer_button=kCGMouseButtonLeft;
+    hwm_mouse_pointer_generation=hwm_pointer_sample_generation_for_event_ref(down);
+    CFRelease(down);
+    horizontal_mouse_down(w,point);
+    assert(!hwm_edge_window); // A normal-scale top-band press remains native.
+    CGEventRef drag=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDragged,CGPointMake(point.x+20,point.y+10),kCGMouseButtonLeft);
+    CGEventSetTimestamp(drag,native_timestamp+=1);
+    hwm_pointer_sample_event(kCGEventLeftMouseDragged,drag);
+    assert(horizontal_drag(drag)); CFRelease(drag);
+    assert(hwm_drag_native && hwm_drag_window==w->id);
+}
+
+static void test_display_moves_before_native_anchor(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    CGRect anchor=actual[0],first=projected[0];
+    w->layer=7; // An explicit layer survives the temporary drag layer.
+    native_press_and_motion(w,CGPointMake(CGRectGetMidX(first),first.origin.y+2));
+    assert(!hwm_drag_native_moved && !hwm_drag_committed);
+    projected[0].origin=CGPointMake(300,250);
+    assert(hwm_drag_native_sync(&view,w));
+    assert(CGRectEqualToRect(actual[0],anchor));
+    assert(w->strip_world_x==288 && w->strip_world_y==199);
+    assert(CGRectEqualToRect(drag_border_frame,projected[0]));
+    assert(CGRectEqualToRect(hwm_feedback_plane_frame(&view,w),projected[0]));
+    assert(undo_captures==1);
+    assert(resize_cancellations==1);
+    assert(horizontal_drop(w,CGPointZero));
+    clock_now+=.06; hwm_drag_autoscroll(&view,clock_now);
+    assert(hwm_drag_native); // An apparently stable early sample is not final.
+    projected[0].origin=CGPointMake(340,270);
+    clock_now+=.03; hwm_drag_autoscroll(&view,clock_now);
+    assert(w->strip_world_x==328 && w->strip_world_y==219);
+    clock_now+=.07; hwm_drag_autoscroll(&view,clock_now);
+    assert(!hwm_drag_window && test_layer[0]==7);
+    hwm_render(&view,clock_now);
+    assert(projected[0].origin.x==340 && projected[0].origin.y==270);
+    view.strip_offset+=80; hwm_render(&view,clock_now+.01);
+    assert(projected[0].origin.x==260 && w->strip_world_x==328);
+}
+
+static void test_body_selection_is_only_observed(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0]; CGRect shown=projected[0];
+    int calls=scale_calls;
+    native_press_and_motion(w,CGPointMake(CGRectGetMidX(shown),CGRectGetMidY(shown)));
+    assert(!hwm_drag_native_moved && !hwm_drag_committed && undo_captures==0 && resize_cancellations==0);
+    assert(horizontal_drop(w,CGPointZero));
+    clock_now+=.151; hwm_drag_autoscroll(&view,clock_now);
+    hwm_render(&view,clock_now);
+    assert(!hwm_drag_window && undo_captures==0 && scale_calls==calls);
+    assert(CGRectEqualToRect(projected[0],shown));
+}
+
+static void test_border_failure_does_not_discard_native_sample(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    native_press_and_motion(w,CGPointMake(100,80));
+    projected[0].origin=CGPointMake(450,300); drag_border_fails=true;
+    assert(hwm_drag_native_sync(&view,w));
+    assert(w->strip_world_x==438 && w->strip_world_y==249);
+    drag_border_fails=false; hwm_drag_force_finalize(&view,false);
 }
 
 static void test_tap_disable_retains_held_native_drag_until_physical_up(void)
@@ -167,8 +251,12 @@ static void test_late_native_sample_commits_once(void)
     actual[0].origin=CGPointMake(601,428); projected[0].origin=CGPointMake(341,199);
     clock_now+=.012; hwm_drag_autoscroll(&view,clock_now);
     assert(w->strip_world_x==329 && w->strip_world_y==148);
+    clock_now+=.05; hwm_drag_autoscroll(&view,clock_now);
+    assert(hwm_drag_window==w->id); // Early stable samples cannot end the grace period.
+    actual[0].origin=CGPointMake(610,432); projected[0].origin=CGPointMake(350,203);
     clock_now+=.025; hwm_drag_autoscroll(&view,clock_now);
-    clock_now+=.025; hwm_drag_autoscroll(&view,clock_now);
+    assert(w->strip_world_x==338 && w->strip_world_y==152);
+    clock_now+=.07; hwm_drag_autoscroll(&view,clock_now);
     assert(!hwm_drag_window && !hwm_drag_native);
     CGRect held=projected[0]; int before_render=scale_calls;
     hwm_render(&view,clock_now+.01);
@@ -201,6 +289,9 @@ int main(void)
         test_next_native_press_finishes_the_previous_release();
         test_interrupted_native_settle_never_snaps();
         test_native_deadline_does_not_snap_without_a_displayed_sample();
+        test_display_moves_before_native_anchor();
+        test_body_selection_is_only_observed();
+        test_border_failure_does_not_discard_native_sample();
         test_tap_disable_retains_held_native_drag_until_physical_up();
         test_recovered_native_drag_yields_to_next_press();
         test_tap_disable_after_physical_up_clears_legacy_owner();

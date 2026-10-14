@@ -7,6 +7,7 @@ static uint32_t hwm_plane_border_id,hwm_plane_border_focus;
 static CGContextRef hwm_plane_border_context;
 static CGRect hwm_plane_border_frame;
 static CGSize hwm_plane_border_canvas;
+static unsigned hwm_plane_border_generation;
 static bool hwm_plane_border_visible;
 /* The outer frame batch can reject a transform after this file has returned.
  * strip_layout calls this hook at that acknowledgement boundary. */
@@ -46,9 +47,10 @@ static void hwm_plane_border_tick(struct view *view,double now)
     CGSize canvas=CGSizeMake(ceil(fmax(1,frame.size.width/hwm_plane_scale)),ceil(fmax(1,frame.size.height/hwm_plane_scale)));
     if(!view_find_window_node(view,focus->id)) canvas=frame.size;
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
-    if(!reshape && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
+    bool redraw=reshape || hwm_plane_border_generation!=hwm_border_generation;
+    if(!redraw && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
     hwm_batch_begin();
-    if(reshape || !hwm_plane_border_id) {
+    if(redraw || !hwm_plane_border_id) {
         CGRect local=CGRectMake(0,0,canvas.width,canvas.height); CFTypeRef region=NULL;
         CGSNewRegionWithRect(&local,&region);
         if(!hwm_plane_border_id) {
@@ -80,6 +82,7 @@ static void hwm_plane_border_tick(struct view *view,double now)
             CGContextRestoreGState(hwm_plane_border_context); CGContextFlush(hwm_plane_border_context);
         }
         hwm_plane_border_canvas=canvas;
+        hwm_plane_border_generation=hwm_border_generation;
     }
     bool transformed=false;
     if(hwm_plane_border_id) {

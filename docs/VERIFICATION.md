@@ -3,7 +3,67 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
-## Drag audit and display verification — October 14, 2026
+## Terminal drag and palette crash repair — October 14, 2026
+
+This repair supersedes the installed-build hash and native-drag conclusions in
+the earlier audit below. Two crash reports (`tana2d-2026-10-14-191327.ips` and
+`tana2d-2026-10-14-191404.ips`) show the same `NSUndefinedKeyException` in
+`TanaPalette -filter`. Explicit scored-row extraction replaces recursive array
+KVC. The palette open/filter regression passes; the installed palette was also
+opened and filtered through its accessibility interface without a crash.
+
+The requested round of 20 concurrent reviewers identified overlapping causes,
+which were consolidated before repair:
+
+- Native drag detection no longer waits for the SLS anchor to move. Every sync
+  samples the public displayed rectangle, including when the anchor is unchanged.
+  The outline uses that exact rectangle. Passive text selection does not capture
+  undo, change window layers, snap, or trigger a drop layout.
+- Native release retains ownership for the full 150 ms grace period. Missing
+  displayed-frame data defers reconciliation instead of restoring stale world
+  geometry. Normal title-bar presses in the top-edge band pass through to AppKit.
+- Snap candidates must be visible and within a Euclidean screen-distance bound.
+  Pointer generations reject competing buttons and expired samples. Pending AX
+  resize requests are cancelled before drag ownership; an already issued AX call
+  remains uninterruptible.
+- Delayed move notifications invalidate transforms. Border style changes redraw
+  cached geometry. Failed opacity changes preserve companion visibility. Overview
+  and picker ownership no longer overlap. Mission Control entry retires the old
+  pointer owner, even if Mission Control consumes its mouse-up.
+- A live replay also exposed a zoom interruption defect: stopping an older
+  animation after assigning a newer scale could overwrite the new zoom command.
+  The old animation is now sampled and stopped before assigning that scale.
+
+The snap bound is explicit: for viewport origin B, zoom s, camera C, and world
+point W, define P(W) = round(B + s(W - C)), component by component. A candidate Q
+is submitted only when hypot(P(Q).x - P(W).x, P(Q).y - P(W).y) <= 12. Therefore
+Tana's accepted snap submission changes the rounded projected origin by at most
+12 screen points, including diagonal movement and rounding. Geometry and runtime
+regressions cover multiple zoom levels and boundary cases. This is a guarantee
+about this acceptance rule, not a guarantee about arbitrary macOS/AppKit moves,
+physical input timing, or the absence of all software defects.
+
+Final `make all test` passed, including sanitizer-backed native regressions and
+20 Python tests. The signed package and `/Applications/Tana2D.app` executable
+both have SHA-256
+`7bb00867f8c1235d4f6aead99858f5c81a2cede0c8cbbd7e2591ccb4297e4dc3`;
+strict/deep signature verification passed. This exact installed build passed all
+20 pointer replay and six snap/release cases described below. The palette was
+opened, filtered to `fit`, and closed again without a crash. The released and
+panned fixture screenshots were inspected; the outline follows the visible
+window. All fixture windows were then closed, the original camera restored,
+and all seven user windows retained their exact world geometry. The installed
+manager reports `ready:true`, `backend:true`, and `paused:false`.
+
+Logs: `build/terminal-repair-build-test.log`,
+`build/terminal-repair-live-pointer.log`, `build/terminal-repair-live-snap.log`.
+Reports: `build/pointer-replay-report.json`, `build/snap-release-report.json`,
+`build/terminal-repair-installed-state.json`. The new overview gesture regression
+was compiled but not exercised through physical desktop input. The controller
+replay does not exercise real AppKit title-bar event delivery. A fresh physical
+Terminal drag at 100% remains unverified on the repaired build.
+
+## Earlier drag audit and display verification — October 14, 2026
 
 This section supersedes earlier claims that the SLS anchor/matrix alone proves
 native title-bar presentation. `CGWindowListCopyWindowInfo` supplies the public

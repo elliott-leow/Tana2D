@@ -14,6 +14,7 @@ static bool hwm_plane_pick_automatic,hwm_plane_select_click,hwm_drag_cancelled;
 static _Atomic bool hwm_drag_native,hwm_resize_captured;
 static _Atomic bool hwm_plane_pick_drag_queued;
 static int drag_finalizations,native_recoveries,resize_aborts,pointer_aborts;
+static bool native_recovery_retained;
 static struct window *last_resize_window;
 static bool last_resize_kept_capture;
 static struct window *legacy_window;
@@ -28,12 +29,13 @@ static void hwm_drag_force_finalize(struct view *v,bool snap)
     assert(v==&view && !snap);
     ++drag_finalizations;
     hwm_drag_window=0;
+    atomic_store(&hwm_drag_native,false);
 }
 static bool hwm_drag_native_tap_disabled_recover(struct view *v)
 {
     assert(v==&view);
     ++native_recoveries;
-    return true;
+    return native_recovery_retained;
 }
 static bool hwm_plane_resize_abort_interaction(struct window *w,bool keep_capture_until_up)
 {
@@ -64,6 +66,7 @@ static void reset(void)
     atomic_store(&hwm_plane_tap_captured,false);
     atomic_store(&hwm_plane_tap_aborted_up_pending,false);
     drag_finalizations=native_recoveries=resize_aborts=pointer_aborts=0;
+    native_recovery_retained=true;
     last_resize_window=NULL; last_resize_kept_capture=false;
     legacy_window=NULL; legacy_action=legacy_direction=legacy_clears=0;
     legacy_pointer_generation=0; legacy_pointer_button=-1;
@@ -124,6 +127,19 @@ static void test_tap_disabled_native_drag_defers_finalization_to_native_recovery
     assert(legacy_clears==1 && !legacy_window);
 }
 
+static void test_tap_disabled_native_drag_finalizes_when_recovery_loses_window(void)
+{
+    reset(); struct window w={.id=7};
+    hwm_drag_window=w.id;
+    atomic_store(&hwm_drag_native,true);
+    legacy_window=&w;
+    native_recovery_retained=false;
+    hwm_plane_abort_interaction(NULL,HWM_PLANE_INTERRUPT_TAP_DISABLED);
+    assert(native_recoveries==1 && drag_finalizations==1);
+    assert(!hwm_drag_window && !atomic_load(&hwm_drag_native));
+    assert(legacy_clears==1 && !legacy_window);
+}
+
 static void test_repeated_cleanup_and_unrelated_removal_are_idempotent(void)
 {
     reset(); struct window w={.id=7},other={.id=8};
@@ -173,15 +189,30 @@ static void test_restart_resume_does_not_reanimate_a_cancelled_press(void)
     assert(!hwm_plane_interaction_tap_consume_aborted_up(kCGEventLeftMouseUp));
 }
 
+static void test_mission_control_retires_native_owner_without_mouse_up(void)
+{
+    reset(); struct window w={.id=7};
+    hwm_drag_window=w.id; atomic_store(&hwm_drag_native,true);
+    legacy_window=&w; legacy_pointer_generation=45; legacy_pointer_button=0;
+    horizontal_mission_control_enter();
+    assert(drag_finalizations==1 && !native_recoveries && !hwm_drag_window);
+    assert(!legacy_window && !legacy_pointer_generation && legacy_pointer_button==-1);
+    horizontal_mission_control_enter();
+    assert(drag_finalizations==1);
+    assert(!hwm_plane_interaction_tap_consume_aborted_up(kCGEventLeftMouseDown));
+}
+
 int main(void)
 {
     @autoreleasepool {
         test_tap_disabled_invalidates_on_tap_and_finalizes_on_event_loop();
         test_tap_disabled_native_drag_defers_finalization_to_native_recovery();
+        test_tap_disabled_native_drag_finalizes_when_recovery_loses_window();
         test_repeated_cleanup_and_unrelated_removal_are_idempotent();
         test_unmanage_clears_its_legacy_pointer_without_touching_other_window();
         test_legacy_feedback_cleanup_never_dereferences_a_removed_node();
         test_restart_resume_does_not_reanimate_a_cancelled_press();
+        test_mission_control_retires_native_owner_without_mouse_up();
         puts("plane lifecycle tests passed");
     }
 }

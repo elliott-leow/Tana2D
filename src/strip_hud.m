@@ -286,7 +286,13 @@ static const NSInteger TanaPaletteVisible=9;
         if(score>=0) [scored addObject:@[@(score),command]];
     }
     if(query.length) [scored sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSArray *a,NSArray *b) { return [b[0] compare:a[0]]; }];
-    self.list.rows=[scored valueForKey:@"lastObject"]; self.list.selected=0;
+    /* Do not use NSArray KVC as a map here.  Asking the outer array for
+     * `lastObject` sends that key to each scored entry, and NSArray then
+     * recursively forwards it to the command strings.  NSString has no such
+     * key, so opening the palette aborts with an NSUndefinedKeyException. */
+    NSMutableArray *rows=[NSMutableArray arrayWithCapacity:scored.count];
+    for(NSArray *scoredCommand in scored) [rows addObject:scoredCommand[1]];
+    self.list.rows=rows; self.list.selected=0;
     NSString *announcement=self.list.rows.count ? [NSString stringWithFormat:@"%ld commands available",(long)self.list.rows.count] : @"No matching commands";
     NSAccessibilityPostNotificationWithUserInfo(self.field,NSAccessibilityAnnouncementRequestedNotification,@{NSAccessibilityAnnouncementKey:announcement,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityLow)});
     [self layoutAnimated:self.panel.visible];

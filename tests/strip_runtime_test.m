@@ -40,7 +40,7 @@ struct window {
     double strip_start,strip_last_offset,strip_last_camera_y,strip_last_plane_scale,strip_size_sent_at;
     double strip_native_resize_until;
     unsigned int strip_native_resize_events;
-    bool strip_size_confirmed,strip_native_resize_pending,strip_transform_dirty;
+    bool strip_size_confirmed,strip_native_resize_pending,strip_native_move_pending,strip_transform_dirty;
     bool strip_initialized,strip_placed,strip_full_width,strip_size_pending,strip_tab_parked,strip_offscreen;
     int layer;
     bool floating,strip_float_animating,strip_close_pending;
@@ -94,8 +94,10 @@ static CGError SLSGetWindowAlpha(int connection,uint32_t id,float *alpha) { (voi
 static double fade_duration[4];
 static bool scripting_addition_set_opacity(uint32_t id,float alpha,double duration) { fade_duration[id-1]=duration; alphas[id-1]=alpha; return true; }
 static int scale_calls;
+static int plane_transform_calls[4];
 static bool scripting_addition_scale_window(uint32_t id,float x,float y,float w,float h) { (void)id; (void)x; (void)y; (void)w; (void)h; ++scale_calls; return true; }
 static bool scripting_addition_set_plane_transform(uint32_t id,double x,double y,double scale) {
+    ++plane_transform_calls[id-1];
     ++scale_calls; if(move_fails) return false;
     if(!isfinite(x)) x=actual[id-1].origin.x;
     if(!isfinite(y)) y=actual[id-1].origin.y;
@@ -117,7 +119,8 @@ static CGPoint test_cursor;
 static void SLSGetCurrentCursorLocation(int connection,CGPoint *point) { (void)connection; *point=test_cursor; }
 static void SLSDisableUpdate(int connection) { (void)connection; assert(update_depth==0); ++update_depth; ++disable_calls; }
 static void SLSReenableUpdate(int connection) { (void)connection; assert(update_depth==1); --update_depth; }
-static bool scripting_addition_set_layer(uint32_t id,int layer) { (void)id; (void)layer; return true; }
+static int test_layer[4];
+static bool scripting_addition_set_layer(uint32_t id,int layer) { test_layer[id-1]=layer; return true; }
 static int sa_batch_depth, sa_batch_flushes;
 static bool sa_batch_fails;
 static void scripting_addition_batch_begin(void) { ++sa_batch_depth; }
@@ -137,6 +140,8 @@ static __attribute__((unused)) bool hwm_workflow_tab_geometry(struct view *v,str
 static bool hwm_workflow_tab_hidden(struct window *w) { return w->id==hidden_tab; }
 static void hwm_resize_submit(struct window *w,CGRect f,bool full) { (void)full; window_manager_resize_window(w,f.size.width,f.size.height); }
 static bool resize_busy;
+static unsigned resize_cancellations;
+static bool hwm_ax_cancel_resize(uint32_t id) { (void)id; ++resize_cancellations; return !resize_busy; }
 static bool hwm_resize_busy(struct window *w) { (void)w; return resize_busy; }
 static void hwm_close_submit(struct window *w) { window_manager_close_window(w); }
 static bool hwm_window_left_strip(struct window *w) { (void)w; return false; }
@@ -169,7 +174,7 @@ static uint32_t hwm_plane_pick_window;
 static CGPoint hwm_plane_pick_origin;
 static void scripting_addition_set_shadow(uint32_t id,bool shadow) { (void)id; (void)shadow; }
 static bool hwm_drag_camera_owned;
-static bool hwm_plane_selecting,hwm_nav_pending,hwm_magnetic_centering=true;
+static bool hwm_plane_selecting,hwm_nav_pending,hwm_settle_pending,hwm_magnetic_centering=true;
 static uint32_t hwm_nav_window;
 static double hwm_nav_time;
 static double hwm_drag_tick_time;
@@ -195,8 +200,10 @@ static CFArrayRef test_presentation_list(CGWindowListOption option,CGWindowID wi
 static double hwm_motion_scale=1,hwm_drag_present_total_ms,hwm_drag_present_max_ms;
 static uint64_t hwm_drag_present_count;
 static int drag_border_calls;
+static CGRect drag_border_frame;
+static bool drag_border_fails;
 static bool hwm_plane_border_drag(uint32_t wid,CGRect projected_frame) {
-    (void)wid; (void)projected_frame; assert(sa_batch_depth>0); assert(update_depth==0); ++drag_border_calls; return true;
+    (void)wid; drag_border_frame=projected_frame; assert(sa_batch_depth>0); assert(update_depth==0); ++drag_border_calls; return !drag_border_fails;
 }
 static void hwm_plane_border_drag_failed(void) {}
 static struct window *hwm_tile(uint32_t id) { return window_manager_find_window(&g_window_manager,id); }
@@ -263,6 +270,7 @@ static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
 
 static void reset(void)
 {
+    resize_cancellations=0;
     test_preview_visible=false; test_preview_frame=CGRectNull; presentation_unavailable=false; sa_batch_fails=false;
     hwm_drag_native=false;
     hwm_pointer_sample_reset(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
@@ -487,6 +495,7 @@ static void test_native_edge_resize(void)
     reset(); view.strip_offset=300; hwm_render(&view,clock_now);
     w=&windows[1]; original=actual[1];
     g_mouse_state.window=w; g_mouse_state.window_frame=original;
+    g_mouse_state.current_action=MOUSE_MODE_RESIZE;
     horizontal_mouse_down(w,CGPointMake(original.origin.x,CGRectGetMidY(original)));
     actual[1].origin.x-=75; actual[1].size.width+=75;
     hwm_edge_update(w,&view); hwm_render(&view,clock_now);
@@ -1023,6 +1032,8 @@ static void test_native_titlebar_keeps_surface_ownership(void)
         CGRect original=projected[0];
         g_mouse_state.window=w; g_mouse_state.window_frame=actual[0]; g_mouse_state.current_action=MOUSE_MODE_NONE;
         g_mouse_state.down_location=CGPointMake(original.origin.x+100,original.origin.y+15);
+        CGEventRef down=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDown,g_mouse_state.down_location,kCGMouseButtonLeft);
+        hwm_pointer_sample_event(kCGEventLeftMouseDown,down); CFRelease(down);
         int calls=scale_calls;
         for(int i=2;i<=61;i++) {
             // The native tracking loop owns both actual bounds and visible pixels.
@@ -1048,6 +1059,18 @@ static void test_native_titlebar_keeps_surface_ownership(void)
         assert(hypot(projected[0].origin.x-held.x,projected[0].origin.y-held.y)<1);
     }
 }
+static void test_drag_start_clears_pending_scroll_settle(void)
+{
+    reset();
+    struct window *w=&windows[0];
+    g_mouse_state.window=w; g_mouse_state.window_frame=actual[0];
+    g_mouse_state.current_action=MOUSE_MODE_NONE;
+    g_mouse_state.down_location=CGPointMake(160,120);
+    hwm_settle_pending=true;
+    hwm_drag_started(w);
+    assert(hwm_drag_window==w->id && !hwm_settle_pending);
+    hwm_drag_force_finalize(&view,false);
+}
 static void test_resize_notification_after_release(void)
 {
     reset(); struct window *w=&windows[0];
@@ -1055,6 +1078,7 @@ static void test_resize_notification_after_release(void)
     double x=w->strip_world_x,y=w->strip_world_y;
     CGRect before=actual[0];
     g_mouse_state.window=w; g_mouse_state.window_frame=before; g_mouse_state.current_action=0;
+    g_mouse_state.current_action=MOUSE_MODE_RESIZE;
     horizontal_mouse_down(w,w->strip_last_frame.origin);
     assert(hwm_edge_window==w->id);
     actual[0].origin.x-=80; actual[0].origin.y-=60;
@@ -1122,6 +1146,11 @@ static void test_owned_edge_resize(void)
         hwm_plane_resize_publish(&view);
         assert(!resize_event(kCGEventLeftMouseDown,down,kCGEventFlagMaskCommand));
         assert(!resize_event(kCGEventLeftMouseDown,CGPointMake(CGRectGetMidX(before),CGRectGetMidY(before)),0));
+        if(scales[z]>=.70 && (direction&HANDLE_TOP)) {
+            assert(!resize_event(kCGEventLeftMouseDown,down,0));
+            assert(!hwm_resize_owned && !atomic_load(&hwm_resize_captured));
+            continue; // Native AppKit owns the normal-scale top/titlebar band.
+        }
         assert(resize_event(kCGEventLeftMouseDown,down,0));
         assert(hwm_resize_owned && hwm_edge_direction==direction && atomic_load(&hwm_resize_captured));
         CGPoint delta=CGPointMake(direction&HANDLE_LEFT?-25:25,direction&HANDLE_TOP?-18:18);
@@ -1157,7 +1186,7 @@ static void test_owned_edge_resize(void)
         assert(undo_captures==1);
     }
     reset(); hwm_plane_resize_publish(&view);
-    CGPoint down=windows[0].strip_last_frame.origin;
+    CGPoint down=CGPointMake(CGRectGetMaxX(windows[0].strip_last_frame),CGRectGetMidY(windows[0].strip_last_frame));
     assert(resize_event(kCGEventLeftMouseDown,down,0));
     hwm_paused=true; hwm_plane_resize_tick(&view,clock_now);
     assert(!hwm_resize_owned && hwm_edge_window==0 && atomic_load(&hwm_resize_captured));
@@ -1181,6 +1210,7 @@ int main(void)
     test_release_never_repositions();
     test_recorded_cursor_stall();
     test_native_titlebar_keeps_surface_ownership();
+    test_drag_start_clears_pending_scroll_settle();
     test_resize_notification_after_release();
     test_plane_click_to_center();
     test_native_anchor_is_independent_of_projection();

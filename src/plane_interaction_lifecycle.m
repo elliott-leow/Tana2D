@@ -9,6 +9,7 @@ typedef enum {
     HWM_PLANE_INTERRUPT_UNMANAGE,
     HWM_PLANE_INTERRUPT_DESTROY,
     HWM_PLANE_INTERRUPT_RESUME,
+    HWM_PLANE_INTERRUPT_MISSION_CONTROL,
 } HWMPlaneInterruptReason;
 
 /* Event-tap ownership is intentionally distinct from manager ownership.  The
@@ -97,6 +98,10 @@ static void hwm_plane_abort_interaction(struct window *window,HWMPlaneInterruptR
     if(drag) {
         if(reason==HWM_PLANE_INTERRUPT_TAP_DISABLED && atomic_load(&hwm_drag_native)) {
             retained_native_recovery=hwm_drag_native_tap_disabled_recover(hwm_view());
+            /* The native window can disappear before recovery polls it. Do not
+             * leave its former ID owning the plane when recovery has nothing
+             * to retain. */
+            if(!retained_native_recovery) hwm_drag_force_finalize(hwm_view(),false);
         } else {
             hwm_drag_force_finalize(hwm_view(),false);
         }
@@ -116,4 +121,11 @@ static void hwm_plane_abort_interaction(struct window *window,HWMPlaneInterruptR
      * native title-bar drag deliberately keeps it through agent2's physical
      * button recovery and clears it when that recovery completes. */
     if(!retained_native_recovery) hwm_plane_clear_legacy_pointer(window);
+}
+
+static void horizontal_mission_control_enter(void)
+{
+    /* Mission Control can consume the terminal mouse-up. Retire the current
+     * session at entry so it cannot own input after Mission Control exits. */
+    hwm_plane_abort_interaction(NULL,HWM_PLANE_INTERRUPT_MISSION_CONTROL);
 }

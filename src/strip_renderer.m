@@ -22,6 +22,24 @@ static bool hwm_render(struct view *view, double now)
         for (int i = 0; i < node->window_count; ++i) {
             struct window *window = window_manager_find_window(&g_window_manager, node->window_list[i]);
             if (!window || !window->strip_initialized || window->id==hwm_drag_window || window->id==hwm_edge_window) continue;
+            /* A release deadline ends pointer ownership, not uncertainty about
+             * AppKit's final surface. Never overwrite that surface with an old
+             * model point while CGWindowList is unavailable. Adopt it using
+             * the last displayed camera before applying any newer camera. */
+            if(window->strip_native_move_pending) {
+                CGRect shown=CGRectNull,native=CGRectNull;
+                double old_scale=window->strip_last_plane_scale;
+                if(!(old_scale>0) || !hwm_plane_displayed_frame(window->id,&shown) ||
+                   SLSGetWindowBounds(g_connection,window->id,&native)!=kCGErrorSuccess) { active=true; continue; }
+                window->strip_world_x=window->strip_from_x=(shown.origin.x-bounds.origin.x)/old_scale+window->strip_last_offset;
+                window->strip_world_y=window->strip_from_y=(shown.origin.y-bounds.origin.y)/old_scale+window->strip_last_camera_y;
+                window->frame=native;
+                window->strip_width=window->strip_from_width=native.size.width;
+                window->strip_height=window->strip_from_height=native.size.height;
+                window->strip_last_frame=native; window->strip_last_frame.origin=shown.origin;
+                window->strip_start=now-hwm_duration;
+                window->strip_native_move_pending=false; window->strip_transform_dirty=true;
+            }
             if(hwm_workflow_tab_hidden(window)) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 hwm_visibility_set(window,true,CGRectNull);
@@ -196,10 +214,8 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
         CGPoint point;
         if(hwm_mouse_pointer_button==kCGMouseButtonLeft && generation &&
            hwm_pointer_sample_active_point_for_generation(generation,&point)) {
-            CGRect actual=CGRectNull;
-            SLSGetWindowBounds(g_connection,window->id,&actual);
-            if (hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3 &&
-                !CGRectIsNull(actual) && (fabs(actual.origin.x-g_mouse_state.window_frame.origin.x)>2 || fabs(actual.origin.y-g_mouse_state.window_frame.origin.y)>2)) {
+            if (g_mouse_state.current_action==MOUSE_MODE_NONE &&
+                hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3) {
                 hwm_drag_point=point;
                 hwm_drag_started(window);
                 if(hwm_drag_window==window->id) {
@@ -213,6 +229,7 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
     // They must not restart an in-progress transition with an obsolete frame.
     double now = hwm_now();
     if (hwm_view_in_motion(view,now) || window->strip_size_pending || now-window->strip_start < hwm_duration+.1 || hwm_resize_busy(window)) {
+        if(!resized) window->strip_transform_dirty=true;
         hwm_wake();
         return true;
     }

@@ -52,15 +52,26 @@ static unsigned hwm_drag_native_finish_stable;
 static bool hwm_drag_native_sync(struct view *view,struct window *window)
 {
     CGRect frame=CGRectNull;
-    if(!view || SLSGetWindowBounds(g_connection,window->id,&frame)!=kCGErrorSuccess || CGRectIsNull(frame)) return false;
-    if(!hwm_drag_native_moved && CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin)) return true;
+    if(!view || SLSGetWindowBounds(g_connection,window->id,&frame)!=kCGErrorSuccess || CGRectIsNull(frame) ||
+       !isfinite(frame.size.width) || !isfinite(frame.size.height) || frame.size.width<=0 || frame.size.height<=0) {
+        hwm_drag_native_displayed=CGRectNull; return false;
+    }
     CGRect presented=CGRectNull;
     /* Do not recover this from SLSGetWindowTransform: AppKit can retain the
      * old requested plane matrix after it has moved the displayed titlebar
      * surface. Keep the last accepted position and retry on the next tick. */
-    if(!hwm_plane_displayed_frame(window->id,&presented)) return false;
+    if(!hwm_plane_displayed_frame(window->id,&presented)) { hwm_drag_native_displayed=CGRectNull; return false; }
     CGPoint displayed=presented.origin;
     if(!isfinite(displayed.x) || !isfinite(displayed.y)) return false;
+    hwm_drag_native_displayed=presented;
+    window->strip_native_move_pending=false;
+    /* A native drag is an observation session, including when AppKit has not
+     * published its first move yet. A body selection must not become a drop.
+     * Native anchors and displayed origins are independent; test both only
+     * after obtaining a real presentation sample. */
+    if(!hwm_drag_native_moved && CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin) &&
+       CGPointEqualToPoint(displayed,window->strip_last_frame.origin)) return true;
+    hwm_drag_commit_interaction(window);
     hwm_drag_native_moved=true;
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()),camera_y=hwm_plane_camera_y(hwm_now());
     // Native bounds retain an independent anchor when the camera transformed
@@ -79,12 +90,13 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
     window->strip_start=hwm_now()-hwm_duration;
     hwm_drag_move=world; hwm_drag_move_pending=false;
     hwm_drag_preview_update(view,window);
-    CGRect visible=window->strip_last_frame; visible.size.width*=hwm_drag_scale; visible.size.height*=hwm_drag_scale;
+    CGRect visible=presented;
     bool own_batch=!hwm_batch_open; if(own_batch) scripting_addition_batch_begin();
     bool ok=hwm_plane_border_drag(window->id,visible);
     if(own_batch) ok=scripting_addition_batch_end() && ok;
     if(!ok) hwm_plane_border_drag_failed();
-    return ok;
+    /* Presentation acceptance and border delivery are independent facts. */
+    return true;
 }
 
 /* The parent supplies the placement policy. It runs once, after the final
@@ -100,13 +112,13 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
     hwm_drag_native_finishing=false;
     hwm_drag_native_recovering=false;
     hwm_drag_native_recovered=false;
-    if(native) {
+    if(native && hwm_drag_native_moved && !window->strip_native_move_pending) {
         /* AppKit changed the native anchor while keeping an old compositor
          * matrix. Submit the accepted displayed world point again on the next
          * renderer frame before any camera motion can use that stale matrix. */
         window->strip_transform_dirty=true;
     }
-    if(snap) hwm_drag_snap_commit(view,window);
+    if(snap && (!native || hwm_drag_native_moved)) hwm_drag_snap_commit(view,window);
     hwm_drag_window=0; hwm_drag_native=false;
     if(recovered_native && g_mouse_state.window==window) {
         g_mouse_state.window=NULL;
@@ -115,27 +127,30 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
         hwm_mouse_pointer_generation=0;
         hwm_mouse_pointer_button=-1;
     }
-    scripting_addition_set_shadow(window->id,hwm_drag_shadow);
-    scripting_addition_set_layer(window->id,LAYER_BELOW);
-    if(view) hwm_layout(view,false);
+    if(hwm_drag_committed) {
+        scripting_addition_set_shadow(window->id,hwm_drag_shadow);
+        scripting_addition_set_layer(window->id,hwm_drag_restore_layer);
+        if(view) hwm_layout(view,false);
+    }
+    hwm_drag_committed=false;
     hwm_drop_target=0; hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
 }
 
 /* A title-bar release is not immediately trustworthy: AppKit can publish the
  * terminal move after its mouse-up has reached our serialized event loop.
- * Retain native ownership until two identical presented samples after a short
- * grace period, with a hard 150 ms ceiling. */
+ * Retain native ownership for the entire 150 ms grace period. Two identical
+ * early samples do not establish that AppKit has published its terminal move. */
 static void hwm_drag_native_finish_tick(struct view *view,struct window *window,double now)
 {
     if(!hwm_drag_native_finishing || !window || hwm_drag_window!=window->id || !hwm_drag_native) return;
     bool sampled=hwm_drag_native_sync(view,window);
     if(sampled && CGRectEqualToRect(window->strip_last_frame,hwm_drag_native_finish_frame)) ++hwm_drag_native_finish_stable;
     else if(sampled) { hwm_drag_native_finish_frame=window->strip_last_frame; hwm_drag_native_finish_stable=0; }
-    if(now>=hwm_drag_native_finish_deadline ||
-       (now-hwm_drag_native_finish_began>=.05 && sampled && hwm_drag_native_finish_stable>=2)) {
+    if(now>=hwm_drag_native_finish_deadline) {
         /* A deadline keeps ownership bounded, but it is not evidence that
          * CGWindowList accepted a final displayed frame. Never snap an
          * unsampled native release. */
+        window->strip_native_move_pending=!sampled;
         hwm_drag_complete(view,window,sampled);
     } else {
         hwm_wake();
@@ -148,7 +163,7 @@ static void hwm_drag_force_finalize(struct view *view,bool snap)
 {
     struct window *window=window_manager_find_window(&g_window_manager,hwm_drag_window);
     if(!window) { hwm_drag_native_finishing=false; hwm_drag_native_recovering=false; hwm_drag_native_recovered=false; hwm_drag_window=0; hwm_drag_native=false; return; }
-    if(hwm_drag_native) hwm_drag_native_sync(view,window);
+    if(hwm_drag_native) window->strip_native_move_pending=!hwm_drag_native_sync(view,window);
     hwm_drag_complete(view,window,snap);
 }
 
@@ -182,6 +197,7 @@ static void hwm_drag_release(struct view *view,struct window *window)
 {
     hwm_drag_move_pending=false;
     if(hwm_drag_native) {
+        if(hwm_drag_native_finishing) { hwm_drag_native_sync(view,window); hwm_wake(); return; }
         bool recovered=hwm_drag_native_recovering || hwm_drag_native_recovered;
         hwm_drag_native_sync(view,window);
         hwm_drag_native_recovering=false;

@@ -83,6 +83,10 @@ static void hwm_visibility_set(struct window *w,bool hidden,CGRect frame)
         bool old=w->strip_offscreen; w->strip_offscreen=hidden;
         if(!scripting_addition_set_opacity(w->id,hidden || w->strip_pop==1 || w->strip_close_pending ? 0 : hwm_window_alpha(w),0)) {
             w->strip_offscreen=old; ++hwm_move_failures; hwm_backend_ok=false;
+            // The primary did not change state, so neither may a companion.
+            // Otherwise a failed hide leaves a visible app without its border,
+            // while a failed reveal can expose a border without its app.
+            return;
         }
     }
     for(NSMutableDictionary *entry in hwm_visibility_companions.allValues) {

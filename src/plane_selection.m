@@ -42,7 +42,7 @@ static void hwm_plane_magnet_at(struct view *view,CGPoint point,HWMPlaneCamera s
 {
     if(!view || !hwm_magnetic_centering || hwm_plane_selecting || hwm_drag_window || hwm_edge_window) return;
     struct window *target=window_manager_find_window_at_point(&g_window_manager,point);
-    if(!target || !view_find_window_node(view,target->id) || target->strip_offscreen || target->strip_close_ghost) return;
+    if(!hwm_plane_window_selectable(view,target)) return;
     CGRect bounds=hwm_bounds(view);
     HWMPlaneCamera camera={hwm_offset(view,hwm_now()),hwm_plane_camera_y(hwm_now()),hwm_plane_scale};
     HWMPlanePoint centered={target->strip_world_x+target->strip_width*.5-bounds.size.width/(2*hwm_plane_scale),

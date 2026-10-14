@@ -11,6 +11,7 @@ static int g_connection;
 static bool hwm_paused,hwm_suspended,hwm_overview_active;
 static int hwm_border_mode=1;
 static double hwm_border_width=2,hwm_border_radius=12,hwm_plane_scale=.5;
+static unsigned hwm_border_generation;
 static double hwm_border_active[4]={1,1,1,1},hwm_border_active_end[4]={1,1,1,1};
 static bool hwm_border_travel;
 static volatile bool __pending_gesture;
@@ -20,7 +21,7 @@ static double hwm_border_travel_start;
 static bool hwm_backend_ok=true;
 static struct window focus={.id=7};
 static CGRect feedback= { {100,100}, {400,300} };
-static int transform_calls,batch_depth,order_out_calls;
+static int transform_calls,batch_depth,order_out_calls,shape_calls;
 static bool transform_result=true,batch_ack=true,batch_held;
 
 static struct window *window_manager_find_window(void *manager,uint32_t id)
@@ -61,7 +62,7 @@ static CGError SLSSetWindowLevel(int connection,uint32_t id,int level) { (void)c
 static CGContextRef SLWindowContextCreate(int connection,uint32_t id,CFDictionaryRef options)
 { (void)connection; (void)id; (void)options; return NULL; }
 static CGError SLSSetWindowShape(int connection,uint32_t id,float x,float y,CFTypeRef region)
-{ (void)connection; (void)id; (void)x; (void)y; (void)region; return kCGErrorSuccess; }
+{ (void)connection; (void)id; (void)x; (void)y; (void)region; ++shape_calls; return kCGErrorSuccess; }
 static CGError SLSOrderWindow(int connection,uint32_t id,int mode,uint32_t relative)
 { (void)connection; (void)id; (void)relative; if(mode==0) ++order_out_calls; return kCGErrorSuccess; }
 static CGError SLSSetMouseEventEnableFlags(int connection,uint32_t id,bool enabled)
@@ -116,5 +117,11 @@ int main(void)
     hwm_backend_ok=true; batch_ack=true;
     hwm_plane_border_tick(&view,1);
     assert(transform_calls==7 && hwm_plane_border_frame.origin.x==398);
+
+    /* A style-only config reload must repaint the cached pixels even when the
+     * displayed frame and raster dimensions have not changed. */
+    ++hwm_border_generation;
+    hwm_plane_border_tick(&view,1);
+    assert(transform_calls==8 && shape_calls==2);
     return 0;
 }

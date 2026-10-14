@@ -5,7 +5,7 @@ SOURCES = vendor/yabai/src/manifest.m vendor/yabai/src/osax/payload_bin.c vendor
 HEADERS = $(shell find src vendor/yabai/src -name '*.h' -o -name '*.c' -o -name '*.m')
 OSAX_DEPS = $(wildcard vendor/yabai/src/osax/*.m vendor/yabai/src/osax/*.h vendor/yabai/src/misc/*.h)
 
-.PHONY: all test bench clean
+.PHONY: all test test-plane-visibility-failure bench clean
 all: build/tana2d
 vendor/yabai/src/osax/payload_bin.c: $(OSAX_DEPS)
 	$(MAKE) -B -C vendor/yabai ./src/osax/payload_bin.c
@@ -38,6 +38,8 @@ test:
 	./build/strip_runtime_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_native_drag_test.m -framework Cocoa -o build/plane_native_drag_test
 	./build/plane_native_drag_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fno-objc-arc -fblocks -fsanitize=address,undefined -g tests/plane_ax_cancel_test.m -framework Cocoa -o build/plane_ax_cancel_test
+	./build/plane_ax_cancel_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_snap_runtime_test.m -framework Cocoa -o build/plane_snap_runtime_test
 	./build/plane_snap_runtime_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_batch_recovery_test.m -framework Cocoa -o build/plane_batch_recovery_test
@@ -46,6 +48,7 @@ test:
 	./build/plane_input_queue_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_selection_visibility_test.m -framework Cocoa -o build/plane_selection_visibility_test
 	./build/plane_selection_visibility_test
+	$(MAKE) test-plane-visibility-failure
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_border_test.m -framework Cocoa -o build/plane_border_test
 	./build/plane_border_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_resize_session_test.m -framework Cocoa -o build/plane_resize_session_test
@@ -69,6 +72,10 @@ test:
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/plane_controls_test.m -framework Cocoa -framework QuartzCore -o build/plane_controls_test
 	./build/plane_controls_test
 	python3 -m unittest discover -s tests -p 'test_*.py'
+test-plane-visibility-failure:
+	mkdir -p build
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_visibility_failure_test.m -framework Cocoa -o build/plane_visibility_failure_test
+	./build/plane_visibility_failure_test
 bench:
 	mkdir -p build
 	$(CC) -std=c11 -Wall -Wextra -Werror -O2 tests/performance_bench.c -o build/performance_bench

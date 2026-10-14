@@ -385,7 +385,11 @@ static void hwm_overview_add(NSMutableArray *windows,NSMutableSet *seen,struct w
 
 static void hwm_overview_begin(bool finish)
 {
-    if(hwm_overview_active || hwm_paused || hwm_suspended || hwm_drag_window) return;
+    /* A press already claimed by the plane picker has a matching terminal-up
+     * obligation on the event tap. Do not hand that physical stream to the
+     * native overview midway through it. */
+    if(hwm_overview_active || hwm_paused || hwm_suspended || hwm_drag_window ||
+       hwm_plane_pick_window || hwm_plane_select_click) return;
     struct view *view=hwm_view(); if(!view) return;
     double began=hwm_now();
     hwm_cancel_closing();
@@ -415,6 +419,10 @@ static void hwm_overview_begin(bool finish)
     hwm_overview_original_offset=hwm_offset(view,hwm_now());
     view->strip_scrolling=false; view->strip_target_offset=view->strip_offset;
     __atomic_store_n(&__pending_gesture,false,__ATOMIC_RELEASE);
+    /* Native cards replace the plane's click-to-center mode. Leaving that
+     * mode armed would later classify a title-bar press as a plane drag. */
+    hwm_plane_pointer_finish(false);
+    hwm_plane_selecting=false;
     hwm_overview_active=true; hwm_overview_closing=false; hwm_overview_animating=false; hwm_overview_gesture_active=false;
     hwm_overview_hide_borders();
     hwm_overview_position=0; hwm_overview_progress=0; hwm_overview_selected=0;

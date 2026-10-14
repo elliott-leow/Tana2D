@@ -63,11 +63,32 @@ static void test_displayed_geometry_fallback_visibility(void)
     assert(!hwm_plane_window_at(&view,CGPointMake(250,200)));
 }
 
+static void test_magnet_ignores_nonselectable_hit(void)
+{
+    struct window *w;
+    HWMPlaneCamera start={-1600,-330,.5};
+
+    selection_reset(); w=&windows[0]; selection_hit=w;
+    hwm_plane_scale=.5; view.strip_offset=-1640; test_camera_y=-330;
+    w->strip_world_x=-740; w->strip_world_y=420; w->strip_width=400; w->strip_height=300;
+    hidden_tab=w->id;
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),start);
+    assert(view.strip_offset==-1640 && test_camera_y==-330);
+
+    selection_reset(); w=&windows[0]; selection_hit=w;
+    hwm_plane_scale=.5; view.strip_offset=-1640; test_camera_y=-330;
+    w->strip_world_x=-740; w->strip_world_y=420; w->strip_width=400; w->strip_height=300;
+    application.is_hidden=true;
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),start);
+    assert(view.strip_offset==-1640 && test_camera_y==-330);
+}
+
 int main(void)
 {
     @autoreleasepool {
         test_primary_hit_visibility();
         test_displayed_geometry_fallback_visibility();
+        test_magnet_ignores_nonselectable_hit();
         puts("plane selection visibility tests passed");
     }
 }
