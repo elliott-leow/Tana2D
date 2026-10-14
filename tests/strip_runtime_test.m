@@ -53,7 +53,7 @@ static bool __pending_gesture;
 static uint32_t hwm_drag_window,hwm_close_source,hwm_feedback_focus_id;
 static double hwm_duration=.24,hwm_close_time,hwm_last_input;
 static double hwm_plane_scale=1;
-static bool hwm_plane_y_scrolling,hwm_plane_fit_active;
+static bool hwm_plane_y_scrolling,hwm_plane_fit_active,hwm_camera_animating;
 static double test_camera_y;
 static double hwm_plane_camera_y(double now) { (void)now; return test_camera_y; }
 static uint64_t hwm_move_failures,hwm_resize_operations;
@@ -62,7 +62,8 @@ static struct window_node nodes[4];
 static struct application application;
 static struct view view;
 static struct view *hwm_view(void) { return &view; }
-static CGRect actual[4];
+static CGRect actual[4],projected[4];
+static double test_scales[4];
 static double clock_now=10;
 static int ax_calls,moves,disable_calls,update_depth;
 static bool move_fails;
@@ -85,7 +86,14 @@ static double fade_duration[4];
 static bool scripting_addition_set_opacity(uint32_t id,float alpha,double duration) { fade_duration[id-1]=duration; alphas[id-1]=alpha; return true; }
 static int scale_calls;
 static bool scripting_addition_scale_window(uint32_t id,float x,float y,float w,float h) { (void)id; (void)x; (void)y; (void)w; (void)h; ++scale_calls; return true; }
-static bool scripting_addition_set_plane_transform(uint32_t id,double x,double y,double scale) { (void)id; (void)x; (void)y; (void)scale; ++scale_calls; return true; }
+static bool scripting_addition_set_plane_transform(uint32_t id,double x,double y,double scale) {
+    ++scale_calls; if(move_fails) return false;
+    if(!isfinite(x)) x=actual[id-1].origin.x;
+    if(!isfinite(y)) y=actual[id-1].origin.y;
+    test_scales[id-1]=scale;
+    projected[id-1]=CGRectMake(x,y,actual[id-1].size.width*scale,actual[id-1].size.height*scale);
+    return true;
+}
 static bool window_manager_close_window(struct window *w) { (void)w; ++close_calls; return false; }
 static struct window_node *view_find_window_node(struct view *v,uint32_t id) { for(struct window_node *n=v->root;n;n=n->next) if(n->window_list[0]==id) return n; return NULL; }
 static void view_clear_flag(struct view *v,int flag) { (void)v; (void)flag; }
@@ -100,12 +108,15 @@ static bool scripting_addition_batch_flush(void) { ++sa_batch_flushes; return tr
 static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return true; }
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
-static void window_manager_resize_window(struct window *w,double width,double height) { ++ax_calls; actual[w->id-1].size=CGSizeMake(width,height); }
+static void window_manager_resize_window(struct window *w,double width,double height) {
+    ++ax_calls; actual[w->id-1].size=CGSizeMake(width,height);
+    projected[w->id-1].size=CGSizeMake(width*test_scales[w->id-1],height*test_scales[w->id-1]);
+}
 static void hwm_column_width(struct view *v,struct window *w,double width) { (void)v; w->strip_width=width; }
 static uint32_t hidden_tab;
 static __attribute__((unused)) bool hwm_workflow_tab_geometry(struct view *v,struct window *w,double *y,double *height) { (void)v; (void)w; (void)y; (void)height; return false; }
 static bool hwm_workflow_tab_hidden(struct window *w) { return w->id==hidden_tab; }
-static void hwm_resize_submit(struct window *w,CGRect f,bool full) { if(full) window_manager_set_window_frame(w,f.origin.x,f.origin.y,f.size.width,f.size.height); else window_manager_resize_window(w,f.size.width,f.size.height); }
+static void hwm_resize_submit(struct window *w,CGRect f,bool full) { (void)full; window_manager_resize_window(w,f.size.width,f.size.height); }
 static bool resize_busy;
 static bool hwm_resize_busy(struct window *w) { (void)w; return resize_busy; }
 static void hwm_close_submit(struct window *w) { window_manager_close_window(w); }
@@ -142,6 +153,10 @@ static uint32_t hwm_preserve_focus_window;
 static double hwm_preserve_focus_until;
 static struct window *hwm_action_window(void) { return &windows[0]; }
 static void hwm_plane_set_camera(struct view *v,double x,double y,bool animate) { (void)animate; v->strip_offset=x; test_camera_y=y; }
+static void hwm_plane_transition_to(struct view *v,double x,double y,double scale,bool animate) {
+    hwm_plane_set_camera(v,x,y,animate); hwm_plane_scale=scale; hwm_plane_fit_active=fabs(scale-1)>.001;
+}
+static void hwm_plane_actual_size(struct view *v) { hwm_plane_transition_to(v,v->strip_offset,test_camera_y,1,true); }
 #include "../src/plane_actions.m"
 
 
@@ -157,7 +172,7 @@ static void reset(void)
     g_mouse_state.window=NULL; close_calls=0; hwm_edge_window=0; hwm_edge_neighbor=0; undo_captures=0;
     for(int i=0;i<4;i++) {
         windows[i].id=i+1; windows[i].application=&application;
-        windows[i].frame=actual[i]=CGRectMake(100+i*80,100,400,600);
+        windows[i].frame=actual[i]=projected[i]=CGRectMake(100+i*80,100,400,600); test_scales[i]=1;
         windows[i].strip_width=400;
         alphas[i]=.85;
         nodes[i].window_count=1; nodes[i].window_list[0]=i+1;
@@ -492,8 +507,8 @@ static void test_plane_camera_and_fit(void)
     w->strip_world_x=-740; w->strip_world_y=420; w->strip_width=400; w->strip_height=300;
     hwm_layout(&view,false);
     view.strip_offset=-300; clock_now+=1; hwm_render(&view,clock_now);
-    assert(actual[0].origin.x==round(12-740+300));
-    assert(actual[0].origin.y==round(51+420));
+    assert(projected[0].origin.x==round(12-740+300));
+    assert(projected[0].origin.y==round(51+420));
     assert(w->strip_world_x==-740 && w->strip_world_y==420);
     ax_calls=0;
     hwm_plane_fit_active=true; hwm_plane_scale=.5; scale_calls=0;
@@ -506,8 +521,8 @@ static void test_plane_camera_and_fit(void)
     hwm_plane_fit_active=false; hwm_plane_scale=1;
     test_camera_y=-800;
     clock_now+=.02; hwm_render(&view,clock_now);
-    assert(!w->strip_plane_scaled);
-    assert(actual[0].origin.y==round(51+420+800));
+    assert(w->strip_plane_scaled); // Unit zoom still has a plane translation.
+    assert(projected[0].origin.y==round(51+420+800));
     test_camera_y=100000; clock_now+=1; hwm_render(&view,clock_now);
     assert(w->strip_offscreen && w->strip_world_y==420);
 }
@@ -522,7 +537,8 @@ static void test_maximize_at_actual_size(void)
     assert(hwm_plane_scale==1 && !hwm_plane_fit_active);
     assert(view.strip_offset==42 && test_camera_y==67);
     assert(w->strip_width==1200 && w->strip_height==900);
-    assert(CGRectEqualToRect(actual[0],hwm_bounds(&view)));
+    clock_now+=1; hwm_render(&view,clock_now); clock_now+=.3; hwm_render(&view,clock_now);
+    assert(CGRectEqualToRect(projected[0],hwm_bounds(&view)));
     assert(undo_captures==1 && hwm_preserve_focus_window==w->id);
 }
 static void test_final_resize_confirmation(void)
@@ -554,14 +570,14 @@ static void test_drag_submission_and_magnetic_release(void)
             clock_now+=1.0/120;
             assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
             assert(w->strip_world_x>=80 && w->strip_world_x<=88);
-            assert(actual[0].origin.x==round(12+w->strip_world_x*hwm_plane_scale));
+            assert(projected[0].origin.x==round(12+w->strip_world_x*hwm_plane_scale));
         }
         hwm_drag_finishing=true;
         assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
         hwm_drag_finishing=false;
         assert(fabs(w->strip_world_x+400+12-windows[1].strip_world_x)<.001);
-        assert(w->strip_world_y==0 && moves==before+121 && ax_calls==0);
-        assert(scale_calls==(hwm_plane_scale==1?0:1));
+        assert(w->strip_world_y==0 && moves==before && ax_calls==0);
+        assert(scale_calls==121);
         clock_now+=1.0/120;
         assert(hwm_drag_submit_plane(&view,w,CGPointMake(88,0)));
         assert(hwm_drag_snap_neighbor==windows[1].id);
@@ -580,9 +596,9 @@ static void test_scaled_pan_keeps_transform(void)
     for(int i=1;i<=120;i++) {
         view.strip_offset=i; test_camera_y=i*.5; clock_now+=1.0/120;
         hwm_render(&view,clock_now);
-        assert(scale_calls==before && ax_calls==0);
-        assert(actual[0].origin.x==round(12+(windows[0].strip_world_x-i)*.5));
-        assert(actual[0].origin.y==round(51+(windows[0].strip_world_y-i*.5)*.5));
+        assert(scale_calls>before && ax_calls==0 && moves==0);
+        assert(projected[0].origin.x==round(12+(windows[0].strip_world_x-i)*.5));
+        assert(projected[0].origin.y==round(51+(windows[0].strip_world_y-i*.5)*.5));
     }
     hwm_layout(&view,true);
     assert(fabs(windows[0].strip_from_x-windows[0].strip_world_x)<=1);
@@ -600,7 +616,7 @@ static void test_position_echo_does_not_resize(void)
     clock_now+=.02; hwm_render(&view,clock_now);
     assert(ax_calls==0 && !w->strip_size_pending);
     assert(w->strip_world_x==wx && w->strip_world_y==wy);
-    assert(actual[0].origin.x==round(12+wx) && actual[0].origin.y==round(51+wy));
+    assert(projected[0].origin.x==round(12+wx) && projected[0].origin.y==round(51+wy));
 }
 
 static void test_plane_transform_cleanup(void)
@@ -626,7 +642,7 @@ static void test_zoomed_edge_hit(void)
     reset(); struct window *w=&windows[0];
     g_mouse_state.window=w; g_mouse_state.window_frame=actual[0];
     hwm_plane_scale=.5; hwm_plane_fit_active=true;
-    CGRect f=actual[0];
+    CGRect f=w->strip_last_frame;
     CGPoint edge=CGPointMake(f.origin.x+f.size.width*.5,f.origin.y+f.size.height*.25);
     horizontal_mouse_down(w,edge);
     assert(hwm_edge_window==w->id && (hwm_edge_direction&HANDLE_RIGHT));
@@ -658,7 +674,7 @@ static void test_plane_native_resize(void)
     double other_x=windows[2].strip_world_x,other_y=windows[2].strip_world_y;
     CGRect original=actual[1];
     g_mouse_state.window=w; g_mouse_state.window_frame=original;
-    horizontal_mouse_down(w,CGPointMake(CGRectGetMinX(original),CGRectGetMinY(original)));
+    horizontal_mouse_down(w,w->strip_last_frame.origin);
     assert(hwm_edge_window==w->id);
     actual[1].origin.x-=75; actual[1].origin.y-=40;
     actual[1].size.width+=75; actual[1].size.height+=40;
@@ -670,9 +686,30 @@ static void test_plane_native_resize(void)
     hwm_edge_finish(w,&view);
 }
 
+static void test_native_anchor_is_independent_of_projection(void)
+{
+    reset(); CGRect anchors[4]; memcpy(anchors,actual,sizeof(anchors));
+    hwm_plane_scale=.75; hwm_plane_fit_active=true; __pending_gesture=true;
+    for(int i=0;i<80;i++) {
+        view.strip_offset=sin(i*.15)*600; test_camera_y=cos(i*.1)*700;
+        clock_now+=1.0/120; hwm_render(&view,clock_now);
+        for(int j=0;j<4;j++) assert(CGRectEqualToRect(actual[j],anchors[j]));
+    }
+    assert(moves==0 && ax_calls==0);
+    // Reproduce a native y=38 correction. The displayed surface stays at its
+    // projected point; the renderer never moves the anchor back offscreen.
+    __pending_gesture=false; clock_now+=2;
+    actual[0].origin.y=38;
+    horizontal_window_changed(&windows[0],&view,false);
+    hwm_render(&view,clock_now);
+    assert(actual[0].origin.y==38 && moves==0 && ax_calls==0);
+    assert(projected[0].origin.y==round(51+(windows[0].strip_world_y-test_camera_y)*.75));
+}
+
 int main(void)
 {
     @autoreleasepool {
+    test_native_anchor_is_independent_of_projection();
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
     test_scaled_pan_keeps_transform();

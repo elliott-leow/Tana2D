@@ -14,7 +14,7 @@ static BOOL tana_backend_ready(void)
     if(!pw) return NO;
     char version[256]={0}; uint32_t attributes=0;
     snprintf(g_sa_socket_file,sizeof(g_sa_socket_file),SA_SOCKET_PATH_FMT,pw->pw_name);
-    return scripting_addition_request_handshake(version,sizeof(version),&attributes) && !strcmp(version,OSAX_VERSION);
+    return scripting_addition_request_handshake(version,sizeof(version),&attributes) && !strcmp(version,OSAX_VERSION) && (attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
 }
 
 static BOOL tana_security_ready(void)

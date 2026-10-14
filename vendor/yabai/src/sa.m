@@ -1,6 +1,6 @@
 #include "sa.h"
 #include "../../../src/sa_transport.h"
-
+#include "misc/plane_transform.h"
 extern int csr_get_active_config(uint32_t *config);
 #define CSR_ALLOW_UNRESTRICTED_FS 0x02
 #define CSR_ALLOW_TASK_FOR_PID    0x04
@@ -399,6 +399,9 @@ out:
 // helper without waiting for each one; end waits for all of them together.
 static __thread HwmSaPipeline hwm_sa_pipeline;
 static __thread int hwm_sa_batch_depth;
+static __thread HwmPlaneTransform hwm_sa_plane_transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
+static __thread uint16_t hwm_sa_plane_transform_count;
+static bool hwm_sa_plane_flush(void);
 
 void scripting_addition_batch_begin(void)
 {
@@ -408,21 +411,101 @@ void scripting_addition_batch_begin(void)
 // Wait until everything queued so far has been applied, leaving the batch open.
 bool scripting_addition_batch_flush(void)
 {
-    return hwm_sa_pipeline_flush(&hwm_sa_pipeline);
+    return hwm_sa_plane_flush() && hwm_sa_pipeline_flush(&hwm_sa_pipeline);
 }
 
 bool scripting_addition_batch_end(void)
 {
     if (hwm_sa_batch_depth > 0) --hwm_sa_batch_depth;
-    return hwm_sa_batch_depth > 0 ? true : hwm_sa_pipeline_flush(&hwm_sa_pipeline);
+    return hwm_sa_batch_depth > 0 ? true : scripting_addition_batch_flush();
 }
 
 static bool scripting_addition_send_bytes(char *bytes, int length)
 {
     if (length <= 0) return false;
+    /* An ordinary command following transforms must not overtake their
+     * absolute transaction on the helper socket. */
+    if (!hwm_sa_plane_flush()) return false;
     if (hwm_sa_batch_depth > 0) return hwm_sa_pipeline_send(&hwm_sa_pipeline, g_sa_socket_file, bytes, (size_t) length, 50);
     return hwm_sa_send(g_sa_socket_file, bytes, (size_t) length, 50);
 }
+
+/* The plane payload replies with one byte: 1 after its single absolute
+ * transform transaction commits, 0 for malformed input or a transaction
+ * failure. Unlike legacy commands, this makes backend failure observable. */
+static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length)
+{
+    long long start = hwm_sa_monotonic_ms();
+    if (!bytes || !length || start < 0 || start > LLONG_MAX - 50) return false;
+    long long deadline = start + 50;
+    int fd = hwm_sa_connect(g_sa_socket_file, deadline);
+    if (fd < 0) return false;
+    bool success = hwm_sa_send_all(fd, bytes, length, deadline);
+    unsigned char acknowledgement = 0;
+    if (success) success = hwm_sa_receive_byte(fd, &acknowledgement, deadline) && acknowledgement == 1;
+    close(fd);
+    return success;
+}
+
+static bool hwm_sa_plane_flush(void)
+{
+    if (!hwm_sa_plane_transform_count) return true;
+    /* All earlier ordinary commands must reach Dock before an absolute
+     * compositor transaction is committed. */
+    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline)) {
+        hwm_sa_plane_transform_count = 0;
+        return false;
+    }
+    while (hwm_sa_plane_transform_count) {
+        uint16_t count = hwm_sa_plane_transform_count;
+        unsigned char bytes[SA_SOCKET_BUFF_LEN];
+        size_t payload_length = 0;
+        if (!hwm_plane_transform_packet_encode(bytes + sizeof(int16_t), sizeof(bytes) - sizeof(int16_t),
+                                               hwm_sa_plane_transforms, count, &payload_length) ||
+            payload_length > INT16_MAX) {
+            hwm_sa_plane_transform_count = 0;
+            return false;
+        }
+        int16_t wire_length = (int16_t) payload_length;
+        memcpy(bytes, &wire_length, sizeof(wire_length));
+        if (!hwm_sa_plane_send(bytes, payload_length + sizeof(wire_length))) {
+            hwm_sa_plane_transform_count = 0;
+            return false;
+        }
+        hwm_sa_plane_transform_count = 0;
+    }
+    return true;
+}
+
+bool scripting_addition_plane_supported(void)
+{
+    return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_TRANSFORM);
+}
+
+bool scripting_addition_set_plane_transform_xy(uint32_t wid, double x, double y, double scale_x, double scale_y)
+{
+    if (!scripting_addition_plane_supported() || !wid || !isfinite(scale_x) || scale_x <= 0 ||
+        !isfinite(scale_y) || scale_y <= 0) return false;
+    if (isnan(x) || isnan(y)) {
+        CGRect native = CGRectNull;
+        if (!(isnan(x) && isnan(y)) || scale_x != 1 || scale_y != 1 ||
+            SLSGetWindowBounds(SLSMainConnectionID(), wid, &native) != kCGErrorSuccess ||
+            !isfinite(native.origin.x) || !isfinite(native.origin.y)) return false;
+        x = native.origin.x;
+        y = native.origin.y;
+    }
+    HwmPlaneTransform transform = { wid, x, y, scale_x, scale_y };
+    if (!hwm_plane_transform_valid(transform)) return false;
+    if (hwm_sa_plane_transform_count == SA_PLANE_TRANSFORM_MAX_RECORDS && !hwm_sa_plane_flush()) return false;
+    hwm_sa_plane_transforms[hwm_sa_plane_transform_count++] = transform;
+    return hwm_sa_batch_depth > 0 || hwm_sa_plane_flush();
+}
+
+bool scripting_addition_set_plane_transform(uint32_t wid, double x, double y, double scale)
+{
+    return scripting_addition_set_plane_transform_xy(wid, x, y, scale, scale);
+}
+
 
 bool scripting_addition_focus_space(uint64_t sid)
 {
@@ -527,7 +610,6 @@ bool scripting_addition_scale_window(uint32_t wid, float x, float y, float w, fl
     return sa_payload_send(SA_OPCODE_WINDOW_SCALE);
 }
 
-#include "misc/plane_transform.h"
 
 bool scripting_addition_swap_window_proxy_in(struct window_animation *animation_list, int animation_count)
 {

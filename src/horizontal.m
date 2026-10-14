@@ -121,6 +121,12 @@ static bool hwm_plane_y_scrolling;
 #include "plane_gesture.h"
 static HWMPlaneGesture hwm_plane_gesture;
 static double hwm_plane_scale=1;
+static bool hwm_camera_animating;
+static HWMPlaneCamera hwm_camera_from,hwm_camera_target;
+static double hwm_camera_start,hwm_camera_width,hwm_camera_height;
+static _Atomic bool hwm_plane_selecting;
+static bool hwm_plane_select_click;
+static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate);
 static bool hwm_plane_fit_active;
 static void hwm_plane_set_camera(struct view *view,double x,double y,bool animate);
 static void hwm_plane_fit_all(struct view *view);
@@ -285,7 +291,7 @@ static bool hwm_feedback_animating(double now);
 static void hwm_focus_any(struct window *w);
 static void hwm_arrangement_window_opened(void);
 
-enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
+enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PLANE_PICK, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
                   HWM_FLOAT, HWM_FULL, HWM_CENTER, HWM_HOME, HWM_PAUSE, HWM_REFLOW, HWM_QUIT, HWM_CLOSE, HWM_TERMINAL, HWM_BROWSER,
                   HWM_MOVE_FIRST, HWM_MOVE_LAST, HWM_OVERVIEW_FILTER, HWM_OVERVIEW_DRAG, HWM_OVERVIEW_HIGHLIGHT, HWM_OVERVIEW, HWM_OVERVIEW_GESTURE, HWM_OVERVIEW_CANCEL, HWM_OVERVIEW_POINTER, HWM_OVERVIEW_KEY, HWM_CANCEL_DRAG, HWM_NAMED_ACTION, HWM_APPLY_RULE, HWM_TAB_SELECT, HWM_MARK_KEY, HWM_ATTENTION };
 
@@ -326,7 +332,7 @@ static CGRect hwm_screen(struct view *view)
     double now=hwm_now();
     // Never in the middle of a swipe or a glide: the answer cannot change
     // there, and asking costs a frame's worth of round trips.
-    bool moving=view->strip_scrolling || hwm_plane_y_scrolling || g_mouse_state.window ||
+    bool moving=hwm_camera_animating || view->strip_scrolling || hwm_plane_y_scrolling || g_mouse_state.window ||
                 __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED);
     if(view->sid!=sid || (now-hwm_screen_stamp>2 && !(moving && hwm_screen_stamp>0))) {
         sid=view->sid; hwm_screen_stamp=now;
@@ -359,8 +365,27 @@ static double hwm_clamp_offset(double offset)
 /* The displayed camera position. It may lie slightly past either end: a finger
  * holding the strip there is resisted, and a fling into an end bounces off it.
  * view->strip_offset is always the clamped, in-bounds value. */
+static void hwm_plane_camera_sample(struct view *view,double now)
+{
+    if(!view || !hwm_camera_animating) return;
+    double duration=.36*fmax(0,hwm_motion_scale);
+    double elapsed=fmax(0,now-hwm_camera_start);
+    double progress=duration<=0 || elapsed>=duration ? 1 : hstrip_spring_progress(elapsed,duration);
+    HWMPlaneCamera camera=hwm_plane_camera_mix(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height,progress);
+    view->strip_offset=camera.x; hwm_plane_y=camera.y; hwm_plane_scale=camera.scale;
+    hwm_plane_fit_active=fabs(camera.scale-1)>.001;
+    if(progress>=1) hwm_camera_animating=false;
+}
+static void hwm_plane_camera_stop(struct view *view,double now)
+{
+    if(!hwm_camera_animating) return;
+    hwm_plane_camera_sample(view,now); hwm_camera_animating=false;
+    view->strip_target_offset=view->strip_offset; hwm_plane_y_target=hwm_plane_y;
+    hwm_scroll_current_velocity=0; hwm_plane_y_current_velocity=0;
+}
 static double hwm_offset(struct view *view, double now)
 {
+    hwm_plane_camera_sample(view,now);
     if (!view->strip_scrolling) {
         if(hwm_held_lead==0 || hwm_rubber || !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED)) return view->strip_offset+hwm_rubber;
         return view->strip_offset+hwm_held_lead;
@@ -380,6 +405,7 @@ static void hwm_scroll(struct view *view, double target, bool animate)
     if (!view || !isfinite(target)) return;
     hwm_state_pending = true;
     double now = hwm_clock();
+    hwm_plane_camera_stop(view,now);
     double release=hwm_scroll_current_velocity;
     view->strip_from_offset = hwm_offset(view, now);
     hwm_rubber=0;
@@ -395,6 +421,7 @@ static void hwm_scroll(struct view *view, double target, bool animate)
 
 static double hwm_plane_camera_y(double now)
 {
+    hwm_plane_camera_sample(hwm_view(),now);
     if(!hwm_plane_y_scrolling) return hwm_plane_y;
     double velocity=0, value=hstrip_spring(hwm_plane_y_from,hwm_plane_y_target,hwm_plane_y_initial_velocity,
                                            now-hwm_plane_y_start,hwm_scroll_omega/fmax(.15,hwm_motion_scale),&velocity);
@@ -417,6 +444,28 @@ static void hwm_plane_set_camera(struct view *view,double x,double y,bool animat
     hwm_plane_y_start=now;
     hwm_plane_y_scrolling=animate && fabs(y-hwm_plane_y_from)>.25;
     if(!hwm_plane_y_scrolling) { hwm_plane_y=y; hwm_plane_y_initial_velocity=hwm_plane_y_current_velocity=0; }
+    hwm_state_pending=true; hwm_wake();
+}
+
+static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate)
+{
+    if(!view || !isfinite(x) || !isfinite(y) || !isfinite(scale) || scale<=0) return;
+    double now=hwm_clock();
+    double current_x=hwm_offset(view,now),current_y=hwm_plane_camera_y(now);
+    hwm_camera_from=(HWMPlaneCamera){current_x,current_y,hwm_plane_scale};
+    hwm_camera_target=(HWMPlaneCamera){x,y,scale};
+    CGRect bounds=hwm_bounds(view);
+    hwm_camera_width=bounds.size.width; hwm_camera_height=bounds.size.height;
+    hwm_camera_start=now;
+    view->strip_scrolling=false; hwm_plane_y_scrolling=false;
+    hwm_scroll_initial_velocity=hwm_scroll_current_velocity=0;
+    hwm_plane_y_initial_velocity=hwm_plane_y_current_velocity=0;
+    view->strip_target_offset=x; hwm_plane_y_target=y;
+    hwm_camera_animating=animate && hwm_motion_scale>0;
+    if(!hwm_camera_animating) {
+        view->strip_offset=x; hwm_plane_y=y; hwm_plane_scale=scale;
+        hwm_plane_fit_active=fabs(scale-1)>.001;
+    }
     hwm_state_pending=true; hwm_wake();
 }
 
@@ -446,25 +495,25 @@ static void hwm_plane_fit(struct view *view,bool focused)
         camera.x=world.x+world.width*.5-bounds.size.width/(2*camera.scale);
         camera.y=world.y+world.height*.5-bounds.size.height/(2*camera.scale);
     }
-    hwm_plane_scale=camera.scale; hwm_plane_fit_active=fabs(camera.scale-1)>.001;
-    hwm_plane_set_camera(view,camera.x,camera.y,true);
+    hwm_plane_transition_to(view,camera.x,camera.y,camera.scale,true);
 }
 static void hwm_plane_fit_all(struct view *view) { hwm_plane_fit(view,false); }
 static void hwm_plane_fit_focused(struct view *view) { hwm_plane_fit(view,true); }
 static void hwm_plane_actual_size(struct view *view)
 {
     if(!view) return;
-    double now=hwm_now(), old=hwm_plane_scale;
-    hwm_plane_scale=1; hwm_plane_fit_active=false;
+    double now=hwm_now(); hwm_plane_camera_stop(view,now);
+    double old=hwm_plane_scale;
     /* Keep the viewport centre on the same world point as scale returns. */
     CGRect bounds=hwm_bounds(view);
     double cx=view->strip_offset+bounds.size.width/(2*fmax(1e-12,old));
     double cy=hwm_plane_camera_y(now)+bounds.size.height/(2*fmax(1e-12,old));
-    hwm_plane_set_camera(view,cx-bounds.size.width*.5,cy-bounds.size.height*.5,true);
+    hwm_plane_transition_to(view,cx-bounds.size.width*.5,cy-bounds.size.height*.5,1,true);
 }
 static void hwm_plane_zoom_at_pointer(struct view *view,double scale)
 {
     if(!view || !isfinite(scale)) return;
+    hwm_plane_camera_stop(view,hwm_now());
     CGRect bounds=hwm_bounds(view); CGPoint point=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
     CGPoint cursor;
     if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && CGRectContainsPoint(bounds,cursor)) point=cursor;
@@ -669,7 +718,7 @@ static void hwm_hold_focus(void)
 }
 static bool horizontal_hover_allowed(CGPoint point)
 {
-    if (hwm_overview_active) return false;
+    if (hwm_overview_active || hwm_plane_selecting) return false;
     if (!hwm_ready || !hwm_focus_guard) return true;
     if (hwm_now()-hwm_focus_guard_time<.35) return false;
     if (hypot(point.x-hwm_focus_guard_point.x,point.y-hwm_focus_guard_point.y)<6) return false;
@@ -806,6 +855,30 @@ static void hwm_nav_to(struct view *view,struct window *target)
     hwm_hold_focus();
     hwm_plane_set_camera(view,hwm_center_target(view,target),target->strip_world_y+target->strip_height*.5-hwm_bounds(view).size.height/(2*hwm_plane_scale),true);
     hwm_feedback_focus(NULL,target);
+}
+
+static void hwm_plane_choose_at(CGPoint point)
+{
+    struct view *view=hwm_view(); if(!view || !hwm_plane_selecting) return;
+    struct window *target=window_manager_find_window_at_point(&g_window_manager,point);
+    if(!target || !view_find_window_node(view,target->id)) target=NULL;
+    // Empty space keeps selection open. Use displayed geometry so a click
+    // during the zoom animation selects the surface actually under the pointer.
+    for(struct window_node *n=window_node_find_first_leaf(view->root);!target && n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
+        if(!w || w->strip_close_ghost || w->strip_offscreen) continue;
+        CGRect frame=w->strip_last_frame;
+        frame.size.width*=w->strip_last_plane_scale; frame.size.height*=w->strip_last_plane_scale;
+        if(CGRectContainsPoint(frame,point)) { target=w; break; }
+    }
+    if(!target) return;
+    hwm_plane_selecting=false; hwm_hold_focus();
+    CGRect bounds=hwm_bounds(view);
+    hwm_nav_window=target->id; hwm_nav_time=hwm_now(); hwm_nav_pending=true;
+    hwm_last_input=hwm_now(); hwm_preserve_focus_window=target->id; hwm_preserve_focus_until=hwm_now()+1;
+    hwm_feedback_focus(NULL,target);
+    hwm_plane_transition_to(view,target->strip_world_x+(target->strip_width-bounds.size.width)*.5,
+                           target->strip_world_y+(target->strip_height-bounds.size.height)*.5,1,true);
 }
 /* When the strip is moved under a still pointer, the window that ends up
  * beneath it takes focus without the pointer having to move. Which window
@@ -1063,6 +1136,15 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         if (code >= 0 && code < 128 && hwm_keys[code]) { hwm_keys[code] = false; return true; }
     }
     if (hwm_paused) return false;
+    if(type==kCGEventLeftMouseUp && hwm_plane_select_click) { hwm_plane_select_click=false; return true; }
+    if(hwm_plane_selecting && type==kCGEventLeftMouseDown) {
+        hwm_plane_select_click=true;
+        event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_PLANE_PICK);
+        return true;
+    }
+    if(hwm_plane_selecting && type==kCGEventKeyDown && CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==53) {
+        hwm_plane_selecting=false; hwm_keys[53]=true; return true;
+    }
     if(hwm_tab_click && type==kCGEventLeftMouseUp) { hwm_tab_click=false; return true; }
     if(!hwm_overview_active && type==kCGEventLeftMouseDown) {
         NSDictionary *tab=[[TanaFeedback shared] tabAt:CGEventGetLocation(event)];
@@ -1258,6 +1340,9 @@ static void horizontal_input(void *context, int action)
     if(action==HWM_OVERVIEW_GESTURE) {
         if(hwm_vertical_mode && !hwm_overview_active) hwm_shelf_gesture((CGEventRef)context); else hwm_overview_gesture((CGEventRef)context);
         CFRelease(context); return;
+    }
+    if(action==HWM_PLANE_PICK) {
+        hwm_plane_choose_at(CGEventGetLocation((CGEventRef)context)); CFRelease(context); return;
     }
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
@@ -1611,7 +1696,7 @@ static void horizontal_command(FILE *rsp, char *message)
     struct token command = get_token(&message);
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.4.0\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.0\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1736,7 +1821,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.4.0\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.0\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {
@@ -1793,7 +1878,7 @@ void horizontal_plane_action(const char *name)
 static NSArray *hwm_command_sections(void)
 {
     return @[
-      @[@"Camera",@[@[@"fit-all",@"Fit all windows"],@[@"fit-focused",@"Fit focused window"],@[@"actual-size",@"Actual size (100%)"],@[@"home",@"Return to origin"]]],
+      @[@"Camera",@[@[@"select-window",@"Choose a window"],@[@"fit-all",@"Fit all windows"],@[@"fit-focused",@"Fit focused window"],@[@"actual-size",@"Actual size (100%)"],@[@"home",@"Return to origin"]]],
       @[@"Navigate",@[@[@"left",@"Focus left"],@[@"right",@"Focus right"],@[@"up",@"Focus above"],@[@"down",@"Focus below"],@[@"previous",@"Previous window"],@[@"center",@"Center window"]]],
       @[@"Arrange",@[@[@"move-left",@"Move left"],@[@"move-right",@"Move right"],@[@"move-up",@"Move up"],@[@"move-down",@"Move down"],@[@"arrange-grid",@"Arrange in grid"],@[@"preset-width",@"Cycle window width"],@[@"undo",@"Undo arrangement"]]],
       @[@"Window",@[@[@"maximize",@"Fill screen at 100%"],@[@"float",@"Float / tile"],@[@"close",@"Close window"],@[@"terminal",@"New terminal"],@[@"browser",@"Open browser"]]],
@@ -2073,7 +2158,8 @@ static void horizontal_begin(void)
     char helper_version[256] = {0}; uint32_t helper_attributes = 0;
     // Direct WindowServer placement does not depend on Dock's optional
     // set-front-window signature. AX supplies window activation separately.
-    hwm_backend_ok = scripting_addition_request_handshake(helper_version,sizeof(helper_version),&helper_attributes);
+    hwm_backend_ok = scripting_addition_request_handshake(helper_version,sizeof(helper_version),&helper_attributes) &&
+                     !strcmp(helper_version,OSAX_VERSION) && (helper_attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
     if (!hwm_backend_ok) error("Tana2D: window helper is unavailable; no windows were moved. Open Tana2D Setup & Settings to reconnect.\n");
     hwm_config_begin();
     hwm_ready = true;
@@ -2242,11 +2328,12 @@ static void horizontal_reconcile(void)
             // compare settled WindowServer positions instead of trusting the cache.
             CGRect actual=CGRectNull;
             if(SLSGetWindowBounds(g_connection,w->id,&actual)==kCGErrorSuccess &&
-               (fabs(actual.origin.x-w->strip_last_frame.origin.x)>.5 ||
-                fabs(actual.origin.y-w->strip_last_frame.origin.y)>.5)) {
-                // Keep the size cache: correcting a position must not trigger AX
-                // resizing, which can cause another on-screen constraint.
-                w->strip_last_frame.origin=actual.origin;
+               (fabs(actual.origin.x-w->frame.origin.x)>.5 ||
+                fabs(actual.origin.y-w->frame.origin.y)>.5)) {
+                // A native anchor may move independently of the projection.
+                // Reapply the compositor transform without moving it back.
+                w->frame=actual;
+                w->strip_last_plane_scale=-1;
                 hwm_wake();
             }
         }

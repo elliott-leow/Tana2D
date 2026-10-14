@@ -25,6 +25,7 @@
 #include <stdio.h>
 
 #include "common.h"
+#include "../misc/plane_transform.h"
 
 #ifdef __x86_64__
 #include "x64_payload.m"
@@ -62,6 +63,7 @@ extern void SLSShowSpaces(int cid, CFArrayRef space_list);
 extern void SLSHideSpaces(int cid, CFArrayRef space_list);
 extern CFTypeRef SLSTransactionCreate(int cid);
 extern CGError SLSTransactionCommit(CFTypeRef transaction, int synchronous);
+extern CGError SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
 extern CGError SLSSetWindowSubLevel(int cid, uint32_t wid, int level);
@@ -628,6 +630,28 @@ static void do_window_scale(char *message)
     }
 }
 
+/* One packet is one compositor transaction. It never observes or moves the
+ * app's native frame, so AppKit's offscreen clamping cannot fight camera pan. */
+static bool do_window_plane_transform(const unsigned char *message, size_t length)
+{
+    HwmPlaneTransform transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    uint16_t count = 0;
+    if (!hwm_plane_transform_packet_decode(message, length, transforms, SA_PLANE_TRANSFORM_MAX_RECORDS, &count)) return false;
+    CFTypeRef transaction = SLSTransactionCreate(SLSMainConnectionID());
+    if (!transaction) return false;
+    bool success = true;
+    for (uint16_t index = 0; index < count; ++index) {
+        if (SLSTransactionSetWindowTransform(transaction, transforms[index].wid, 0, 0,
+                                             hwm_plane_transform_matrix(transforms[index])) != kCGErrorSuccess) {
+            success = false;
+            break;
+        }
+    }
+    if (success && SLSTransactionCommit(transaction, 0) != kCGErrorSuccess) success = false;
+    CFRelease(transaction);
+    return success;
+}
+
 static void do_window_move(char *message)
 {
     uint32_t wid;
@@ -939,6 +963,7 @@ static void do_handshake(int sockfd)
     if (move_space_fp)                     attrib |= OSAX_ATTRIB_MOV_SPACE;
     if (set_front_window_fp)               attrib |= OSAX_ATTRIB_SET_WINDOW;
     if (animation_time_addr)               attrib |= OSAX_ATTRIB_ANIM_TIME;
+    attrib |= OSAX_ATTRIB_PLANE_TRANSFORM;
 
     char bytes[BUFSIZ] = {};
     int version_length = strlen(OSAX_VERSION);
@@ -953,9 +978,11 @@ static void do_handshake(int sockfd)
     send(sockfd, bytes, bytes_length+1, 0);
 }
 
-static void handle_message(int sockfd, char *message)
+static bool handle_message(int sockfd, char *message, size_t length)
 {
+    if (!message || !length) return false;
     enum sa_opcode op = *message++;
+    --length;
     switch (op) {
     case SA_OPCODE_HANDSHAKE: {
         do_handshake(sockfd);
@@ -1014,10 +1041,15 @@ static void handle_message(int sockfd, char *message)
     case SA_OPCODE_WINDOW_TO_SPACE: {
         do_window_move_to_space(message);
     } break;
+    case SA_OPCODE_WINDOW_PLANE_TRANSFORM: {
+        return do_window_plane_transform((const unsigned char *) message, length);
     }
+    default: return false;
+    }
+    return true;
 }
 
-static inline bool read_message(int sockfd, char *message)
+static inline bool read_message(int sockfd, char *message, size_t *message_length)
 {
     int bytes_read    = 0;
     int bytes_to_read = 0;
@@ -1033,7 +1065,9 @@ static inline bool read_message(int sockfd, char *message)
             bytes_read += cur_read;
         } while (bytes_read < bytes_to_read);
 
-        return bytes_read == bytes_to_read;
+        if (bytes_read != bytes_to_read) return false;
+        *message_length = (size_t) bytes_read;
+        return true;
     }
 
     return false;
@@ -1045,9 +1079,13 @@ static void *handle_connection(void *unused)
         int sockfd = accept(daemon_sockfd, NULL, 0);
         if (sockfd == -1) continue;
 
-        char message[SA_SOCKET_BUFF_LEN];
-        if (read_message(sockfd, message)) {
-            handle_message(sockfd, message);
+        char message[SA_SOCKET_BUFF_LEN]; size_t message_length = 0;
+        if (read_message(sockfd, message, &message_length)) {
+            bool success = handle_message(sockfd, message, message_length);
+            if ((unsigned char) message[0] == SA_OPCODE_WINDOW_PLANE_TRANSFORM) {
+                unsigned char acknowledgement = success ? 1 : 0;
+                send(sockfd, &acknowledgement, sizeof(acknowledgement), 0);
+            }
         }
 
         shutdown(sockfd, SHUT_RDWR);

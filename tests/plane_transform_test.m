@@ -1,45 +1,54 @@
-/* Exercise the production adapter against the helper's actual toggle contract. */
+/* Verify the byte-exact absolute transform packet shared by manager and helper. */
 #import <Cocoa/Cocoa.h>
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
-static CGRect native;
-static CGAffineTransform transform;
-static struct { float x,y,w,h; } queued[16];
-static int count;
-static int SLSMainConnectionID(void) { return 1; }
-static CGError SLSGetWindowBounds(int cid,uint32_t wid,CGRect *out) { (void)cid;(void)wid;*out=native;return 0; }
-CGError SLSGetWindowTransform(int cid,uint32_t wid,CGAffineTransform *out) { (void)cid;(void)wid;*out=transform;return 0; }
-static bool scripting_addition_scale_window(uint32_t wid,float x,float y,float w,float h) {
-    (void)wid; assert(count<16); queued[count++]=(typeof(queued[0])){x,y,w,h}; return true;
-}
-static bool scripting_addition_batch_flush(void) {
-    for(int i=0;i<count;i++) {
-        CGAffineTransform identity=CGAffineTransformMakeTranslation(-native.origin.x,-native.origin.y);
-        if(!CGAffineTransformEqualToTransform(transform,identity)) { transform=identity; continue; }
-        int width=queued[i].w/4, height=width/(native.size.width/native.size.height);
-        double sx=native.size.width/width,sy=native.size.height/height;
-        transform=CGAffineTransformTranslate(CGAffineTransformMakeScale(sx,sy),-(queued[i].x+queued[i].w)+width,-queued[i].y);
-    }
-    count=0; return true;
-}
 #include "../vendor/yabai/src/misc/plane_transform.h"
-static void verify(double x,double y,double scale) {
-    assert(scripting_addition_set_plane_transform(1,x,y,scale)); scripting_addition_batch_flush();
-    assert(fabs(-transform.tx/transform.a-x)<.01 && fabs(-transform.ty/transform.d-y)<.01);
-    assert(fabs(native.size.width/transform.a-native.size.width*scale)<=.6);
-    assert(fabs(native.size.height/transform.d-native.size.height*scale)<1.5);
+
+static void near(double actual, double expected) { assert(fabs(actual - expected) < 1e-12); }
+
+static void verify_transform(HwmPlaneTransform value)
+{
+    CGAffineTransform matrix = hwm_plane_transform_matrix(value);
+    near(matrix.a, 1.0 / value.scale_x); near(matrix.d, 1.0 / value.scale_y);
+    near(matrix.b, 0); near(matrix.c, 0);
+    near(matrix.tx, -value.x / value.scale_x); near(matrix.ty, -value.y / value.scale_y);
 }
-int main(void) {
-    native=CGRectMake(110,90,1001,713);
-    transform=CGAffineTransformMakeTranslation(-110,-90);
-    verify(40,60,.5); verify(40,60,.5); // Repeating a target must never toggle it off.
-    verify(55,75,.8); verify(-250,100,2); // Both zoom directions and translated camera.
-    assert(scripting_addition_set_plane_transform(1,NAN,NAN,1)); scripting_addition_batch_flush();
-    assert(CGAffineTransformEqualToTransform(transform,CGAffineTransformMakeTranslation(-110,-90)));
-    verify(40,60,.5);
-    native.origin=CGPointMake(800,600); // Native placement may invalidate prior state.
-    verify(100,120,.5);
-    assert(!scripting_addition_set_plane_transform(1,0,0,0));
-    puts("absolute plane transform tests passed");
+
+int main(void)
+{
+    HwmPlaneTransform values[] = {
+        { 41, 40, 60, .5, .5 },
+        { 41, 40, 60, .5, .5 }, /* Repeating is another absolute target, never a toggle. */
+        { 42, -250.25, 100.5, 2, 2 },
+        { 43, 800, 600, 1, 1 }, /* Explicit reset resolved to native origin by manager. */
+        { 44, 75, -125, .8, 1.25 }, /* Independent border/content-size animation scales. */
+    };
+    unsigned char packet[SA_SOCKET_BUFF_LEN]; size_t length = 0;
+    assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), values, 5, &length));
+    assert(packet[0] == SA_OPCODE_WINDOW_PLANE_TRANSFORM);
+    assert(length == SA_PLANE_TRANSFORM_HEADER_BYTES + 5 * SA_PLANE_TRANSFORM_RECORD_BYTES);
+
+    HwmPlaneTransform decoded[SA_PLANE_TRANSFORM_MAX_RECORDS]; uint16_t count = 0;
+    assert(hwm_plane_transform_packet_decode(packet + 1, length - 1, decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count));
+    assert(count == 5);
+    for (uint16_t index = 0; index < count; ++index) {
+        assert(decoded[index].wid == values[index].wid);
+        near(decoded[index].x, values[index].x); near(decoded[index].y, values[index].y);
+        near(decoded[index].scale_x, values[index].scale_x); near(decoded[index].scale_y, values[index].scale_y);
+        verify_transform(decoded[index]);
+    }
+    assert(CGAffineTransformEqualToTransform(hwm_plane_transform_matrix(decoded[0]), hwm_plane_transform_matrix(decoded[1])));
+
+    uint16_t zero = 0;
+    assert(!hwm_plane_transform_packet_decode((const unsigned char *) &zero, sizeof(zero), decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count));
+    assert(!hwm_plane_transform_packet_decode(packet + 1, length - 2, decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count));
+    HwmPlaneTransform invalid = { 1, 0, 0, NAN, 1 };
+    assert(!hwm_plane_transform_packet_encode(packet, sizeof(packet), &invalid, 1, &length));
+
+    HwmPlaneTransform maximum[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    for (uint16_t index = 0; index < SA_PLANE_TRANSFORM_MAX_RECORDS; ++index) maximum[index] = (HwmPlaneTransform){ index + 1, index, -index, 1, 1 };
+    assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), maximum, SA_PLANE_TRANSFORM_MAX_RECORDS, &length));
+    assert(length <= SA_SOCKET_BUFF_LEN);
+    puts("absolute plane transform packet tests passed");
 }

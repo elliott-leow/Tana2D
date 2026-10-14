@@ -5,7 +5,7 @@
 #define SA_SOCKET_BUFF_LEN 0x1000
 
 // Tana2D owns this payload and socket independently of installed yabai helpers.
-#define OSAX_VERSION                "0.4.0"
+#define OSAX_VERSION                "0.5.0"
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02
@@ -14,6 +14,7 @@
 #define OSAX_ATTRIB_MOV_SPACE       0x10
 #define OSAX_ATTRIB_SET_WINDOW      0x20
 #define OSAX_ATTRIB_ANIM_TIME       0x40
+#define OSAX_ATTRIB_PLANE_TRANSFORM 0x80
 
 #define OSAX_ATTRIB_ALL             (OSAX_ATTRIB_DOCK_SPACES | \
                                      OSAX_ATTRIB_DPPM | \
@@ -21,7 +22,8 @@
                                      OSAX_ATTRIB_REM_SPACE | \
                                      OSAX_ATTRIB_MOV_SPACE | \
                                      OSAX_ATTRIB_SET_WINDOW | \
-                                     OSAX_ATTRIB_ANIM_TIME)
+                                     OSAX_ATTRIB_ANIM_TIME | \
+                                     OSAX_ATTRIB_PLANE_TRANSFORM)
 
 enum sa_opcode
 {
@@ -44,6 +46,7 @@ enum sa_opcode
     SA_OPCODE_WINDOW_ORDER_IN       = 0x11,
     SA_OPCODE_WINDOW_LIST_TO_SPACE  = 0x12,
     SA_OPCODE_WINDOW_TO_SPACE       = 0x13,
+    SA_OPCODE_WINDOW_PLANE_TRANSFORM = 0x14,
 };
 
 #endif

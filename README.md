@@ -10,7 +10,7 @@ Windows occupy positions on a plane. Move the camera horizontally or vertically
 with a three-finger swipe, and pinch to zoom in or out. **Control + Up** fits every managed window,
 preserving its position and relative size. There are no workspace walls.
 
-Tana2D uses native windows and Tana's animated WindowServer backend. It is not a
+Tana2D projects native windows through an animated WindowServer compositor backend. It is not a
 set of macOS Spaces or a screenshot-only overview.
 
 The movable camera panel has **Fit all**, **Fit window**, and a zoom percentage
@@ -39,6 +39,7 @@ require testing on the target Mac.
 | Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Pan in any direction, including diagonals |
 | Pinch | Zoom in or out |
+| Control + Return | Zoom out, then click a window to center it at 100% without resizing it |
 | Control + Up | Fit all plane windows |
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
@@ -52,6 +53,10 @@ On first launch, windows start in a grid. Later launches in the same login sessi
 **Arrange in grid** in the menu or palette resets the arrangement; it does not
 create boundaries. New windows find a nearby free position without repacking
 existing windows.
+
+Camera commands animate position and zoom together. Command + Shift + Return also
+animates the active window’s size. Escape cancels click-to-select mode; macOS
+Reduce Motion disables these transitions.
 
 The camera panel is movable. **Fit all** preserves every window's world position
 and uses the tight bounding rectangle of the arrangement, with a small screen

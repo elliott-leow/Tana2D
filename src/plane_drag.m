@@ -40,14 +40,8 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
                                 round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
                                 round(hwm_plane_physical_size(window->strip_width*scale)),round(hwm_plane_physical_size(window->strip_height*scale)));
     hwm_batch_begin();
-    bool ok=scripting_addition_move_window(window->id,base.origin.x,base.origin.y);
-    if(ok && fabs(scale-1)>.001 && (!window->strip_plane_scaled || window->strip_last_plane_scale!=scale)) {
-        ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
-        window->strip_plane_scaled=ok;
-    } else if(ok && fabs(scale-1)<=.001 && window->strip_plane_scaled) {
-        ok=scripting_addition_set_plane_transform(window->id,NAN,NAN,1);
-        window->strip_plane_scaled=false;
-    }
+    bool ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
+    window->strip_plane_scaled=ok;
     window->strip_last_plane_scale=scale;
     hwm_batch_end();
     if(!ok) { ++hwm_move_failures; hwm_backend_ok=false; return false; }

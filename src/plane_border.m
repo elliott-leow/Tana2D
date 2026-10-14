@@ -3,6 +3,7 @@
 static uint32_t hwm_plane_border_id;
 static CGContextRef hwm_plane_border_context;
 static CGRect hwm_plane_border_frame;
+static CGSize hwm_plane_border_canvas;
 static bool hwm_plane_border_visible;
 static void hwm_plane_border_hide(void)
 {
@@ -30,10 +31,15 @@ static void hwm_plane_border_tick(struct view *view,double now)
     double pad=fmax(2,hwm_border_width);
     frame=CGRectIntegral(CGRectInset(frame,-pad,-pad));
     if(frame.size.width>16384 || frame.size.height>16384) { hwm_plane_border_hide(); return; }
-    bool reshape=CGRectIsNull(hwm_plane_border_frame) || !CGSizeEqualToSize(frame.size,hwm_plane_border_frame.size);
+    // Rasterize at the window's stable world size. Camera zoom and focus
+    // travel transform this cached outline instead of reallocating a surface
+    // and synchronously flushing a new gradient on every display frame.
+    CGSize canvas=CGSizeMake(ceil(fmax(1,focus->strip_width)+2*pad),ceil(fmax(1,focus->strip_height)+2*pad));
+    if(!view_find_window_node(view,focus->id)) canvas=frame.size;
+    bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
     hwm_batch_begin();
     if(reshape || !hwm_plane_border_id) {
-        CGRect local=CGRectMake(0,0,frame.size.width,frame.size.height); CFTypeRef region=NULL;
+        CGRect local=CGRectMake(0,0,canvas.width,canvas.height); CFTypeRef region=NULL;
         CGSNewRegionWithRect(&local,&region);
         if(!hwm_plane_border_id) {
             uint64_t tags=(1ULL<<1)|(1ULL<<9); CFTypeRef empty=CGRegionCreateEmptyRegion();
@@ -62,9 +68,11 @@ static void hwm_plane_border_tick(struct view *view,double now)
             CGGradientRelease(gradient); CGColorSpaceRelease(space); CGPathRelease(path);
             CGContextRestoreGState(hwm_plane_border_context); CGContextFlush(hwm_plane_border_context);
         }
+        hwm_plane_border_canvas=canvas;
     }
     if(hwm_plane_border_id) {
-        scripting_addition_move_window(hwm_plane_border_id,frame.origin.x,frame.origin.y);
+        scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
+                                                 frame.size.width/canvas.width,frame.size.height/canvas.height);
         if(!hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,1,0);
         hwm_plane_border_visible=true; hwm_plane_border_frame=frame;
     }

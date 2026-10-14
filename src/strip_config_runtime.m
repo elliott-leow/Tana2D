@@ -4,7 +4,7 @@ static NSDictionary *hwm_default_shortcuts(void)
       @"left":@"alt+cmd+left",@"right":@"alt+cmd+right",@"up":@"alt+cmd+up",@"down":@"alt+cmd+down",
       @"move-left":@"shift+alt+cmd+left",@"move-right":@"shift+alt+cmd+right",
       @"move-up":@"shift+alt+cmd+up",@"move-down":@"shift+alt+cmd+down",
-      @"maximize":@"shift+cmd+return",@"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
+      @"maximize":@"shift+cmd+return",@"select-window":@"ctrl+return",@"fit-all":@"ctrl+up",@"fit-focused":@"alt+cmd+f",@"actual-size":@"alt+cmd+0",
       @"float":@"cmd+space",@"float-alt":@"alt+cmd+space",
       @"center":@"alt+cmd+c",@"home":@"alt+cmd+h",@"close":@"cmd+q",
       @"terminal":@"cmd+return",@"browser":@"shift+cmd+w",
@@ -486,6 +486,10 @@ static bool hwm_named_action(const char *name)
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
     if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }
     if(strcmp(name,"maximize")==0) { hwm_plane_maximize(hwm_view()); return true; }
+    if(strcmp(name,"select-window")==0) {
+        if(hwm_paused || hwm_suspended) return true;
+        hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
+    }
     if(strcmp(name,"fit-all")==0) { hwm_plane_fit_all(hwm_view()); return true; }
     if(strcmp(name,"fit-focused")==0) { hwm_plane_fit_focused(hwm_view()); return true; }
     if(strcmp(name,"actual-size")==0) { hwm_plane_actual_size(hwm_view()); return true; }

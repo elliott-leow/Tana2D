@@ -6,7 +6,7 @@ in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 ## Checked on October 13, 2026
 
 - `make all test` passed: 15 native test executables and 20 Python tests. The build
-  retains seven warnings for unused legacy strip functions.
+  retains nine warnings for unused legacy strip functions.
 - Gesture tests cover 24 directions at two zoom levels, stable finger identities,
   changed contact order, finger lifts/replacements, stale frames, and independent
   devices. Screen movement follows the sensor's right/up coordinates, with the
@@ -27,31 +27,33 @@ in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
 ## Latest repair status and unresolved behavior
 
-The user still reports jumping during scrolling and broken dragging/snapping.
-Earlier geometry passes do not establish that these visible failures are fixed.
-The latest build passes `make all test` (15 native executables and 20 Python
-checks), including actual-size maximize, scale-preserving pan, exact-edge snap
-retention, fast continuous gesture samples, and native-size initialization.
+A live trace reproduced the native-frame conflict: Firefox’s projected top edge
+was -246 points while macOS clamped its native top edge to 38 points, producing
+an approximately 284-point discrepancy. The previous renderer moved the native
+frame during pan, allowing AppKit and the camera to compete over placement.
 
-Recent changes keep a pan's native transform in place, move the focused outline
-in the presentation batch, avoid display-geometry queries during dragging, and
-add Command+Shift+Return for 100% zoom plus a window filling the usable screen.
-Exact-edge snapping now retains its neighbor and eases the displayed position,
-preventing the correction offset from pushing a window past the acquired edge.
+Version 0.5.0 replaces those moves with absolute compositor transforms. A helper
+packet applies all window and focus-outline transforms in one transaction.
+Native frames remain anchors; world and displayed positions are tracked
+separately. Runtime regressions exercise 80 two-axis pan steps, an injected
+native clamp, and 121 drag projections with zero native moves or pan resizes.
+The helper validates packet lengths, finite transforms, and capability/version.
 
-The last interactive build recorded a 51.093 ms maximum frame and a 60 Hz display
-callback. macOS reports a 60 Hz active mode, and all enumerated display modes
-report 60 Hz. Neither sustained 120 fps nor glitch-free physical interaction is
-verified. A 45-second passive trace contained no movement and therefore did not
-reproduce the reported problem. The desktop then locked; Tana2D reports suspended
-input. The latest repair is installed on disk; restart and live acceptance await
-an unlocked desktop. The prior manager process remains running.
+Camera commands now animate viewport center and logarithmic zoom together.
+Command+Shift+Return animates maximize. Control+Return fits the canvas and accepts
+a window click to center that window at 100% without resizing it. Escape cancels
+selection. These transitions respect Reduce Motion.
 
-Remaining work: reproduce a physical scroll and title-bar/Option drag, correlate
-visible jumps with native geometry, verify acquired-edge retention on screen,
-and investigate the initial AppKit drag handoff if it still moves the surface
-before Tana2D takes ownership. Automated pointer routing did not exercise that
-physical input path and is not counted as acceptance.
+The full build, 15 native test executables and 20 Python tests passed. Signed
+packaging and installation passed. Activation currently awaits macOS administrator
+authentication for updating the existing window helper. No live result for 0.5.0
+is claimed yet. The earlier manager was shut down normally and restored windows.
+
+The previous interactive build reached a 51.093 ms frame and a 60 Hz display
+callback. macOS reports a 60 Hz active mode and all enumerated modes report 60 Hz.
+Sustained 120 fps and glitch-free physical interaction remain unverified.
+Title-bar/Option-drag handoff, magnetic snapping, visual motion, and the new
+click-to-center workflow still require live acceptance of the updated backend.
 
 `make live-tools` builds disposable fixture windows and measurement probes.
 `python3 tests/live_plane_check.py` checks live native geometry without generating

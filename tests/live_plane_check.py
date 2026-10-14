@@ -83,9 +83,11 @@ try:
     strip('pan', 60, 40)
     settle()
     after = metrics([ids[0]])[ids[0]]
-    close(after['x']-before['x'], -60)
-    close(after['y']-before['y'], -40)
-    checks.append('two-axis camera movement moves native windows by the inverse translation')
+    close(-after['tx']/after['a']+before['tx']/before['a'], -60)
+    close(-after['ty']/after['d']+before['ty']/before['d'], -40)
+    close(after['x'], before['x'], .001)
+    close(after['y'], before['y'], .001)
+    checks.append('two-axis camera movement translates the compositor and leaves native anchors fixed')
 
     viewport = status()['viewport']
     first = worlds[ids[0]]
@@ -104,13 +106,13 @@ try:
     before = metrics([ids[0]])[ids[0]]
     strip('pan', 80, 60); settle()
     after = metrics([ids[0]])[ids[0]]
-    close(after['x']-before['x'], -40)
-    close(after['y']-before['y'], -30)
+    close(-after['tx']/after['a']+before['tx']/before['a'], -40)
+    close(-after['ty']/after['d']+before['ty']/before['d'], -30)
+    close(after['x'], before['x'], .001)
+    close(after['y'], before['y'], .001)
     close(after['a'], before['a'], .00001)
     close(after['d'], before['d'], .00001)
-    close(-after['tx']/after['a'], after['x'])
-    close(-after['ty']/after['d'], after['y'])
-    checks.append('panning at half zoom retains scale and translates native/display origins together')
+    checks.append('panning at half zoom preserves scale and native anchors')
     strip('actual-size'); settle()
 
     command('window', ids[0], '--focus')
@@ -208,9 +210,7 @@ try:
     for m in metrics(ids).values():
         close(m['a'], 1, .001)
         close(m['d'], 1, .001)
-        close(m['tx'], -m['x'], .001)
-        close(m['ty'], -m['y'], .001)
-    checks.append('reset removes transforms from every fixture window')
+    checks.append('actual size restores unit scale while retaining canvas translation')
     command('window', ids[0], '--focus'); settle()
     strip('zoom', .5); settle()
     strip('maximize'); settle()
@@ -219,7 +219,7 @@ try:
     w = next(w['world'] for w in full['windows'] if w['id']==ids[0])
     m = metrics([ids[0]])[ids[0]]
     close(w['width'], viewport['width']); close(w['height'], viewport['height'])
-    close(m['x'], viewport['x']); close(m['y'], viewport['y'])
+    close(-m['tx']/m['a'], viewport['x']); close(-m['ty']/m['d'], viewport['y'])
     close(m['w'], viewport['width']); close(m['h'], viewport['height'])
     close(m['a'], 1, .001); close(m['d'], 1, .001)
     checks.append('maximize resets zoom to 100 percent and fills the usable screen with the active window')

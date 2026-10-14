@@ -154,7 +154,10 @@ static bool hwm_render_pops(double now)
             } else { active=true; continue; }
         }
         if(elapsed>=hwm_pop_duration) { hwm_pop_finish(w); continue; }
-        if(hwm_open_style==0) hwm_scale_center(w->id,&w->strip_pop_scaled,.9+.1*hstrip_spring_progress(elapsed,hwm_pop_duration));
+        // Plane windows already have an absolute projection transform. Their
+        // opening animation uses the fade (or rise) above; the legacy helper's
+        // toggle-scale effect must never overwrite that projection.
+        if(hwm_open_style==0 && !w->strip_plane_scaled) hwm_scale_center(w->id,&w->strip_pop_scaled,.9+.1*hstrip_spring_progress(elapsed,hwm_pop_duration));
         active=true;
     })
     return active;

@@ -19,6 +19,13 @@ static void test_edge_pan_hold(void)
 
 int main(void)
 {
+    HWMPlaneCamera from={-600,300,.2},to={200,-90,1};
+    HWMPlaneCamera middle=hwm_plane_camera_mix(from,to,1200,900,.5);
+    near(middle.scale,sqrt(.2));
+    near(middle.x+1200/(2*middle.scale),((from.x+3000)+(to.x+600))*.5);
+    near(middle.y+900/(2*middle.scale),((from.y+2250)+(to.y+450))*.5);
+    HWMPlaneCamera start=hwm_plane_camera_mix(from,to,1200,900,0),end=hwm_plane_camera_mix(from,to,1200,900,1);
+    near(start.x,from.x); near(start.scale,from.scale); near(end.y,to.y); near(end.scale,1);
     test_edge_pan_hold();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);

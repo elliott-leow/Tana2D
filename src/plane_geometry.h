@@ -12,6 +12,21 @@ typedef struct { double x, y, width, height; } HWMPlaneRect;
 typedef struct { double x, y, scale; } HWMPlaneCamera;
 typedef struct { double x, y; } HWMPlanePoint;
 
+/* Interpolate world-space viewport centers and logarithmic zoom together.
+ * This keeps a zoom's path smooth even when the two endpoint scales differ
+ * greatly; interpolating top-left coordinates would make it arc off target. */
+static inline HWMPlaneCamera hwm_plane_camera_mix(HWMPlaneCamera from,HWMPlaneCamera to,
+                                                  double width,double height,double progress)
+{
+    if(progress<=0) return from;
+    if(progress>=1) return to;
+    double scale=exp(log(from.scale)+(log(to.scale)-log(from.scale))*progress);
+    double cx=from.x+width/(2*from.scale),cy=from.y+height/(2*from.scale);
+    double tx=to.x+width/(2*to.scale),ty=to.y+height/(2*to.scale);
+    return (HWMPlaneCamera){cx+(tx-cx)*progress-width/(2*scale),
+                            cy+(ty-cy)*progress-height/(2*scale),scale};
+}
+
 #define HWM_PLANE_PHYSICAL_LIMIT 1000000.0
 
 /* World coordinates can grow without bound; WindowServer coordinates cannot.
