@@ -219,9 +219,9 @@ static CGPoint hwm_drag_move;
 static bool hwm_drag_move_pending;
 static CGPoint hwm_drag_world_origin, hwm_drag_pointer_origin;
 static double hwm_drag_camera_x, hwm_drag_camera_y, hwm_drag_scale;
-static double hwm_drag_snap_x,hwm_drag_snap_y,hwm_drag_snap_time;
-static uint32_t hwm_drag_snap_neighbor;
-static bool hwm_drag_finishing;
+static uint64_t hwm_drag_present_count;
+static double hwm_drag_present_total_ms,hwm_drag_present_max_ms;
+static _Atomic bool hwm_plane_pick_drag_queued;
 static void hwm_drag_autoscroll(struct view *view,double now);
 static void hwm_cancel_drag(void);
 static double hwm_focus_guard_time;
@@ -589,7 +589,6 @@ static void hwm_drag_started(struct window *window)
                                           (actual.origin.y-bounds.origin.y)/hwm_plane_scale+hwm_drag_camera_y);
     }
     hwm_drag_scale=hwm_plane_scale;
-    hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=hwm_now(); hwm_drag_snap_neighbor=0;
     hwm_drag_tick_time=hwm_now(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
     scripting_addition_set_layer(window->id,LAYER_NORMAL);
 }
@@ -1126,6 +1125,7 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
     if((hwm_plane_selecting && type==kCGEventLeftMouseDown) ||
        (hwm_plane_select_click && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp))) {
         hwm_plane_select_click=type!=kCGEventLeftMouseUp;
+        if(type==kCGEventLeftMouseDragged && atomic_exchange(&hwm_plane_pick_drag_queued,true)) return true;
         event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_PLANE_PICK);
         return true;
     }
@@ -1333,7 +1333,10 @@ static void horizontal_input(void *context, int action)
     }
     if(action==HWM_PLANE_RESIZE) { hwm_plane_resize_input(context); return; }
     if(action==HWM_PLANE_PICK) {
-        hwm_plane_pointer(CGEventGetType((CGEventRef)context),CGEventGetLocation((CGEventRef)context)); CFRelease(context); return;
+        CGEventType type=CGEventGetType((CGEventRef)context);
+        CGPoint point=CGEventGetLocation((CGEventRef)context);
+        if(type==kCGEventLeftMouseDragged) { atomic_store(&hwm_plane_pick_drag_queued,false); SLSGetCurrentCursorLocation(g_connection,&point); }
+        hwm_plane_pointer(type,point); CFRelease(context); return;
     }
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
@@ -1586,6 +1589,7 @@ static bool horizontal_drag(CGEventRef event)
     struct view *view=window?window_manager_find_managed_window(&g_window_manager,window):NULL;
     if(!hwm_ready || hwm_paused || !view || view->layout!=VIEW_STRIP) return false;
     CGPoint point=CGEventGetLocation(event);
+    SLSGetCurrentCursorLocation(g_connection,&point);
     if(hwm_drag_cancelled) return true;
     hwm_drag_point=point; ++hwm_prof_drag_events;
     if(hwm_edge_window==window->id) {
@@ -1597,10 +1601,8 @@ static bool horizontal_drag(CGEventRef event)
     }
     if(g_mouse_state.current_action==MOUSE_MODE_MOVE) {
         hwm_drag_started(window);
-        // Pointer events can far outrun the display. The window is moved once
-        // per frame from the tick, to the latest position only.
-        hwm_drag_move=hwm_drag_world_at(view,point);
-        hwm_drag_move_pending=true;
+        // The input queue is coalesced; read the live pointer and present now.
+        // Waiting for the next display callback would add a frame of latency.
     }
     if(!hwm_drag_window && g_mouse_state.current_action==MOUSE_MODE_NONE) {
         CGRect actual=CGRectNull; SLSGetWindowBounds(g_connection,window->id,&actual);
@@ -1609,7 +1611,10 @@ static bool horizontal_drag(CGEventRef event)
             hwm_drag_started(window);
         }
     }
-    if(hwm_drag_window==window->id) hwm_wake();
+    if(hwm_drag_window==window->id) {
+        hwm_drag_move=hwm_drag_world_at(view,point); hwm_drag_move_pending=false;
+        hwm_drag_submit_plane(view,window,hwm_drag_move); hwm_wake();
+    }
     return true;
 }
 static bool horizontal_drop(struct window *window, CGPoint point)
@@ -1620,14 +1625,12 @@ static bool horizontal_drop(struct window *window, CGPoint point)
     if(hwm_edge_finish(window,view)) return true;
     if(hwm_drag_window==window->id) {
         hwm_drag_point=point;
-        if(hwm_drag_move_pending) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,window,hwm_drag_move); }
-        hwm_drag_finishing=true;
+        hwm_drag_move_pending=false;
         hwm_drag_submit_plane(view,window,hwm_drag_world_at(view,point));
-        hwm_drag_finishing=false; hwm_drag_snap_neighbor=0;
         hwm_drag_window=0;
         scripting_addition_set_shadow(window->id,hwm_drag_shadow);
         scripting_addition_set_layer(window->id,LAYER_BELOW);
-        hwm_layout(view,true);
+        hwm_layout(view,false);
         hwm_drop_target=0; hwm_preview_hide(); hwm_hold_focus();
     }
     return true;
@@ -1646,16 +1649,18 @@ static void hwm_drag_autoscroll(struct view *view,double now)
         hwm_drag_point=cursor;
         if(hwm_plane_pick_window==w->id || g_mouse_state.current_action==MOUSE_MODE_MOVE || g_mouse_state.current_action==MOUSE_MODE_NONE) {
             CGPoint to=hwm_drag_world_at(view,cursor);
-            if(hwm_drag_move_pending || !CGPointEqualToPoint(to,hwm_drag_move) || hwm_drag_snap_neighbor) { hwm_drag_move=to; hwm_drag_move_pending=true; }
+            if(hwm_drag_move_pending || w->strip_transform_dirty || !CGPointEqualToPoint(to,hwm_drag_move)) { hwm_drag_move=to; hwm_drag_move_pending=true; }
         }
     }
-    if(hwm_drag_move_pending) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
     CGRect bounds=hwm_bounds(view);
     HWMPlanePoint velocity=hwm_plane_edge_pan(&hwm_drag_edge_pan,
         (HWMPlaneRect){bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height},
         (HWMPlanePoint){hwm_drag_point.x,hwm_drag_point.y},now,hwm_plane_scale);
-    if(velocity.x || velocity.y)
+    if(velocity.x || velocity.y) {
         hwm_plane_set_camera(view,view->strip_offset+velocity.x*dt,hwm_plane_y+velocity.y*dt,false);
+        hwm_drag_move=hwm_drag_world_at(view,hwm_drag_point); hwm_drag_move_pending=true;
+    }
+    if(hwm_drag_move_pending) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
 }
 static void hwm_cancel_drag(void)
 {
@@ -1783,10 +1788,10 @@ static void horizontal_command(FILE *rsp, char *message)
         fwrite(json.bytes,1,json.length,rsp); fputc('\n',rsp); [snapshot release]; return;
     }
     if(token_equals(command,"profile") || token_equals(command,"profile-reset")) {
-        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f,\"border_window\":%u,\"display_hz\":%.2f}\n",
-                (unsigned long long)hwm_ax_resizes_sent,(unsigned long long)hwm_ax_resizes_coalesced,(double)hwm_ax_resize_max_ms,hwm_prof[HWM_PROF_DRAG],hwm_prof[HWM_PROF_RENDER],hwm_prof[HWM_PROF_EXTRAS],hwm_prof[HWM_PROF_PREVIEW],hwm_prof[HWM_PROF_FEEDBACK],hwm_prof[HWM_PROF_TICK_DRAGGING],
+        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_presentations\":%llu,\"drag_present_avg_ms\":%.3f,\"drag_present_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f,\"border_window\":%u,\"display_hz\":%.2f}\n",
+                (unsigned long long)hwm_ax_resizes_sent,(unsigned long long)hwm_ax_resizes_coalesced,(double)hwm_ax_resize_max_ms,(unsigned long long)hwm_drag_present_count,hwm_drag_present_count?hwm_drag_present_total_ms/hwm_drag_present_count:0,hwm_drag_present_max_ms,hwm_prof[HWM_PROF_DRAG],hwm_prof[HWM_PROF_RENDER],hwm_prof[HWM_PROF_EXTRAS],hwm_prof[HWM_PROF_PREVIEW],hwm_prof[HWM_PROF_FEEDBACK],hwm_prof[HWM_PROF_TICK_DRAGGING],
                 (unsigned long long)hwm_prof_drag_ticks,(unsigned long long)hwm_prof_drag_events,(unsigned long long)hwm_feedback_shows,(double)hwm_feedback_show_max_ms,hwm_max_frame_ms,hwm_plane_border_id,(double)hwm_display_hz);
-        if(token_equals(command,"profile-reset")) { memset(hwm_prof,0,sizeof(hwm_prof)); hwm_prof_drag_ticks=0; hwm_prof_drag_events=0; hwm_feedback_shows=0; hwm_feedback_show_max_ms=0; hwm_ax_resizes_sent=0; hwm_ax_resizes_coalesced=0; hwm_ax_resize_max_ms=0; hwm_max_frame_ms=0; hwm_slow_frames=0; hwm_frames=0; }
+        if(token_equals(command,"profile-reset")) { memset(hwm_prof,0,sizeof(hwm_prof)); hwm_drag_present_count=0; hwm_drag_present_total_ms=hwm_drag_present_max_ms=0; hwm_prof_drag_ticks=0; hwm_prof_drag_events=0; hwm_feedback_shows=0; hwm_feedback_show_max_ms=0; hwm_ax_resizes_sent=0; hwm_ax_resizes_coalesced=0; hwm_ax_resize_max_ms=0; hwm_max_frame_ms=0; hwm_slow_frames=0; hwm_frames=0; }
         return;
     }
     if(token_equals(command,"pacing") || token_equals(command,"pacing-reset")) {

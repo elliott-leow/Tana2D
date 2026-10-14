@@ -3,7 +3,7 @@
 // CGSWindow.h documents this separately from the ignore-events tag. Reapply
 // after each shape change so the whole transparent canvas stays mouse-inert.
 extern CGError SLSSetMouseEventEnableFlags(int,uint32_t,bool);
-static uint32_t hwm_plane_border_id;
+static uint32_t hwm_plane_border_id,hwm_plane_border_focus;
 static CGContextRef hwm_plane_border_context;
 static CGRect hwm_plane_border_frame;
 static CGSize hwm_plane_border_canvas;
@@ -40,6 +40,7 @@ static void hwm_plane_border_tick(struct view *view,double now)
     CGSize canvas=CGSizeMake(ceil(fmax(1,frame.size.width/hwm_plane_scale)),ceil(fmax(1,frame.size.height/hwm_plane_scale)));
     if(!view_find_window_node(view,focus->id)) canvas=frame.size;
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
+    if(!reshape && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
     hwm_batch_begin();
     if(reshape || !hwm_plane_border_id) {
         CGRect local=CGRectMake(0,0,canvas.width,canvas.height); CFTypeRef region=NULL;
@@ -78,7 +79,22 @@ static void hwm_plane_border_tick(struct view *view,double now)
         scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
                                                  frame.size.width/canvas.width,frame.size.height/canvas.height);
         if(!hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,1,0);
-        hwm_plane_border_visible=true; hwm_plane_border_frame=frame;
+        hwm_plane_border_visible=true; hwm_plane_border_frame=frame; hwm_plane_border_focus=focus->id;
     }
     hwm_batch_end();
 }
+
+/* The held-drag path only translates an existing cached outline. Its command
+ * joins the same atomic helper packet as the window, without global suppression. */
+static bool hwm_plane_border_drag(uint32_t wid,CGRect projected)
+{
+    if(!hwm_plane_border_visible || hwm_plane_border_focus!=wid || !hwm_plane_border_id || hwm_border_mode==0) return true;
+    double pad=fmax(2,hwm_border_width);
+    CGRect frame=CGRectIntegral(CGRectInset(projected,-pad,-pad));
+    if(CGRectEqualToRect(frame,hwm_plane_border_frame)) return true;
+    bool ok=scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
+        frame.size.width/hwm_plane_border_canvas.width,frame.size.height/hwm_plane_border_canvas.height);
+    if(ok) hwm_plane_border_frame=frame;
+    return ok;
+}
+static void hwm_plane_border_drag_failed(void) { hwm_plane_border_frame=CGRectNull; }

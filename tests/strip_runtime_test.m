@@ -112,7 +112,7 @@ static bool scripting_addition_set_layer(uint32_t id,int layer) { (void)id; (voi
 static int sa_batch_depth, sa_batch_flushes;
 static void scripting_addition_batch_begin(void) { ++sa_batch_depth; }
 static bool scripting_addition_batch_flush(void) { ++sa_batch_flushes; return true; }
-static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return true; }
+static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return sa_batch_depth>0?true:scripting_addition_batch_flush(); }
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
 static void window_manager_resize_window(struct window *w,double width,double height) {
@@ -163,9 +163,13 @@ static void hwm_drag_started(struct window *w) {
 #include "../src/strip_interaction.m"
 #include "../src/strip_renderer.m"
 #include "../src/window_transitions.m"
-static double hwm_drag_snap_x,hwm_drag_snap_y,hwm_drag_snap_time,hwm_motion_scale=1;
-static uint32_t hwm_drag_snap_neighbor;
-static bool hwm_drag_finishing;
+static double hwm_motion_scale=1,hwm_drag_present_total_ms,hwm_drag_present_max_ms;
+static uint64_t hwm_drag_present_count;
+static int drag_border_calls;
+static bool hwm_plane_border_drag(uint32_t wid,CGRect projected_frame) {
+    (void)wid; (void)projected_frame; assert(sa_batch_depth>0); assert(update_depth==0); ++drag_border_calls; return true;
+}
+static void hwm_plane_border_drag_failed(void) {}
 static struct window *hwm_tile(uint32_t id) { return window_manager_find_window(&g_window_manager,id); }
 #include "../src/plane_drag.m"
 static bool hwm_suspended;
@@ -609,37 +613,34 @@ static void test_final_resize_confirmation(void)
     assert(w->strip_width==400 && !w->strip_size_pending);
 }
 
-static void test_drag_submission_and_magnetic_release(void)
+static void test_direct_drag_submission(void)
 {
-    const double zooms[]={.5,1,2};
-    for(int z=0;z<3;z++) {
+    const double zooms[]={.25,.5,1,2};
+    for(int z=0;z<4;z++) {
         reset(); struct window *w=&windows[0];
         windows[1].strip_world_x=500; windows[1].strip_world_y=0;
         windows[2].strip_world_x=10000; windows[3].strip_world_x=20000;
         w->strip_world_x=0; w->strip_world_y=0;
         hwm_plane_scale=zooms[z]; hwm_plane_fit_active=hwm_plane_scale!=1;
-        hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=clock_now;
-        hwm_drag_snap_neighbor=0; hwm_drag_finishing=false;
-        scale_calls=0; ax_calls=0; int before=moves;
-        for(int step=1;step<=120;step++) {
-            clock_now+=1.0/120;
-            assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
-            assert(w->strip_world_x>=80 && w->strip_world_x<=88);
-            assert(projected[0].origin.x==round(12+w->strip_world_x*hwm_plane_scale));
+        scale_calls=0; ax_calls=0; int before=moves,freezes=disable_calls,flushes=sa_batch_flushes;
+        drag_border_calls=0;
+        // Cross the former magnet zone repeatedly, in both directions and with
+        // reversals. Every submitted point must be exact, before any frame tick.
+        for(int step=0;step<120;step++) {
+            double x=step<60?60+step:180-step,y=step%15-7;
+            assert(hwm_drag_submit_plane(&view,w,CGPointMake(x,y)));
+            assert(w->strip_world_x==x && w->strip_world_y==y);
+            assert(projected[0].origin.x==round(12+x*hwm_plane_scale));
+            assert(projected[0].origin.y==round(51+y*hwm_plane_scale));
+            assert(disable_calls==freezes && update_depth==0 && sa_batch_depth==0);
         }
-        hwm_drag_finishing=true;
+        assert(ax_calls==0 && moves==before && scale_calls==120 && drag_border_calls==120);
+        assert(sa_batch_flushes==flushes+120);
+        // Dropping at a former snap target does not reposition it.
         assert(hwm_drag_submit_plane(&view,w,CGPointMake(80,0)));
-        hwm_drag_finishing=false;
-        assert(fabs(w->strip_world_x+400+12-windows[1].strip_world_x)<.001);
-        assert(w->strip_world_y==0 && moves==before && ax_calls==0);
-        assert(scale_calls==121);
-        clock_now+=1.0/120;
-        assert(hwm_drag_submit_plane(&view,w,CGPointMake(88,0)));
-        assert(hwm_drag_snap_neighbor==windows[1].id);
-        assert(fabs(w->strip_world_x-88)<.001);
-        clock_now+=1.0/120;
-        assert(hwm_drag_submit_plane(&view,w,CGPointMake(96,0)));
-        assert(fabs(w->strip_world_x-88)<.001);
+        assert(w->strip_world_x==80 && w->strip_world_y==0);
+        hwm_layout(&view,false); hwm_render(&view,clock_now+1);
+        assert(w->strip_world_x==80 && w->strip_world_y==0);
     }
 }
 
@@ -811,7 +812,8 @@ static void test_overview_pointer(void)
     hwm_plane_pointer(kCGEventLeftMouseDragged,CGPointMake(202,201));
     assert(!hwm_drag_window);
     hwm_plane_pointer(kCGEventLeftMouseDragged,CGPointMake(350,290));
-    assert(hwm_drag_window==w->id && hwm_drag_move_pending && undo_captures==1);
+    assert(hwm_drag_window==w->id && !hwm_drag_move_pending && undo_captures==1);
+    assert(w->strip_world_x==x+300 && w->strip_world_y==y+180);
     hwm_plane_pointer(kCGEventLeftMouseUp,CGPointMake(360,300));
     assert(hwm_plane_selecting && !hwm_drag_window && !hwm_plane_pick_window);
     assert(w->strip_world_x==x+320 && w->strip_world_y==y+200);
@@ -877,21 +879,7 @@ static void test_drag_feedback_cost_and_snap_axes(void)
     assert(bounds_reads==1);
     w->strip_size_pending=false; w->frame=actual[0];
     assert(hwm_feedback_plane_frame(&view,w).size.width==actual[0].size.width && bounds_reads==1);
-    // Acquire a vertical neighboring edge, then move freely up/down alongside
-    // it and reverse direction. The free axis must never trail the pointer.
-    reset(); nodes[1].next=NULL;
-    w=&windows[0]; w->strip_world_x=0; w->strip_world_y=0; w->strip_width=400; w->strip_height=600;
-    windows[1].strip_world_x=500; windows[1].strip_world_y=0; windows[1].strip_width=400; windows[1].strip_height=600;
-    hwm_drag_snap_neighbor=0; hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=clock_now;
-    hwm_drag_finishing=true; hwm_drag_submit_plane(&view,w,CGPointMake(80,100)); hwm_drag_finishing=false;
-    assert(w->strip_world_x==88);
-    double ys[]={120,160,200,180,130,90};
-    for(size_t i=0;i<sizeof(ys)/sizeof(*ys);i++) {
-        clock_now+=1.0/120; hwm_drag_submit_plane(&view,w,CGPointMake(80,ys[i]));
-        assert(w->strip_world_y==ys[i] && w->strip_world_x==88);
-    }
-    clock_now+=1.0/120; hwm_drag_submit_plane(&view,w,CGPointMake(250,90));
-    assert(w->strip_world_x==250 && w->strip_world_y==90 && hwm_drag_snap_neighbor==0);
+
 }
 
 static void test_owned_edge_resize(void)
@@ -969,7 +957,7 @@ int main(void)
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
     test_scaled_pan_keeps_transform();
-    test_drag_submission_and_magnetic_release();
+    test_direct_drag_submission();
     test_maximize_at_actual_size();
     test_final_resize_confirmation();
     test_plane_transform_cleanup();

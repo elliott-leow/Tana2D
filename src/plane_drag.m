@@ -6,39 +6,12 @@ static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
                                              hwm_plane_camera_y(hwm_now())-hwm_drag_camera_y);
     return CGPointMake(world.x,world.y);
 }
-/* Shared production drag placement: translated native surfaces and magnetic edges. */
-static CGPoint hwm_drag_snap(struct view *view,struct window *window,CGPoint raw)
-{
-    HWMPlaneRect moving={raw.x,raw.y,window->strip_width,window->strip_height};
-    HWMPlanePoint best={raw.x,raw.y}; double distance=INFINITY; uint32_t target=0;
-    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
-        struct window *other=hwm_tile(n->window_list[i]);
-        if(!other || other==window || other->strip_close_ghost) continue;
-        double range=(other->id==hwm_drag_snap_neighbor?38:24)/hwm_plane_scale;
-        HWMPlanePoint candidate;
-        if(!hwm_plane_snap_neighbor_target(moving,(HWMPlaneRect){other->strip_world_x,other->strip_world_y,other->strip_width,other->strip_height},view->window_gap,range,&candidate)) continue;
-        double d=hypot(candidate.x-raw.x,candidate.y-raw.y);
-        if(other->id==hwm_drag_snap_neighbor) d*=.65;
-        if(d<distance) { best=candidate; distance=d; target=other->id; }
-    }
-    double now=hwm_now(),dt=fmax(0,now-hwm_drag_snap_time); hwm_drag_snap_time=now;
-    double blend=hwm_drag_finishing || hwm_motion_scale==0 ? 1 : 1-exp(-dt/.045);
-    // Only attraction toward an edge is animated. The unsnapped axis must
-    // follow this frame's pointer exactly, even while the other axis is held.
-    // Clamp each correction between zero and its current target: crossing the
-    // exact snap cannot overshoot, and leaving its range releases immediately.
-    double dx=best.x-raw.x,dy=best.y-raw.y;
-    double from_x=target && target==hwm_drag_snap_neighbor?window->strip_world_x-raw.x:hwm_drag_snap_x;
-    double from_y=target && target==hwm_drag_snap_neighbor?window->strip_world_y-raw.y:hwm_drag_snap_y;
-    hwm_drag_snap_x=target?fmax(fmin(0,dx),fmin(fmax(0,dx),from_x+(dx-from_x)*blend)):0;
-    hwm_drag_snap_y=target?fmax(fmin(0,dy),fmin(fmax(0,dy),from_y+(dy-from_y)*blend)):0;
-    hwm_drag_snap_neighbor=target;
-    return CGPointMake(raw.x+hwm_drag_snap_x,raw.y+hwm_drag_snap_y);
-}
+/* Pointer-owned movement has no spring, magnet, layout pass, or display-link
+ * gate. The helper presents the native surface and existing outline together. */
 static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoint world)
 {
     if(!view || !window || !isfinite(world.x) || !isfinite(world.y)) return false;
-    world=hwm_drag_snap(view,window,world);
+    double began=hwm_now();
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()), camera_y=hwm_plane_camera_y(hwm_now()), scale=hwm_plane_scale;
     CGRect base=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
                            round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
@@ -46,12 +19,17 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
     CGRect projected=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
                                 round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
                                 round(hwm_plane_physical_size(window->strip_width*scale)),round(hwm_plane_physical_size(window->strip_height*scale)));
-    hwm_batch_begin();
+    bool own_batch=!hwm_batch_open;
+    if(own_batch) scripting_addition_batch_begin();
     bool ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
+    if(ok) ok=hwm_plane_border_drag(window->id,projected);
+    if(own_batch) ok=scripting_addition_batch_end() && ok;
+    double ms=(hwm_now()-began)*1000;
+    ++hwm_drag_present_count; hwm_drag_present_total_ms+=ms;
+    if(ms>hwm_drag_present_max_ms) hwm_drag_present_max_ms=ms;
     window->strip_plane_scaled=ok; window->strip_transform_dirty=!ok;
     window->strip_last_plane_scale=scale;
-    hwm_batch_end();
-    if(!ok) { ++hwm_move_failures; hwm_backend_ok=false; return false; }
+    if(!ok) { hwm_plane_border_drag_failed(); ++hwm_move_failures; hwm_backend_ok=false; return false; }
     window->strip_world_x=world.x; window->strip_world_y=world.y;
     window->strip_from_x=world.x; window->strip_from_y=world.y;
     window->strip_last_frame=base; window->strip_last_offset=camera_x; window->strip_last_camera_y=camera_y; window->strip_last_shift=0;

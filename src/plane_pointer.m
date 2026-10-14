@@ -6,9 +6,8 @@ static void hwm_plane_pointer_finish(bool choose)
     struct window *w=window_manager_find_window(&g_window_manager,hwm_plane_pick_window);
     bool dragged=w && hwm_drag_window==w->id;
     if(dragged) {
-        hwm_drag_finishing=true;
         if(view) hwm_drag_submit_plane(view,w,hwm_drag_world_at(view,hwm_drag_point));
-        hwm_drag_finishing=false; hwm_drag_move_pending=false; hwm_drag_snap_neighbor=0;
+        hwm_drag_move_pending=false;
         hwm_drag_window=0;
         scripting_addition_set_shadow(w->id,hwm_drag_shadow);
         scripting_addition_set_layer(w->id,LAYER_BELOW);
@@ -39,7 +38,8 @@ static void hwm_plane_pointer(CGEventType type,CGPoint point)
         }
         if(hwm_drag_window==w->id) {
             hwm_drag_point=point; hwm_drag_move=hwm_drag_world_at(view,point);
-            hwm_drag_move_pending=true; ++hwm_prof_drag_events; hwm_wake();
+            hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move);
+            ++hwm_prof_drag_events; hwm_wake();
         }
     }
     if(type==kCGEventLeftMouseUp) { hwm_drag_point=point; hwm_plane_pointer_finish(true); }

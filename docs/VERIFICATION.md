@@ -208,3 +208,42 @@ frame. These are timing observations, not a controlled speed comparison. The
 15-second stack sample missed the user's later drag. The post-install passive
 sample contained no drag input, and the live harness validates geometry rather
 than physical drag feel; no measured end-to-end latency improvement is claimed.
+
+
+## Direct movement rewrite on October 14, 2026
+
+The user rejected the preceding drag fix: both lag and snapping remained. That
+fix reduced feedback work but left the movement path waiting for a display tick,
+wrapped every move in global WindowServer update suppression, and retained edge
+attraction. These are separate from the cached-geometry issue.
+
+A disposable-window transport probe compared the same absolute helper transaction
+with and without `SLSDisableUpdate` / `SLSReenableUpdate`. Two alternating runs of
+180 updates per path measured suppression-path p95 of 5.253 / 4.722 ms and maxima
+of 10.611 / 11.863 ms. Atomic transactions alone had p95 of 0.191 / 0.188 ms and
+maxima of 0.256 / 0.259 ms. All returned transforms matched the requested position.
+This establishes the cost of the unnecessary suppression path on this Mac; it is
+not a measurement of physical input-to-photon latency. Reproduce with
+`make live-tools && build/live_drag_transaction`. The probe uses only an unordered
+disposable window and does not synthesize input.
+
+Both normal and overview drag handlers now submit the latest pointer position
+immediately through the same direct placement function. Overview drag events are
+coalesced as normal drag events already were. The window and an existing border
+are submitted in one atomic helper packet without global update suppression.
+All drag magnet/spring logic is removed, and release preserves the pointer-derived
+position without a settle animation. Display ticks still support edge camera
+panning, but apply camera movement before calculating the held window's position.
+An unchanged border does not trigger a second presentation. Helper errors remain
+observable and invalidate cached presentation for retry.
+
+The profile now reports `drag_presentations`, `drag_present_avg_ms`, and
+`drag_present_max_ms` separately because direct presentations run outside the
+frame tick. `make all test` passed (15 native executables and 20 Python tests).
+Production tests cover 120 crossings/reversals through former snap zones at four
+zooms, exact coordinates before a display tick, one atomic packet per update,
+zero global suppression/native moves/AX resizes, immediate overview movement,
+and unchanged coordinates on release. The installed build passed all 11 live
+geometry checks again (`build/direct-drag-live.log`). The post-install 60-second passive
+capture contained no drag input (`build/direct-drag-user-profile.json`), so the
+new physical input path and perceived smoothness remain unconfirmed.
