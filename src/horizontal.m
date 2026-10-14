@@ -120,6 +120,7 @@ static double hwm_plane_y_initial_velocity, hwm_plane_y_current_velocity;
 static bool hwm_plane_y_scrolling;
 #include "plane_gesture.h"
 static HWMPlaneGesture hwm_plane_gesture;
+static HWMPlaneCamera hwm_plane_pan_origin;
 static HWMPlaneSelectionGesture hwm_selection_gesture;
 static double hwm_plane_scale=1;
 static bool hwm_camera_animating;
@@ -127,6 +128,10 @@ static HWMPlaneCamera hwm_camera_from,hwm_camera_target;
 static double hwm_camera_start,hwm_camera_width,hwm_camera_height;
 static _Atomic bool hwm_plane_selecting;
 static bool hwm_plane_select_click;
+static uint32_t hwm_plane_pick_window;
+static CGPoint hwm_plane_pick_origin;
+static void hwm_plane_pointer(CGEventType type,CGPoint point);
+static void hwm_plane_pointer_finish(bool choose);
 static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate);
 static bool hwm_plane_fit_active;
 static bool hwm_magnetic_centering=true;
@@ -975,7 +980,7 @@ static void hwm_action(int action)
     }
     if(action==HWM_OVERVIEW_CANCEL) { horizontal_overview_select(0,0); return; }
     if (action==HWM_TERMINAL || action==HWM_BROWSER) {
-        hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -a Terminal")
+        hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -na Ghostty")
                                        : (hwm_browser_command ?: @"open -b org.mozilla.firefox"));
         return;
     }
@@ -1111,9 +1116,9 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         if (code >= 0 && code < 128 && hwm_keys[code]) { hwm_keys[code] = false; return true; }
     }
     if (hwm_paused) return false;
-    if(type==kCGEventLeftMouseUp && hwm_plane_select_click) { hwm_plane_select_click=false; return true; }
-    if(hwm_plane_selecting && type==kCGEventLeftMouseDown) {
-        hwm_plane_select_click=true;
+    if((hwm_plane_selecting && type==kCGEventLeftMouseDown) ||
+       (hwm_plane_select_click && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp))) {
+        hwm_plane_select_click=type!=kCGEventLeftMouseUp;
         event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_PLANE_PICK);
         return true;
     }
@@ -1320,21 +1325,26 @@ static void horizontal_input(void *context, int action)
         CFRelease(context); return;
     }
     if(action==HWM_PLANE_PICK) {
-        hwm_plane_choose_at(CGEventGetLocation((CGEventRef)context)); CFRelease(context); return;
+        hwm_plane_pointer(CGEventGetType((CGEventRef)context),CGEventGetLocation((CGEventRef)context)); CFRelease(context); return;
     }
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
         struct view *view=hwm_view();
         if(view && !hwm_paused && !hwm_suspended && !mission_control_is_active()) {
-            bool select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
+            int select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
             if(select || hwm_selection_gesture.engaged || sample->count>=4) {
                 hwm_plane_gesture.active=false;
                 __atomic_store_n(&__pending_gesture,false,__ATOMIC_RELEASE);
-                if(select) { hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(view); }
+                if(select) {
+                    hwm_plane_pointer_finish(false);
+                    if(select>0) { hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(view); }
+                    else hwm_plane_choose_window(view,hwm_action_window());
+                }
                 free(sample); return;
             }
             double now=hwm_now(); CGRect bounds=hwm_bounds(view);
             HWMPlaneCamera camera={hwm_offset(view,now),hwm_plane_camera_y(now),hwm_plane_scale},target;
+            if(!hwm_plane_gesture.active && sample->count==3) hwm_plane_pan_origin=camera;
             if(hwm_plane_gesture_sample(&hwm_plane_gesture,sample->device,sample->contacts,sample->count,
                                         sample->time,bounds.size.width,sample->aspect,hwm_swipe_gain,camera,&target)) {
                 hwm_held_lead=0; hwm_held_count=0; hwm_rubber=0;
@@ -1346,7 +1356,7 @@ static void horizontal_input(void *context, int action)
                     hwm_focus_after_scroll=false;
                     __atomic_store_n(&__last_gesture_time,read_os_timer(),__ATOMIC_RELEASE);
                     CGPoint pointer;
-                    if(SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer);
+                    if(SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer,hwm_plane_pan_origin);
                 }
                 hwm_input_log[hwm_input_log_count%HWM_FRAME_LOG].time=sample->time;
                 hwm_input_log[hwm_input_log_count++%HWM_FRAME_LOG].offset=target.x;
@@ -1556,15 +1566,8 @@ static void hwm_drag_update(struct view *view,struct window *window,CGPoint poin
  * any camera travel caused by edge autoscroll so the tile remains under the
  * pointer. The real window retains its unscaled size; only its compositor
  * transform changes. */
-static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
-{
-    HWMPlanePoint world=hwm_plane_drag_world((HWMPlanePoint){hwm_drag_world_origin.x,hwm_drag_world_origin.y},
-                                             (HWMPlanePoint){point.x,point.y},(HWMPlanePoint){hwm_drag_pointer_origin.x,hwm_drag_pointer_origin.y},
-                                             hwm_drag_scale,hwm_offset(view,hwm_now())-hwm_drag_camera_x,
-                                             hwm_plane_camera_y(hwm_now())-hwm_drag_camera_y);
-    return CGPointMake(world.x,world.y);
-}
 #include "plane_drag.m"
+#include "plane_pointer.m"
 static bool horizontal_owns_native_drag(void)
 {
     return hwm_ready && !hwm_paused && hwm_drag_window!=0;
@@ -1624,15 +1627,16 @@ static bool horizontal_drop(struct window *window, CGPoint point)
 
 static void hwm_drag_autoscroll(struct view *view,double now)
 {
+    if(hwm_plane_pick_window && !hwm_plane_selecting) { hwm_plane_pointer_finish(false); return; }
     double dt=fmin(.04,fmax(0,now-hwm_drag_tick_time)); hwm_drag_tick_time=now;
     struct window *w=window_manager_find_window(&g_window_manager,hwm_drag_window);
     if(!w || hwm_drag_cancelled) return;
     // Track the live cursor, not the last queued event: the window and the
     // drop zone then follow the pointer however busy the event queue is.
     CGPoint cursor;
-    if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && g_mouse_state.window==w) {
+    if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && (g_mouse_state.window==w || hwm_plane_pick_window==w->id)) {
         hwm_drag_point=cursor;
-        if(g_mouse_state.current_action==MOUSE_MODE_MOVE || g_mouse_state.current_action==MOUSE_MODE_NONE) {
+        if(hwm_plane_pick_window==w->id || g_mouse_state.current_action==MOUSE_MODE_MOVE || g_mouse_state.current_action==MOUSE_MODE_NONE) {
             CGPoint to=hwm_drag_world_at(view,cursor);
             if(hwm_drag_move_pending || !CGPointEqualToPoint(to,hwm_drag_move) || hwm_drag_snap_neighbor) { hwm_drag_move=to; hwm_drag_move_pending=true; }
         }
@@ -1749,6 +1753,21 @@ static void horizontal_command(FILE *rsp, char *message)
     if(command.length>0 && command.length<80) {
         char name[80]; memcpy(name,command.text,command.length); name[command.length]=0;
         if(hwm_named_action(name)) return;
+    }
+    if(token_equals(command,"presentation-status")) {
+        double identifier;
+        if(!hwm_number(get_token(&message),&identifier) || identifier<1 || identifier>UINT32_MAX) { daemon_fail(rsp,"expected window id\n"); return; }
+        struct window *w=window_manager_find_window(&g_window_manager,(uint32_t)identifier);
+        if(!w) { daemon_fail(rsp,"window not found\n"); return; }
+        CGRect actual=CGRectNull; SLSGetWindowBounds(g_connection,w->id,&actual);
+        struct view *view=window_manager_find_managed_window(&g_window_manager,w);
+        NSDictionary *state=@{@"id":@(w->id),@"nativeWidth":@(actual.size.width),@"nativeHeight":@(actual.size.height),
+            @"worldWidth":@(w->strip_width),@"worldHeight":@(w->strip_height),@"nativeResizeEvents":@(w->strip_native_resize_events),
+            @"nativeResizePending":@(w->strip_native_resize_pending),@"sizePending":@(w->strip_size_pending),@"resizeBusy":@(hwm_resize_busy(w)),
+            @"transformDirty":@(w->strip_transform_dirty),@"scale":@(w->strip_last_plane_scale),@"edge":@(hwm_edge_window==w->id),
+            @"drag":@(hwm_drag_window==w->id),@"hiddenTab":@(hwm_workflow_tab_hidden(w)),@"layout":@(view?view->layout:0)};
+        NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
+        fwrite(data.bytes,1,data.length,rsp); fputc('\n',rsp); return;
     }
     if(token_equals(command,"config-status")) {
         TanaConfigSnapshot *snapshot=[hwm_config copySnapshot];
@@ -2314,14 +2333,16 @@ static void horizontal_reconcile(void)
             // A delayed notification may have been suppressed during animation;
             // compare settled WindowServer positions instead of trusting the cache.
             CGRect actual=CGRectNull;
-            if(SLSGetWindowBounds(g_connection,w->id,&actual)==kCGErrorSuccess &&
-               (fabs(actual.origin.x-w->frame.origin.x)>.5 ||
-                fabs(actual.origin.y-w->frame.origin.y)>.5)) {
-                // A native anchor may move independently of the projection.
-                // Reapply the compositor transform without moving it back.
-                w->frame=actual;
-                w->strip_last_plane_scale=-1;
-                hwm_wake();
+            if(SLSGetWindowBounds(g_connection,w->id,&actual)==kCGErrorSuccess) {
+                bool resized=actual.size.width>=100 && actual.size.height>=100 &&
+                    (fabs(actual.size.width-w->strip_width)>.5 || fabs(actual.size.height-w->strip_height)>.5);
+                if(resized || fabs(actual.origin.x-w->frame.origin.x)>.5 || fabs(actual.origin.y-w->frame.origin.y)>.5) {
+                    // Apps do not always emit AX resize notifications. Reconcile
+                    // the final native size as well as its independent anchor.
+                    w->frame=actual; w->strip_native_resize_pending|=resized;
+                    w->strip_transform_dirty=true;
+                    hwm_wake();
+                }
             }
         }
     })

@@ -1,3 +1,11 @@
+static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
+{
+    HWMPlanePoint world=hwm_plane_drag_world((HWMPlanePoint){hwm_drag_world_origin.x,hwm_drag_world_origin.y},
+                                             (HWMPlanePoint){point.x,point.y},(HWMPlanePoint){hwm_drag_pointer_origin.x,hwm_drag_pointer_origin.y},
+                                             hwm_drag_scale,hwm_offset(view,hwm_now())-hwm_drag_camera_x,
+                                             hwm_plane_camera_y(hwm_now())-hwm_drag_camera_y);
+    return CGPointMake(world.x,world.y);
+}
 /* Shared production drag placement: translated native surfaces and magnetic edges. */
 static CGPoint hwm_drag_snap(struct view *view,struct window *window,CGPoint raw)
 {
@@ -41,7 +49,7 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
                                 round(hwm_plane_physical_size(window->strip_width*scale)),round(hwm_plane_physical_size(window->strip_height*scale)));
     hwm_batch_begin();
     bool ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
-    window->strip_plane_scaled=ok;
+    window->strip_plane_scaled=ok; window->strip_transform_dirty=!ok;
     window->strip_last_plane_scale=scale;
     hwm_batch_end();
     if(!ok) { ++hwm_move_failures; hwm_backend_ok=false; return false; }

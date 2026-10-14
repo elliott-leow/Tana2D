@@ -109,3 +109,40 @@ alias enters selection mode without changing world geometry, hover focus is off,
 there are no shortcut conflicts or helper move failures, and the launcher actions
 activate Terminal and Firefox. Physical four-finger recognition and magnetic feel
 remain unverified; app-targeted automation bypasses the global input tap.
+
+
+## Resize and overview follow-up on October 14, 2026
+
+The magnetic camera adjustment now applies only within 120 display points of the
+center, never exceeds 12 display points per pan release, and never opposes a pan
+away from the center. Tests cover the cap and escape behavior at five zoom levels.
+Four-finger up opens the chooser; down centers the active window at 100 percent.
+Overview presses now wait until release to select. A movement of five display
+points starts a regular plane drag, preserving world dimensions and staying in
+the overview after release. Production controller tests cover click, movement
+threshold, drag, zoom conversion, and unchanged native dimensions.
+
+Live testing reproduced an app resize that changed native width while the stored
+world width stayed stale. AX resize notifications can precede the WindowServer
+bounds update. The renderer now samples for 150 ms after a notification, preserves
+the cached projection scale while invalidating the transform, and adopts the
+accepted native size without an AX resize echo. The existing idle reconciliation
+also compares dimensions, covering missing or early notifications. Native edge
+resize keeps the opposite edge fixed using native dimensions in world units.
+The border measures the current native surface instead of an asynchronous target
+size. `strip presentation-status <id>` reports the relevant geometry and pending
+state without window titles or input contents.
+
+`make all test` passes (15 native test executables and 20 Python tests). The live
+geometry harness now includes four app-originated grow/shrink resizes at 100% and
+50% zoom, with world/native dimensions, absolute projection, and border bounds
+checked together. All 11 live checks passed; the result is recorded in
+`build/plane-check.json`.
+
+Command+Return now runs `open -na Ghostty` in both the default and local
+configuration. Two live action invocations each created exactly one new Ghostty
+window; only those empty test terminals were closed. The existing Firefox binding
+is retained. The local pointer-focus preference is restored; content hover is a
+separate app interaction and still requires a physical check after resizing.
+Physical four-finger recognition, overview dragging, and magnetic feel remain
+unverified by app-targeted automation, which does not enter the global event tap.

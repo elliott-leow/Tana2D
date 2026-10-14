@@ -34,7 +34,7 @@ static void hwm_plane_border_tick(struct view *view,double now)
     // Rasterize at the window's stable world size. Camera zoom and focus
     // travel transform this cached outline instead of reallocating a surface
     // and synchronously flushing a new gradient on every display frame.
-    CGSize canvas=CGSizeMake(ceil(fmax(1,focus->strip_width)+2*pad),ceil(fmax(1,focus->strip_height)+2*pad));
+    CGSize canvas=CGSizeMake(ceil(fmax(1,frame.size.width/hwm_plane_scale)),ceil(fmax(1,frame.size.height/hwm_plane_scale)));
     if(!view_find_window_node(view,focus->id)) canvas=frame.size;
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
     hwm_batch_begin();

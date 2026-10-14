@@ -44,7 +44,8 @@ typedef struct {
     HWMPlaneContact contacts[4];
     double time,dx,dy;
 } HWMPlaneSelectionGesture;
-static inline bool hwm_plane_selection_gesture_sample(HWMPlaneSelectionGesture *g,uintptr_t device,
+/* Returns +1 for up (overview), -1 for down (active window), or 0. */
+static inline int hwm_plane_selection_gesture_sample(HWMPlaneSelectionGesture *g,uintptr_t device,
                                                        const HWMPlaneContact *contacts,int count,double time)
 {
     if(!g || !isfinite(time)) return false;
@@ -64,7 +65,7 @@ static inline bool hwm_plane_selection_gesture_sample(HWMPlaneSelectionGesture *
     if(continuous) { g->dx+=dx; g->dy+=dy; } else { g->dx=0; g->dy=0; }
     g->tracking=true; g->engaged=true; g->device=device; g->time=time;
     for(int i=0;i<4;i++) g->contacts[i]=contacts[i];
-    if(!g->fired && fabs(g->dy)>=.045 && fabs(g->dy)>fabs(g->dx)*1.3) { g->fired=true; return true; }
+    if(!g->fired && fabs(g->dy)>=.045 && fabs(g->dy)>fabs(g->dx)*1.3) { g->fired=true; return g->dy>0 ? 1 : -1; }
     return false;
 }
 #endif

@@ -33,7 +33,9 @@ struct window {
     double strip_from_x,strip_from_y,strip_from_width,strip_from_height;
     double strip_vel_x,strip_vel_y,strip_vel_width,strip_vel_height;
     double strip_start,strip_last_offset,strip_last_camera_y,strip_last_plane_scale,strip_size_sent_at;
-    bool strip_size_confirmed;
+    double strip_native_resize_until;
+    unsigned int strip_native_resize_events;
+    bool strip_size_confirmed,strip_native_resize_pending,strip_transform_dirty;
     bool strip_initialized,strip_placed,strip_full_width,strip_size_pending,strip_tab_parked,strip_offscreen;
     int layer;
     bool floating,strip_float_animating,strip_close_pending;
@@ -141,7 +143,18 @@ static CFArrayRef test_border_list(CGWindowListOption option,CGWindowID wid) {
 static int undo_captures;
 static void hwm_undo_capture(void) { ++undo_captures; }
 static void hwm_hold_focus(void) {}
-static void hwm_drag_started(struct window *w) { hwm_drag_window=w->id; }
+static CGPoint hwm_drag_world_origin,hwm_drag_pointer_origin,hwm_drag_point,hwm_drag_move;
+static double hwm_drag_camera_x,hwm_drag_camera_y,hwm_drag_scale;
+static bool hwm_drag_shadow,hwm_drag_move_pending,hwm_drag_cancelled;
+static uint64_t hwm_prof_drag_events;
+static uint32_t hwm_plane_pick_window;
+static CGPoint hwm_plane_pick_origin;
+static void scripting_addition_set_shadow(uint32_t id,bool shadow) { (void)id; (void)shadow; }
+static void hwm_drag_started(struct window *w) {
+    hwm_drag_window=w->id; hwm_undo_capture();
+    hwm_drag_world_origin=CGPointMake(w->strip_world_x,w->strip_world_y);
+    hwm_drag_camera_x=view.strip_offset; hwm_drag_camera_y=test_camera_y; hwm_drag_scale=hwm_plane_scale;
+}
 #include "../src/strip_interaction.m"
 #include "../src/strip_renderer.m"
 #include "../src/window_transitions.m"
@@ -168,11 +181,14 @@ static struct window *selection_hit;
 static struct window *window_manager_find_window_at_point(void *manager,CGPoint point) { (void)manager; (void)point; return selection_hit; }
 static void hwm_feedback_focus(void *old,struct window *next) { (void)old; (void)next; }
 #include "../src/plane_selection.m"
+static void hwm_plane_camera_stop(struct view *v,double now) { (void)v; (void)now; hwm_camera_animating=false; }
+#include "../src/plane_pointer.m"
 
 
 
 static void reset(void)
 {
+    hwm_drag_window=0; hwm_plane_pick_window=0; hwm_drag_move_pending=false; hwm_plane_selecting=false;
     hidden_tab=0; hwm_plane_scale=1; hwm_plane_fit_active=false; test_camera_y=0;
     memset(windows,0,sizeof(windows)); memset(nodes,0,sizeof(nodes));
     view=(struct view){.layout=VIEW_STRIP,.window_gap=12,.root=nodes};
@@ -353,7 +369,7 @@ static void test_slow_app_and_optimistic_close(void)
     assert(horizontal_resize_event(&windows[0])); // Swallowed without asking the app.
     resize_busy=false; actual[0].size.width=650; clock_now+=.3; hwm_render(&view,clock_now);
     assert(!windows[0].strip_size_pending && windows[0].strip_width==650);
-    clock_now+=1; assert(!horizontal_resize_event(&windows[0])); // Settled: handled normally.
+    clock_now+=1; assert(horizontal_resize_event(&windows[0])); // Settled updates still wake reconciliation.
     // A window fading out for a close gives up its place at once, and the
     // camera converges; if the app refuses, clearing the flag restores it.
     reset(); view.strip_offset=300;
@@ -741,19 +757,89 @@ static void test_plane_click_to_center(void)
     selection_hit=NULL;
     hwm_nav_pending=false; hwm_plane_selecting=false;
     hwm_plane_scale=.5; view.strip_offset=50; test_camera_y=80;
-    hwm_plane_magnet_at(&view,CGPointMake(100,100));
+    HWMPlaneCamera origin={100,80,.5};
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),origin);
     assert(view.strip_offset==50 && test_camera_y==80); // No window, no pull.
-    selection_hit=w; hwm_plane_magnet_at(&view,CGPointMake(100,100));
-    assert(view.strip_offset==-1740 && test_camera_y==-330 && hwm_plane_scale==.5);
-    assert(!hwm_nav_pending && ax_calls==0 && moves==0); // Camera only, no focus or resize.
+    selection_hit=w; hwm_plane_magnet_at(&view,CGPointMake(100,100),origin);
+    assert(view.strip_offset==50 && test_camera_y==80); // Far from center: free pan.
+    view.strip_offset=-1640; test_camera_y=-330; origin=(HWMPlaneCamera){-1600,-330,.5};
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),origin);
+    assert(view.strip_offset==-1660 && test_camera_y==-330 && hwm_plane_scale==.5);
+    assert(!hwm_nav_pending && ax_calls==0 && moves==0); // 10 display points, no focus or resize.
+    view.strip_offset=-1640; origin=(HWMPlaneCamera){-1700,-330,.5};
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),origin);
+    assert(view.strip_offset==-1640); // Moving away never pulls back.
     hwm_plane_selecting=true; view.strip_offset=50;
-    hwm_plane_magnet_at(&view,CGPointMake(100,100)); assert(view.strip_offset==50);
+    hwm_plane_magnet_at(&view,CGPointMake(100,100),origin); assert(view.strip_offset==50);
     hwm_plane_selecting=false; selection_hit=NULL;
+}
+
+static void test_overview_pointer(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.5; hwm_plane_selecting=true; selection_hit=w;
+    hwm_motion_scale=0;
+    double x=w->strip_world_x,y=w->strip_world_y,width=w->strip_width,height=w->strip_height;
+    hwm_plane_pointer(kCGEventLeftMouseDown,CGPointMake(200,200));
+    assert(hwm_plane_selecting && !hwm_drag_window);
+    hwm_plane_pointer(kCGEventLeftMouseDragged,CGPointMake(202,201));
+    assert(!hwm_drag_window);
+    hwm_plane_pointer(kCGEventLeftMouseDragged,CGPointMake(350,290));
+    assert(hwm_drag_window==w->id && hwm_drag_move_pending && undo_captures==1);
+    hwm_plane_pointer(kCGEventLeftMouseUp,CGPointMake(360,300));
+    assert(hwm_plane_selecting && !hwm_drag_window && !hwm_plane_pick_window);
+    assert(w->strip_world_x==x+320 && w->strip_world_y==y+200);
+    assert(w->strip_width==width && w->strip_height==height && ax_calls==0 && moves==0);
+    // A later click, without a drag, still centers at 100 percent.
+    hwm_plane_pointer(kCGEventLeftMouseDown,CGPointMake(360,300));
+    assert(hwm_plane_selecting);
+    hwm_plane_pointer(kCGEventLeftMouseUp,CGPointMake(360,300));
+    assert(!hwm_plane_selecting && hwm_plane_scale==1 && hwm_nav_window==w->id);
+    hwm_motion_scale=1; selection_hit=NULL;
+}
+static void test_resize_notification_after_release(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.5; hwm_render(&view,clock_now);
+    double x=w->strip_world_x,y=w->strip_world_y;
+    CGRect before=actual[0];
+    g_mouse_state.window=w; g_mouse_state.window_frame=before; g_mouse_state.current_action=0;
+    horizontal_mouse_down(w,w->strip_last_frame.origin);
+    assert(hwm_edge_window==w->id);
+    actual[0].origin.x-=80; actual[0].origin.y-=60;
+    actual[0].size.width+=80; actual[0].size.height+=60;
+    hwm_edge_update(w,&view);
+    assert(w->strip_world_x==x-80 && w->strip_world_y==y-60); // No double zoom conversion.
+    hwm_edge_finish(w,&view);
+    hwm_render(&view,clock_now);
+    // AppKit's final update arrives after mouse-up, during a camera animation.
+    actual[0].size.width+=37; actual[0].size.height+=19;
+    w->strip_last_plane_scale=.5;
+    __pending_gesture=true;
+    assert(horizontal_resize_event(w));
+    assert(w->strip_native_resize_pending && w->strip_transform_dirty && w->strip_last_plane_scale==.5);
+    int before_calls=scale_calls;
+    hwm_render(&view,clock_now+.01);
+    assert(w->strip_native_resize_pending && scale_calls>before_calls);
+    assert(w->strip_width==actual[0].size.width && w->strip_height==actual[0].size.height);
+    assert(w->strip_last_frame.size.width==actual[0].size.width);
+    assert(ax_calls==0 && moves==0); // No resize echo into the app.
+    assert(projected[0].size.width==actual[0].size.width*.5);
+    // A notification can precede the native bounds update. The old first read
+    // must not discard a second size published on the next frame.
+    actual[0].size.width+=23; actual[0].size.height+=17;
+    hwm_render(&view,clock_now+.04);
+    assert(w->strip_width==actual[0].size.width && w->strip_native_resize_pending);
+    hwm_render(&view,clock_now+.2);
+    assert(!w->strip_native_resize_pending);
+    __pending_gesture=false; g_mouse_state.window=NULL;
 }
 
 int main(void)
 {
     @autoreleasepool {
+    test_overview_pointer();
+    test_resize_notification_after_release();
     test_plane_click_to_center();
     test_native_anchor_is_independent_of_projection();
     test_plane_camera_and_fit();

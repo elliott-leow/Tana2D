@@ -457,7 +457,12 @@ static CGRect hwm_feedback_plane_frame(struct view *view,struct window *w)
     CGRect frame=w->strip_last_frame;
     if(CGRectIsNull(frame) || w->strip_offscreen) return CGRectNull;
     (void)view;
-    double scale=w->strip_last_plane_scale>0?w->strip_last_plane_scale:1;
+    // One focused surface is measured for feedback. AX writes are asynchronous:
+    // the requested size is not necessarily the visible native size yet.
+    CGRect native=CGRectNull;
+    if(SLSGetWindowBounds(g_connection,w->id,&native)==kCGErrorSuccess && native.size.width>0 && native.size.height>0)
+        frame.size=native.size;
+    double scale=w->strip_last_plane_scale>0?w->strip_last_plane_scale:hwm_plane_scale;
     frame.size.width*=scale; frame.size.height*=scale;
     return frame;
 }

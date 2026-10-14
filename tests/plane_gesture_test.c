@@ -14,7 +14,7 @@ static void test_selection_swipes(void) {
         HWMPlaneContact swap=c[0]; c[0]=c[3]; c[3]=swap;
         for(int i=0;i<4;i++) c[i].y+=direction*.03;
         assert(!hwm_plane_selection_gesture_sample(&g,2,c,4,1.03));
-        assert(hwm_plane_selection_gesture_sample(&g,1,c,4,1.03));
+        assert(hwm_plane_selection_gesture_sample(&g,1,c,4,1.03)==direction);
         assert(g.fired && g.engaged);
         for(int i=0;i<4;i++) c[i].y-=direction*.2;
         assert(!hwm_plane_selection_gesture_sample(&g,1,c,4,1.04));
@@ -24,7 +24,7 @@ static void test_selection_swipes(void) {
         assert(!g.engaged && !g.fired);
         assert(!hwm_plane_selection_gesture_sample(&g,1,c,4,1.07));
         for(int i=0;i<4;i++) c[i].y+=direction*.06;
-        assert(hwm_plane_selection_gesture_sample(&g,1,c,4,1.08));
+        assert(hwm_plane_selection_gesture_sample(&g,1,c,4,1.08)==direction);
     }
     HWMPlaneSelectionGesture g={0};
     HWMPlaneContact c[4]={{1,.3,.4},{2,.4,.4},{3,.5,.4},{4,.6,.4}};

@@ -122,7 +122,10 @@ struct window
     double strip_last_camera_y;
     double strip_last_plane_scale;
     bool strip_initialized, strip_full_width, strip_tab_parked, strip_offscreen;
+    double strip_native_resize_until;
+    unsigned int strip_native_resize_events;
     bool strip_size_pending;
+    bool strip_native_resize_pending,strip_transform_dirty;
     bool strip_size_confirmed;
     double strip_size_sent_at;
     CGRect strip_original_frame;

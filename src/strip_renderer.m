@@ -37,6 +37,27 @@ static bool hwm_render(struct view *view, double now)
                 scripting_addition_set_opacity(window->id,hwm_window_alpha(window),.16);
             }
             window->strip_tab_parked=false;
+            // AX notifications can arrive after mouse-up or during a camera
+            // animation. Defer reconciliation while our own resize is in flight,
+            // but never discard the application's final accepted geometry.
+            if(window->strip_native_resize_pending) {
+                active=true;
+                bool size_animation=now-window->strip_start<hwm_duration &&
+                    (fabs(window->strip_width-window->strip_from_width)>.5 || fabs(window->strip_height-window->strip_from_height)>.5);
+                if(!size_animation && !window->strip_size_pending && !hwm_resize_busy(window)) {
+                    CGRect measured=CGRectNull;
+                    if(SLSGetWindowBounds(g_connection,window->id,&measured)==kCGErrorSuccess &&
+                       measured.size.width>=100 && measured.size.height>=100) {
+                        window->frame=measured;
+                        window->strip_width=window->strip_from_width=measured.size.width;
+                        window->strip_height=window->strip_from_height=measured.size.height;
+                        window->strip_vel_width=window->strip_vel_height=0;
+                        window->strip_last_frame.size=measured.size;
+                        window->strip_transform_dirty=true;
+                    }
+                    window->strip_native_resize_pending=now<window->strip_native_resize_until;
+                }
+            }
             double elapsed = now-window->strip_start, t = elapsed/hwm_duration, unused;
             double x = hwm_window_sample(window->strip_from_x,window->strip_world_x,window->strip_vel_x,elapsed,hwm_window_zeta,&unused);
             double y = hwm_window_sample(window->strip_from_y,window->strip_world_y,window->strip_vel_y,elapsed,hwm_window_zeta,&unused);
@@ -85,13 +106,13 @@ static bool hwm_render(struct view *view, double now)
                 node->area = (struct area) { frame.origin.x, frame.origin.y, frame.size.width, frame.size.height };
                 continue;
             }
-            if(move || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale) {
+            if(move || window->strip_transform_dirty || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 if(!scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) {
                     ++hwm_move_failures; hwm_backend_ok=false;
                     hwm_batch_end(); return false;
                 }
-                window->strip_plane_scaled=true;
+                window->strip_plane_scaled=true; window->strip_transform_dirty=false;
                 window->strip_last_frame=base;
                 window->strip_last_offset=own_offset;
                 window->strip_last_camera_y=camera_y;
@@ -122,7 +143,7 @@ static bool hwm_render(struct view *view, double now)
                     hwm_batch_settle();
                     bool measured=SLSGetWindowBounds(g_connection,window->id,&actual)==kCGErrorSuccess;
                     if(measured) window->frame=actual;
-                    window->strip_last_plane_scale=-1; active=true;
+                    window->strip_transform_dirty=true; active=true;
                     scripting_addition_set_layer(window->id,LAYER_BELOW);
                     if (measured &&
                         isfinite(actual.size.width) && actual.size.width >= 160 &&
@@ -190,6 +211,8 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
         hwm_column_width(view,window,actual.size.width);
         window->strip_height=actual.size.height;
         window->strip_full_width = false;
+        window->frame=actual; window->strip_native_resize_pending=false;
+        window->strip_transform_dirty=true;
         window->strip_last_frame.size = actual.size;
         window->strip_last_offset=hwm_shelf_offset(view,hwm_shelf_of(window),now);
         hwm_layout(view,true);
@@ -197,7 +220,7 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
         // Native moves are distinct from the plane projection. Reapply only
         // the absolute transform; never adopt a native origin as a world point.
         window->frame=actual;
-        window->strip_last_plane_scale=-1;
+        window->strip_transform_dirty=true;
         hwm_wake();
     }
     return true;
@@ -223,6 +246,7 @@ static bool horizontal_window_moved(struct window *window)
  * when the notification needs no further handling. */
 static bool horizontal_resize_event(struct window *window)
 {
+    ++window->strip_native_resize_events;
     struct view *view = window_manager_find_managed_window(&g_window_manager,window);
     if (!hwm_ready || hwm_paused || !view || view->layout != VIEW_STRIP) return false;
     if (hwm_overview_active) return true;
@@ -230,11 +254,13 @@ static bool horizontal_resize_event(struct window *window)
     // Entering native fullscreen is a resize too, and the engine must see it:
     // such a window has already left the strip's Space.
     if (hwm_window_left_strip(window)) return false;
-    double now = hwm_now();
-    if (hwm_drag_window==window->id || hwm_workflow_tab_hidden(window) || hwm_view_in_motion(view,now) ||
-        window->strip_size_pending || now-window->strip_start < hwm_duration+.1 || hwm_resize_busy(window)) {
-        hwm_wake();
-        return true;
-    }
-    return false;
+    window->strip_native_resize_pending=true;
+    // AppKit may notify before WindowServer publishes the new bounds. Keep
+    // sampling briefly so the first, still-old read cannot end reconciliation.
+    window->strip_native_resize_until=hwm_now()+.15;
+    window->strip_transform_dirty=true;
+    // This is work even when the camera is idle. The legacy engine may
+    // debounce an AX echo before horizontal_window_changed ever runs.
+    hwm_wake();
+    return true;
 }

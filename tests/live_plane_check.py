@@ -10,6 +10,7 @@ import subprocess
 import time
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--fixture-running', action='store_true', help='Use an already launched disposable fixture')
 parser.add_argument('--generated-input', action='store_true', help='Also inject drag/swipe/pinch/keyboard events')
 args = parser.parse_args()
 
@@ -51,7 +52,8 @@ checks = []
 ids = []
 report = {'checks': checks, 'result': 'incomplete'}
 try:
-    subprocess.run(['open', str(FIXTURE)], check=True)
+    if not args.fixture_running:
+        subprocess.run(['open', str(FIXTURE)], check=True)
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         managed = {w['id'] for w in status()['windows']}
@@ -223,6 +225,35 @@ try:
     close(m['w'], viewport['width']); close(m['h'], viewport['height'])
     close(m['a'], 1, .001); close(m['d'], 1, .001)
     checks.append('maximize resets zoom to 100 percent and fills the usable screen with the active window')
+    # Resizes originate in AppKit, including updates while the camera is moving.
+    # The fixture's last-created window is the only target of this test command.
+    target = next(w['id'] for w in json.loads(command('query', '--windows'))
+                  if w['app']=='Tana2DFixture' and w['title']=='Tana2D Test 3')
+    command('window', target, '--focus'); settle()
+    for scale, width, height in [(1,640,440),(.5,720,480),(.5,460,330),(1,540,380)]:
+        r = next(w['world'] for w in status()['windows'] if w['id']==target)
+        strip('zoom', scale)
+        strip('camera', r['x']+r['width']/2-viewport['width']/(2*scale),
+                        r['y']+r['height']/2-viewport['height']/(2*scale))
+        subprocess.run([str(FIXTURE / 'Contents/MacOS/plane_fixture'),'resize',str(width),str(height)],check=True)
+        settle()
+        r = next(w['world'] for w in status()['windows'] if w['id']==target)
+        profile=json.loads(strip('profile'))
+        measured=metrics([target,profile['border_window']])
+        m=measured[target]; border=measured[profile['border_window']]
+        close(m['w'],width); close(m['h'],height)
+        close(r['width'],width); close(r['height'],height)
+        close(m['a'],1/scale,.001); close(m['d'],1/scale,.001)
+        camera=status()['camera']
+        close(-m['tx']/m['a'],viewport['x']+(r['x']-camera['x'])*scale)
+        close(-m['ty']/m['d'],viewport['y']+(r['y']-camera['y'])*scale)
+        # The outline surrounds the current native surface, not its stale size.
+        pad_x=(-m['tx']/m['a'])-(-border['tx']/border['a'])
+        pad_y=(-m['ty']/m['d'])-(-border['ty']/border['d'])
+        assert 1 <= pad_x <= 6 and 1 <= pad_y <= 6, (pad_x,pad_y)
+        close(border['w']/border['a'],m['w']/m['a']+2*pad_x,2)
+        close(border['h']/border['d'],m['h']/m['d']+2*pad_y,2)
+    checks.append('four app-originated resizes at full and half zoom update world size, projection, and border bounds')
     assert status()['move_failures'] == initial['move_failures']
     assert json.loads(strip('input-status'))['tap_enabled']
     report['result'] = 'pass'

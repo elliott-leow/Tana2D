@@ -19,6 +19,14 @@
 - (void)command:(NSNotification *)n {
     NSString *command=n.userInfo[@"command"];
     if ([command isEqual:@"new"]) [self add];
+    if ([command isEqual:@"resize"]) {
+        NSWindow *w=self.windows.lastObject;
+        NSSize size=NSMakeSize([n.userInfo[@"width"] doubleValue],[n.userInfo[@"height"] doubleValue]);
+        if(size.width>=240 && size.height>=180) {
+            NSRect frame=w.frame; frame.origin.y+=frame.size.height-size.height; frame.size=size;
+            [w setFrame:frame display:YES];
+        }
+    }
     if ([command isEqual:@"close"]) { [self.windows.lastObject close]; [self.windows removeLastObject]; }
     if ([command isEqual:@"minimize"]) [self.windows.lastObject miniaturize:nil];
     if ([command isEqual:@"restore"]) [self.windows.lastObject deminiaturize:nil];
@@ -26,7 +34,11 @@
 }
 @end
 int main(int argc,char **argv) { @autoreleasepool {
-    if (argc==2) { [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.tana2d.fixture" object:nil userInfo:@{@"command":@(argv[1])} deliverImmediately:YES]; return 0; }
+    if (argc==2 || (argc==4 && !strcmp(argv[1],"resize"))) {
+        NSMutableDictionary *info=[NSMutableDictionary dictionaryWithObject:@(argv[1]) forKey:@"command"];
+        if(argc==4) { info[@"width"]=@(atof(argv[2])); info[@"height"]=@(atof(argv[3])); }
+        [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.tana2d.fixture" object:nil userInfo:info deliverImmediately:YES]; return 0;
+    }
     [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     Fixture *fixture=[Fixture new]; fixture.windows=[NSMutableArray array];
     [[NSDistributedNotificationCenter defaultCenter] addObserver:fixture selector:@selector(command:) name:@"dev.tana2d.fixture" object:nil];

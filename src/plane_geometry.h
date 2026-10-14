@@ -157,4 +157,17 @@ static inline HWMPlanePoint hwm_plane_edge_pan(HWMPlaneEdgePan *state,HWMPlaneRe
     return (HWMPlanePoint){x*rate,y*rate};
 }
 
+/* A release can gently approach center, but cannot pull against an escape pan.
+ * Distances and the 12-point cap are in display points at every zoom. */
+static inline HWMPlaneCamera hwm_plane_magnetic_camera(HWMPlaneCamera start,HWMPlaneCamera end,HWMPlanePoint center)
+{
+    if(end.scale<=0 || !isfinite(end.scale)) return end;
+    double dx=(center.x-end.x)*end.scale,dy=(center.y-end.y)*end.scale;
+    double distance=hypot(dx,dy),previous=hypot(center.x-start.x,center.y-start.y)*end.scale;
+    if(distance>=120 || distance<.01 || distance>previous-2 || hypot(end.x-start.x,end.y-start.y)*end.scale<2) return end;
+    double strength=.2*fmin(1,(120-distance)/56),step=fmin(12,distance*strength);
+    end.x+=dx/distance*step/end.scale; end.y+=dy/distance*step/end.scale;
+    return end;
+}
+
 #endif

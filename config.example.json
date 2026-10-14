@@ -54,7 +54,7 @@
       "dim": 0.38
     },
     "commands": {
-      "terminal": "open -a Terminal",
+      "terminal": "open -na Ghostty",
       "browser": "open -b org.mozilla.firefox"
     },
     "swipeGain": 1,

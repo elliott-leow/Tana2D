@@ -65,6 +65,19 @@ int main(void)
     assert(hwm_plane_snap_neighbor_target((HWMPlaneRect){912,200,300,250},neighbor,12,24,&snap));
     near(snap.x,912); near(snap.y,200);
     assert(!hwm_plane_snap_neighbor_target((HWMPlaneRect){925,2000,300,250},neighbor,12,24,&snap));
+    double magnet_scales[]={.1,.5,1,2,4};
+    for(int i=0;i<5;i++) {
+        double z=magnet_scales[i];
+        HWMPlaneCamera start={100/z,0,z},end={50/z,0,z};
+        HWMPlaneCamera nudged=hwm_plane_magnetic_camera(start,end,(HWMPlanePoint){0,0});
+        near((end.x-nudged.x)*z,10);
+        assert(hypot(end.x-nudged.x,end.y-nudged.y)*z<=12);
+        start.x=20/z;
+        nudged=hwm_plane_magnetic_camera(start,end,(HWMPlanePoint){0,0});
+        near(nudged.x,end.x); // Escape motion is never opposed.
+        nudged=hwm_plane_magnetic_camera(end,end,(HWMPlanePoint){0,0});
+        near(nudged.x,end.x); // Touching and lifting cannot ratchet the camera.
+    }
     puts("plane geometry tests passed");
     return 0;
 }

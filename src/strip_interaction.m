@@ -51,8 +51,11 @@ static bool hwm_edge_update(struct window *w, struct view *v)
     if(!hwm_edge_changed) { hwm_undo_capture(); hwm_edge_changed=true; }
     w->strip_width=fmax(160,actual.size.width);
     w->strip_height=fmax(100,actual.size.height);
-    w->strip_world_x=hwm_edge_world_x+(actual.origin.x-hwm_edge_origin.origin.x)/hwm_plane_scale;
-    w->strip_world_y=hwm_edge_world_y+(actual.origin.y-hwm_edge_origin.origin.y)/hwm_plane_scale;
+    // Native dimensions are world points, even while zoomed out. Keep the
+    // opposite edge fixed instead of interpreting native anchor motion as a
+    // screen delta (which applied the zoom conversion twice).
+    w->strip_world_x=hwm_edge_world_x+((hwm_edge_direction&HANDLE_LEFT)?hwm_edge_origin.size.width-actual.size.width:0);
+    w->strip_world_y=hwm_edge_world_y+((hwm_edge_direction&HANDLE_TOP)?hwm_edge_origin.size.height-actual.size.height:0);
     CGRect bounds=hwm_bounds(v);
     CGRect projected=CGRectMake(bounds.origin.x+(w->strip_world_x-hwm_offset(v,hwm_now()))*hwm_plane_scale,
                                 bounds.origin.y+(w->strip_world_y-hwm_plane_camera_y(hwm_now()))*hwm_plane_scale,
@@ -62,7 +65,7 @@ static bool hwm_edge_update(struct window *w, struct view *v)
     w->strip_last_camera_y=hwm_plane_camera_y(hwm_now());
     w->strip_last_plane_scale=hwm_plane_scale;
     scripting_addition_set_plane_transform(w->id,projected.origin.x,projected.origin.y,hwm_plane_scale);
-    w->strip_plane_scaled=true;
+    w->strip_plane_scaled=true; w->strip_transform_dirty=false;
     w->strip_size_pending=false;
     hwm_layout(v,false);
     return true;
@@ -74,6 +77,8 @@ static bool hwm_edge_finish(struct window *w,struct view *v)
     hwm_edge_update(w,v);
     hwm_edge_window=0; hwm_edge_neighbor=0;
     // Commit the accepted native size without moving other plane windows.
-    hwm_layout(v,true); hwm_hold_focus(); hwm_wake();
+    w->strip_native_resize_pending=true; w->strip_native_resize_until=hwm_now()+.15;
+    w->strip_transform_dirty=true;
+    hwm_layout(v,false); hwm_hold_focus(); hwm_wake();
     return true;
 }

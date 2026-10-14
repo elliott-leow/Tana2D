@@ -39,9 +39,10 @@ require testing on the target Mac.
 | Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Pan in any direction, including diagonals |
 | Pinch | Zoom in or out |
-| Control + Return / Control + Up | Zoom out, then click a window to center it at 100% without resizing it |
-| Four-finger swipe up or down | Open the same click-to-center mode |
-| Command + Return | Open Terminal |
+| Control + Return / Control + Up | Zoom out; click a window to center it at 100%, or drag it to move it |
+| Four-finger swipe down | Center the active window at 100% without resizing it |
+| Four-finger swipe up | Open the same click-to-center mode |
+| Command + Return | Open a new Ghostty window |
 | Command + Shift + W | Open Firefox |
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
@@ -60,8 +61,9 @@ Camera commands animate position and zoom together. Command + Shift + Return als
 animates the active window’s size. Escape cancels click-to-select mode; macOS
 Reduce Motion disables these transitions.
 
-After a three-finger pan, the camera eases toward the window under the pointer.
-Empty canvas stays where you leave it. Hovering does not change keyboard focus.
+After a three-finger pan toward a nearby window center, the camera nudges at most
+12 screen points closer. Panning away never pulls you back. Empty canvas stays
+where you leave it. Hovering does not change keyboard focus.
 
 The camera panel is movable. **Fit all** preserves every window's world position
 and uses the tight bounding rectangle of the arrangement, with a small screen
