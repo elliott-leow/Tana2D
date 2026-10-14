@@ -339,7 +339,7 @@ static CGRect hwm_screen(struct view *view)
     double now=hwm_now();
     // Never in the middle of a swipe or a glide: the answer cannot change
     // there, and asking costs a frame's worth of round trips.
-    bool moving=hwm_camera_animating || view->strip_scrolling || hwm_plane_y_scrolling || g_mouse_state.window ||
+    bool moving=hwm_camera_animating || view->strip_scrolling || hwm_plane_y_scrolling || g_mouse_state.window || hwm_drag_window ||
                 __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED);
     if(view->sid!=sid || (now-hwm_screen_stamp>2 && !(moving && hwm_screen_stamp>0))) {
         sid=view->sid; hwm_screen_stamp=now;

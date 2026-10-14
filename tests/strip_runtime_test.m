@@ -102,7 +102,8 @@ static bool scripting_addition_set_plane_transform(uint32_t id,double x,double y
 static bool window_manager_close_window(struct window *w) { (void)w; ++close_calls; return false; }
 static struct window_node *view_find_window_node(struct view *v,uint32_t id) { for(struct window_node *n=v->root;n;n=n->next) if(n->window_list[0]==id) return n; return NULL; }
 static void view_clear_flag(struct view *v,int flag) { (void)v; (void)flag; }
-static CGError SLSGetWindowBounds(int connection,uint32_t id,CGRect *frame) { (void)connection; *frame=actual[id-1]; return kCGErrorSuccess; }
+static int bounds_reads;
+static CGError SLSGetWindowBounds(int connection,uint32_t id,CGRect *frame) { ++bounds_reads; (void)connection; *frame=actual[id-1]; return kCGErrorSuccess; }
 static CGPoint test_cursor;
 static void SLSGetCurrentCursorLocation(int connection,CGPoint *point) { (void)connection; *point=test_cursor; }
 static void SLSDisableUpdate(int connection) { (void)connection; assert(update_depth==0); ++update_depth; ++disable_calls; }
@@ -198,6 +199,7 @@ static void SLSFindWindowAndOwner(int cid,uint32_t relative,int direction,int fl
     (void)cid; (void)relative; (void)direction; (void)flags; (void)point; (void)local; *wid=test_hit_id; *owner=test_hit_owner;
 }
 #include "../src/plane_resize.m"
+#include "../src/plane_feedback.m"
 static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
     CGEventRef event=CGEventCreateMouseEvent(NULL,type,p,kCGMouseButtonLeft); CGEventSetFlags(event,flags);
     bool consumed=hwm_plane_resize_event(type,event); CFRelease(event);
@@ -859,6 +861,39 @@ static void test_resize_notification_after_release(void)
     __pending_gesture=false; g_mouse_state.window=NULL;
 }
 
+static void test_drag_feedback_cost_and_snap_axes(void)
+{
+    reset(); clock_now+=2; hwm_render(&view,clock_now);
+    bounds_reads=0; int batches=disable_calls;
+    for(int frame=0;frame<120;frame++) {
+        clock_now+=1.0/120;
+        hwm_render(&view,clock_now);
+        for(int i=0;i<4;i++) hwm_feedback_plane_frame(&view,&windows[i]);
+    }
+    assert(bounds_reads==0 && disable_calls==batches);
+    struct window *w=&windows[0];
+    w->strip_size_pending=true; actual[0].size.width+=50;
+    assert(hwm_feedback_plane_frame(&view,w).size.width==actual[0].size.width);
+    assert(bounds_reads==1);
+    w->strip_size_pending=false; w->frame=actual[0];
+    assert(hwm_feedback_plane_frame(&view,w).size.width==actual[0].size.width && bounds_reads==1);
+    // Acquire a vertical neighboring edge, then move freely up/down alongside
+    // it and reverse direction. The free axis must never trail the pointer.
+    reset(); nodes[1].next=NULL;
+    w=&windows[0]; w->strip_world_x=0; w->strip_world_y=0; w->strip_width=400; w->strip_height=600;
+    windows[1].strip_world_x=500; windows[1].strip_world_y=0; windows[1].strip_width=400; windows[1].strip_height=600;
+    hwm_drag_snap_neighbor=0; hwm_drag_snap_x=hwm_drag_snap_y=0; hwm_drag_snap_time=clock_now;
+    hwm_drag_finishing=true; hwm_drag_submit_plane(&view,w,CGPointMake(80,100)); hwm_drag_finishing=false;
+    assert(w->strip_world_x==88);
+    double ys[]={120,160,200,180,130,90};
+    for(size_t i=0;i<sizeof(ys)/sizeof(*ys);i++) {
+        clock_now+=1.0/120; hwm_drag_submit_plane(&view,w,CGPointMake(80,ys[i]));
+        assert(w->strip_world_y==ys[i] && w->strip_world_x==88);
+    }
+    clock_now+=1.0/120; hwm_drag_submit_plane(&view,w,CGPointMake(250,90));
+    assert(w->strip_world_x==250 && w->strip_world_y==90 && hwm_drag_snap_neighbor==0);
+}
+
 static void test_owned_edge_resize(void)
 {
     unsigned directions[]={HANDLE_LEFT,HANDLE_RIGHT,HANDLE_TOP,HANDLE_BOTTOM,
@@ -925,6 +960,7 @@ static void test_owned_edge_resize(void)
 int main(void)
 {
     @autoreleasepool {
+    test_drag_feedback_cost_and_snap_axes();
     test_owned_edge_resize();
     test_overview_pointer();
     test_resize_notification_after_release();

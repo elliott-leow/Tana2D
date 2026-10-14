@@ -452,20 +452,7 @@ static bool hwm_feedback_animating(double now)
 }
 /* Where a window is on screen, for an outline: a tile's last submitted frame
  * is exact and costs no round trip. */
-static CGRect hwm_feedback_plane_frame(struct view *view,struct window *w)
-{
-    CGRect frame=w->strip_last_frame;
-    if(CGRectIsNull(frame) || w->strip_offscreen) return CGRectNull;
-    (void)view;
-    // One focused surface is measured for feedback. AX writes are asynchronous:
-    // the requested size is not necessarily the visible native size yet.
-    CGRect native=CGRectNull;
-    if(SLSGetWindowBounds(g_connection,w->id,&native)==kCGErrorSuccess && native.size.width>0 && native.size.height>0)
-        frame.size=native.size;
-    double scale=w->strip_last_plane_scale>0?w->strip_last_plane_scale:hwm_plane_scale;
-    frame.size.width*=scale; frame.size.height*=scale;
-    return frame;
-}
+#include "plane_feedback.m"
 static CGRect hwm_feedback_frame(struct view *view,struct window *w,CGRect screen)
 {
     if(!w || w->strip_pop || w->strip_close_pending || w->strip_close_ghost || !window_manager_is_window_eligible(w) ||
@@ -492,11 +479,12 @@ static NSString *hwm_feedback_title(struct window *w,double now)
     return hwm_ax_title(w->id,w->ref,w->application->name ? @(w->application->name) : @"",now,^(uint32_t wid,NSString *title) { (void)wid; (void)title; hwm_wake(); });
 }
 static NSArray *hwm_rgba(const double c[4]) { return @[@(c[0]),@(c[1]),@(c[2]),@(c[3])]; }
+static bool hwm_view_in_motion(struct view *view,double now);
 static void hwm_feedback_tick(struct view *view,double now)
 {
     if(hwm_overview_active || hwm_paused || hwm_suspended) { hwm_feedback_hide(); return; }
     static double external_check=-10;
-    if(now-external_check>10) { external_check=now; hwm_external_borders_refresh(); }
+    if(!hwm_drag_window && !hwm_edge_window && !hwm_view_in_motion(view,now) && now-external_check>10) { external_check=now; hwm_external_borders_refresh(); }
     bool expected=false;
     if(!atomic_compare_exchange_strong(&hwm_feedback_pending,&expected,true)) return;
     CGRect screen=hwm_screen(view),bounds=hwm_bounds(view);

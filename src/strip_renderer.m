@@ -78,7 +78,7 @@ static bool hwm_render(struct view *view, double now)
             CGRect last = window->strip_last_frame;
             bool hidden=!CGRectIntersectsRect(frame,screen);
             bool revealing=window->strip_offscreen && !hidden;
-            if(hidden) {
+            if(hidden && (!window->strip_offscreen || hwm_visibility_companions.count)) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 hwm_visibility_set(window,true,frame);
             }
@@ -119,7 +119,7 @@ static bool hwm_render(struct view *view, double now)
                 window->strip_last_shift=shift;
             }
             window->strip_last_plane_scale=plane_scale;
-            if(!hidden) {
+            if(!hidden && (window->strip_offscreen || hwm_visibility_companions.count)) {
                 if(!batched) { hwm_batch_begin(); batched=true; }
                 hwm_visibility_set(window,false,frame);
             }

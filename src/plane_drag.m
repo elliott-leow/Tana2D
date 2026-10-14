@@ -23,16 +23,15 @@ static CGPoint hwm_drag_snap(struct view *view,struct window *window,CGPoint raw
     }
     double now=hwm_now(),dt=fmax(0,now-hwm_drag_snap_time); hwm_drag_snap_time=now;
     double blend=hwm_drag_finishing || hwm_motion_scale==0 ? 1 : 1-exp(-dt/.045);
-    // Once an edge is acquired, ease the displayed position to that edge.
-    // Easing the correction alone adds pointer motion a second time when the
-    // pointer reaches the exact snap, briefly pushing the window past it.
-    if(target && target==hwm_drag_snap_neighbor) {
-        hwm_drag_snap_x=window->strip_world_x+(best.x-window->strip_world_x)*blend-raw.x;
-        hwm_drag_snap_y=window->strip_world_y+(best.y-window->strip_world_y)*blend-raw.y;
-        return CGPointMake(raw.x+hwm_drag_snap_x,raw.y+hwm_drag_snap_y);
-    }
-    hwm_drag_snap_x+=(best.x-raw.x-hwm_drag_snap_x)*blend;
-    hwm_drag_snap_y+=(best.y-raw.y-hwm_drag_snap_y)*blend;
+    // Only attraction toward an edge is animated. The unsnapped axis must
+    // follow this frame's pointer exactly, even while the other axis is held.
+    // Clamp each correction between zero and its current target: crossing the
+    // exact snap cannot overshoot, and leaving its range releases immediately.
+    double dx=best.x-raw.x,dy=best.y-raw.y;
+    double from_x=target && target==hwm_drag_snap_neighbor?window->strip_world_x-raw.x:hwm_drag_snap_x;
+    double from_y=target && target==hwm_drag_snap_neighbor?window->strip_world_y-raw.y:hwm_drag_snap_y;
+    hwm_drag_snap_x=target?fmax(fmin(0,dx),fmin(fmax(0,dx),from_x+(dx-from_x)*blend)):0;
+    hwm_drag_snap_y=target?fmax(fmin(0,dy),fmin(fmax(0,dy),from_y+(dy-from_y)*blend)):0;
     hwm_drag_snap_neighbor=target;
     return CGPointMake(raw.x+hwm_drag_snap_x,raw.y+hwm_drag_snap_y);
 }

@@ -177,3 +177,34 @@ Signed packaging and installation succeeded. The temporary border-disable settin
 was restored. On restart, macOS reported `sessionUnlocked:false`; Tana2D waits at
 its normal startup gate. This prevented a new live harness run and physical hover
 or pointer acceptance. The 11 live checks above apply to the preceding build.
+
+
+## Drag responsiveness follow-up on October 14, 2026
+
+The user reported lag in both title-bar and overview dragging. Both use the same
+plane placement function. With a snap target held, that function interpolated the
+entire window position, including movement parallel to the snapped edge. It now
+animates only a bounded attraction toward the snap; the free axis follows the
+current pointer, exact edge crossings cannot overshoot, and leaving the snap
+range releases immediately.
+
+The resize feedback change above had also introduced a synchronous WindowServer
+bounds read for every tile on every feedback frame. Feedback now uses accepted
+native dimensions during translation and measures only pending resizes. Unchanged
+visibility no longer opens a compositor batch, external-border discovery waits
+until movement stops, and overview dragging keeps the existing screen-bounds
+cache valid just like ordinary dragging.
+
+`make all test` passed (15 native executables and 20 Python tests). New production
+runtime checks cover movement and reversal along a held edge, immediate escape,
+120 stationary frames with zero native bounds queries or compositor batches, and
+fresh feedback measurement during a pending resize. Signed installation passed.
+The installed build passed all 11 live geometry checks, including four native
+resizes and border alignment at full and half zoom (`build/drag-fix-live.log`).
+
+Before the change, the user trial accumulated 322 drag ticks and 311 drag events;
+the largest drag tick was 12.949 ms. The broader sample also included a 47.736 ms
+frame. These are timing observations, not a controlled speed comparison. The
+15-second stack sample missed the user's later drag. The post-install passive
+sample contained no drag input, and the live harness validates geometry rather
+than physical drag feel; no measured end-to-end latency improvement is claimed.
