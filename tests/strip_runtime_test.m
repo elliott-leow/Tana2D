@@ -4,6 +4,8 @@
 #pragma clang diagnostic ignored "-Wunused-function"
 #include <assert.h>
 #include <stdio.h>
+#include <stdatomic.h>
+#include <os/lock.h>
 #include "../src/strip_columns.h"
 
 #define VIEW_STRIP 1
@@ -13,10 +15,11 @@
 #define LAYER_NORMAL 0
 #define MOUSE_MODE_MOVE 1
 #define MOUSE_MODE_RESIZE 2
-#define HANDLE_LEFT 1
-#define HANDLE_RIGHT 2
-#define HANDLE_TOP 4
-#define HANDLE_BOTTOM 8
+#define HANDLE_LEFT 4
+#define HANDLE_RIGHT 8
+#define HANDLE_TOP 1
+#define HANDLE_BOTTOM 2
+#define WINDOW_RESIZABLE 8
 #define WINDOW_MINIMIZE 1
 #define WINDOW_FULLSCREEN 2
 #define WINDOW_FLOAT 4
@@ -82,7 +85,7 @@ static struct window_node *window_node_find_first_leaf(struct window_node *n) { 
 static struct window_node *window_node_find_next_leaf(struct window_node *n) { return n->next; }
 static struct window *window_manager_find_window(void *manager,uint32_t id) { (void)manager; return id>=1 && id<=4 ? &windows[id-1] : NULL; }
 static struct view *window_manager_find_managed_window(void *manager,struct window *w) { (void)manager; return w->floating?NULL:&view; }
-static bool window_check_flag(struct window *w,int flag) { (void)w; (void)flag; return false; }
+static bool window_check_flag(struct window *w,int flag) { (void)w; return flag==WINDOW_RESIZABLE; }
 static CGError SLSGetWindowAlpha(int connection,uint32_t id,float *alpha) { (void)connection; *alpha=alphas[id-1]; return kCGErrorSuccess; }
 static double fade_duration[4];
 static bool scripting_addition_set_opacity(uint32_t id,float alpha,double duration) { fade_duration[id-1]=duration; alphas[id-1]=alpha; return true; }
@@ -100,7 +103,8 @@ static bool window_manager_close_window(struct window *w) { (void)w; ++close_cal
 static struct window_node *view_find_window_node(struct view *v,uint32_t id) { for(struct window_node *n=v->root;n;n=n->next) if(n->window_list[0]==id) return n; return NULL; }
 static void view_clear_flag(struct view *v,int flag) { (void)v; (void)flag; }
 static CGError SLSGetWindowBounds(int connection,uint32_t id,CGRect *frame) { (void)connection; *frame=actual[id-1]; return kCGErrorSuccess; }
-static void SLSGetCurrentCursorLocation(int connection,CGPoint *point) { (void)connection; *point=CGPointZero; }
+static CGPoint test_cursor;
+static void SLSGetCurrentCursorLocation(int connection,CGPoint *point) { (void)connection; *point=test_cursor; }
 static void SLSDisableUpdate(int connection) { (void)connection; assert(update_depth==0); ++update_depth; ++disable_calls; }
 static void SLSReenableUpdate(int connection) { (void)connection; assert(update_depth==1); --update_depth; }
 static bool scripting_addition_set_layer(uint32_t id,int layer) { (void)id; (void)layer; return true; }
@@ -183,11 +187,31 @@ static void hwm_feedback_focus(void *old,struct window *next) { (void)old; (void
 #include "../src/plane_selection.m"
 static void hwm_plane_camera_stop(struct view *v,double now) { (void)v; (void)now; hwm_camera_animating=false; }
 #include "../src/plane_pointer.m"
+static uint32_t hwm_plane_border_id,test_hit_id=1;
+static int test_hit_owner=1,g_event_loop;
+enum { HORIZONTAL_INPUT, HWM_PLANE_RESIZE };
+static void *test_input;
+static void event_loop_post(void *loop,int type,void *input,int action) {
+    (void)loop; assert(type==HORIZONTAL_INPUT && action==HWM_PLANE_RESIZE); assert(!test_input); test_input=input;
+}
+static void SLSFindWindowAndOwner(int cid,uint32_t relative,int direction,int flags,CGPoint *point,CGPoint *local,uint32_t *wid,int *owner) {
+    (void)cid; (void)relative; (void)direction; (void)flags; (void)point; (void)local; *wid=test_hit_id; *owner=test_hit_owner;
+}
+#include "../src/plane_resize.m"
+static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
+    CGEventRef event=CGEventCreateMouseEvent(NULL,type,p,kCGMouseButtonLeft); CGEventSetFlags(event,flags);
+    bool consumed=hwm_plane_resize_event(type,event); CFRelease(event);
+    if(test_input) { void *input=test_input; test_input=NULL; hwm_plane_resize_input(input); }
+    return consumed;
+}
+
 
 
 
 static void reset(void)
 {
+    atomic_store(&hwm_resize_captured,false); hwm_resize_owned=false; hwm_resize_releasing=false; resize_busy=false;
+    hwm_paused=false; hwm_suspended=false; test_hit_owner=1; test_hit_id=1;
     hwm_drag_window=0; hwm_plane_pick_window=0; hwm_drag_move_pending=false; hwm_plane_selecting=false;
     hidden_tab=0; hwm_plane_scale=1; hwm_plane_fit_active=false; test_camera_y=0;
     memset(windows,0,sizeof(windows)); memset(nodes,0,sizeof(nodes));
@@ -835,9 +859,73 @@ static void test_resize_notification_after_release(void)
     __pending_gesture=false; g_mouse_state.window=NULL;
 }
 
+static void test_owned_edge_resize(void)
+{
+    unsigned directions[]={HANDLE_LEFT,HANDLE_RIGHT,HANDLE_TOP,HANDLE_BOTTOM,
+        HANDLE_LEFT|HANDLE_TOP,HANDLE_RIGHT|HANDLE_TOP,HANDLE_LEFT|HANDLE_BOTTOM,HANDLE_RIGHT|HANDLE_BOTTOM};
+    double scales[]={.25,.5,1,1.5};
+    for(size_t z=0;z<4;z++) for(size_t d=0;d<8;d++) {
+        reset(); hwm_plane_scale=scales[z]; hwm_render(&view,clock_now);
+        struct window *w=&windows[0]; CGRect before=w->strip_last_frame;
+        double width=w->frame.size.width,height=w->frame.size.height;
+        double world_x=w->strip_world_x,world_y=w->strip_world_y;
+        before.size=CGSizeMake(width*scales[z],height*scales[z]);
+        unsigned direction=directions[d];
+        CGPoint down=CGPointMake(direction&HANDLE_LEFT?CGRectGetMinX(before):direction&HANDLE_RIGHT?CGRectGetMaxX(before):CGRectGetMidX(before),
+                                 direction&HANDLE_TOP?CGRectGetMinY(before):direction&HANDLE_BOTTOM?CGRectGetMaxY(before):CGRectGetMidY(before));
+        hwm_plane_resize_publish(&view);
+        assert(!resize_event(kCGEventLeftMouseDown,down,kCGEventFlagMaskCommand));
+        assert(!resize_event(kCGEventLeftMouseDown,CGPointMake(CGRectGetMidX(before),CGRectGetMidY(before)),0));
+        assert(resize_event(kCGEventLeftMouseDown,down,0));
+        assert(hwm_resize_owned && hwm_edge_direction==direction && atomic_load(&hwm_resize_captured));
+        CGPoint delta=CGPointMake(direction&HANDLE_LEFT?-25:25,direction&HANDLE_TOP?-18:18);
+        test_cursor=CGPointMake(down.x+delta.x,down.y+delta.y);
+        assert(resize_event(kCGEventLeftMouseDragged,test_cursor,0));
+        hwm_plane_resize_tick(&view,clock_now);
+        assert(hwm_drag_window==0 && undo_captures==1);
+        double expected_width=width+((direction&(HANDLE_LEFT|HANDLE_RIGHT))?25/scales[z]:0);
+        double expected_height=height+((direction&(HANDLE_TOP|HANDLE_BOTTOM))?18/scales[z]:0);
+        assert(fabs(w->strip_width-expected_width)<=.5 && fabs(w->strip_height-expected_height)<=.5);
+        if(direction&HANDLE_LEFT) {
+            assert(fabs(w->strip_world_x+w->strip_width-world_x-width)<.01);
+            assert(fabs(projected[0].origin.x-test_cursor.x)<=1+.5*scales[z]);
+        } else if(direction&HANDLE_RIGHT) {
+            assert(w->strip_world_x==world_x);
+            assert(fabs(CGRectGetMaxX(projected[0])-test_cursor.x)<=1+.5*scales[z]);
+        }
+        if(direction&HANDLE_TOP) {
+            assert(fabs(w->strip_world_y+w->strip_height-world_y-height)<.01);
+            assert(fabs(projected[0].origin.y-test_cursor.y)<=1+.5*scales[z]);
+        } else if(direction&HANDLE_BOTTOM) {
+            assert(w->strip_world_y==world_y);
+            assert(fabs(CGRectGetMaxY(projected[0])-test_cursor.y)<=1+.5*scales[z]);
+        }
+        assert(resize_event(kCGEventLeftMouseUp,test_cursor,0));
+        assert(!atomic_load(&hwm_resize_captured));
+        resize_busy=true; hwm_plane_resize_tick(&view,clock_now+.2); assert(hwm_resize_owned);
+        resize_busy=false; hwm_plane_resize_tick(&view,clock_now+.21);
+        assert(!hwm_resize_owned && hwm_edge_window==0 && w->strip_native_resize_pending);
+        assert(undo_captures==1);
+    }
+    reset(); hwm_plane_resize_publish(&view);
+    CGPoint down=windows[0].strip_last_frame.origin;
+    assert(resize_event(kCGEventLeftMouseDown,down,0));
+    hwm_paused=true; hwm_plane_resize_tick(&view,clock_now);
+    assert(!hwm_resize_owned && hwm_edge_window==0 && atomic_load(&hwm_resize_captured));
+    assert(resize_event(kCGEventLeftMouseUp,down,0));
+    assert(!atomic_load(&hwm_resize_captured));
+    HWMPlaneRect start={0,0,400,300};
+    HWMPlaneRect small=hwm_plane_resize_target(start,(HWMPlanePoint){1000,1000},.5,HANDLE_LEFT|HANDLE_TOP);
+    assert(small.width==160 && small.height==100 && small.x+small.width==400 && small.y+small.height==300);
+    assert(hwm_plane_resize_hit(start,(HWMPlanePoint){-10,20})==0);
+    reset(); hwm_plane_resize_publish(&view); test_hit_id=99;
+    assert(!resize_event(kCGEventLeftMouseDown,windows[0].strip_last_frame.origin,0));
+}
+
 int main(void)
 {
     @autoreleasepool {
+    test_owned_edge_resize();
     test_overview_pointer();
     test_resize_notification_after_release();
     test_plane_click_to_center();

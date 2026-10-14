@@ -8,7 +8,8 @@ Experimental: scrolling and dragging are still under repair. See the
 
 Windows occupy positions on a plane. Move the camera horizontally or vertically
 with a three-finger swipe, and pinch to zoom in or out. **Control + Enter** or **Control + Up** zooms out so you can click a window to
-center at 100%, preserving its size. Four-finger swipes up or down do the same. There are no workspace walls.
+center at 100%, preserving its size. Four fingers up opens the overview; four fingers
+down centers the active window at 100%. There are no workspace walls.
 
 Tana2D projects native windows through an animated WindowServer compositor backend. It is not a
 set of macOS Spaces or a screenshot-only overview.
@@ -47,6 +48,7 @@ require testing on the target Mac.
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
 | Drag a title bar, or Option-drag a window | Place a window; nearby edges snap together |
+| Drag a window edge or corner | Resize in plane coordinates, preserving the opposite edge |
 | Option + Command + F | Fit the focused window |
 | Option + Command + 0 | Return to actual size |
 | Option + Command + Z | Undo an arrangement change |

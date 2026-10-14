@@ -4,7 +4,7 @@ static uint32_t hwm_edge_window, hwm_edge_neighbor;
 static unsigned hwm_edge_direction;
 static CGRect hwm_edge_origin;
 static double hwm_edge_world_x,hwm_edge_world_y;
-static bool hwm_edge_changed;
+static bool hwm_edge_changed,hwm_resize_owned;
 
 static void horizontal_mouse_down(struct window *w, CGPoint p)
 {
@@ -41,7 +41,7 @@ static bool hwm_edge_update(struct window *w, struct view *v)
     if(CGSizeEqualToSize(actual.size,hwm_edge_origin.size) && !hwm_edge_changed) {
         // A title-bar drag can begin in the narrow top-edge hit band. Wait for
         // real geometry evidence rather than treating every such click as a resize.
-        if(g_mouse_state.current_action!=MOUSE_MODE_RESIZE &&
+        if(!hwm_resize_owned && g_mouse_state.current_action!=MOUSE_MODE_RESIZE &&
            hypot(actual.origin.x-hwm_edge_origin.origin.x,actual.origin.y-hwm_edge_origin.origin.y)>3) {
             hwm_edge_window=0; hwm_edge_neighbor=0; hwm_drag_started(w);
             return false;

@@ -146,3 +146,34 @@ is retained. The local pointer-focus preference is restored; content hover is a
 separate app interaction and still requires a physical check after resizing.
 Physical four-finger recognition, overview dragging, and magnetic feel remain
 unverified by app-targeted automation, which does not enter the global event tap.
+
+
+## Edge controller follow-up on October 14, 2026
+
+The user reported that content hover still failed after a native edge resize and
+that the dragged edge drifted from the pointer. The earlier geometry checks did
+not establish physical correctness of that interaction.
+
+Plain edge drags now have one owner from press through release. Tana2D consumes
+the entire sequence and requests native size from pointer travel divided by zoom;
+it does not also start AppKit's independent native resize loop. The opposite edge
+uses the application's accepted size. Requests are coalesced on the existing AX
+worker. Release waits for outstanding work; pause/removal cancel management while
+still consuming the matching mouse-up. Interior clicks and modified clicks retain
+their previous paths. The border explicitly disables mouse events after every
+shape change, in addition to its existing ignore-events tag. The private API
+returned success on a disposable window on this Mac; physical hover remains a
+separate acceptance check. API declaration reference:
+https://github.com/NUIKit/CGSInternal/blob/master/CGSWindow.h
+
+`make all test` passed again: 15 native test executables and 20 Python tests.
+Production controller tests cover all four edges and all four corners at 25%,
+50%, 100%, and 150%; opposite-edge invariance; pointer alignment within raster and
+size rounding; minimum dimensions; one undo snapshot; busy-worker release;
+interior/modifier exclusions; and pause with a captured press. Logs are in
+`build/edge-resize-verified.log`.
+
+Signed packaging and installation succeeded. The temporary border-disable setting
+was restored. On restart, macOS reported `sessionUnlocked:false`; Tana2D waits at
+its normal startup gate. This prevented a new live harness run and physical hover
+or pointer acceptance. The 11 live checks above apply to the preceding build.

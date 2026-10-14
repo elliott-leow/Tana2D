@@ -1,5 +1,8 @@
 /* A cached native outline moves in the same presentation batch as its window.
  * Translation never redraws pixels or waits for an AppKit/main-queue snapshot. */
+// CGSWindow.h documents this separately from the ignore-events tag. Reapply
+// after each shape change so the whole transparent canvas stays mouse-inert.
+extern CGError SLSSetMouseEventEnableFlags(int,uint32_t,bool);
 static uint32_t hwm_plane_border_id;
 static CGContextRef hwm_plane_border_context;
 static CGRect hwm_plane_border_frame;
@@ -51,6 +54,7 @@ static void hwm_plane_border_tick(struct view *view,double now)
             hwm_plane_border_context=SLWindowContextCreate(g_connection,hwm_plane_border_id,0);
         }
         SLSSetWindowShape(g_connection,hwm_plane_border_id,0,0,region);
+        SLSSetMouseEventEnableFlags(g_connection,hwm_plane_border_id,false);
         CFRelease(region);
         if(hwm_plane_border_context) {
             CGContextClearRect(hwm_plane_border_context,local);

@@ -298,7 +298,7 @@ static bool hwm_feedback_animating(double now);
 static void hwm_focus_any(struct window *w);
 static void hwm_arrangement_window_opened(void);
 
-enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PLANE_PICK, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
+enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PLANE_PICK, HWM_PLANE_RESIZE, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
                   HWM_FLOAT, HWM_FULL, HWM_CENTER, HWM_HOME, HWM_PAUSE, HWM_REFLOW, HWM_QUIT, HWM_CLOSE, HWM_TERMINAL, HWM_BROWSER,
                   HWM_MOVE_FIRST, HWM_MOVE_LAST, HWM_OVERVIEW_FILTER, HWM_OVERVIEW_DRAG, HWM_OVERVIEW_HIGHLIGHT, HWM_OVERVIEW, HWM_OVERVIEW_GESTURE, HWM_OVERVIEW_CANCEL, HWM_OVERVIEW_POINTER, HWM_OVERVIEW_KEY, HWM_CANCEL_DRAG, HWM_NAMED_ACTION, HWM_APPLY_RULE, HWM_TAB_SELECT, HWM_MARK_KEY, HWM_ATTENTION };
 
@@ -601,11 +601,13 @@ static uint32_t hwm_edge_window;
 #include "strip_visibility.m"
 #include "strip_renderer.m"
 #include "window_transitions.m"
+#include "plane_resize.m"
 static void horizontal_tick(void)
 {
     __atomic_store_n(&hwm_tick_pending, false, __ATOMIC_RELEASE);
     if (hwm_stop_requested) { hwm_shutdown(); return; }
     hwm_plane_controls_update(hwm_ready && !hwm_paused && !hwm_suspended && !space_is_fullscreen(space_manager_active_space()),hwm_plane_scale);
+    if(hwm_resize_owned && (hwm_paused || hwm_suspended || hwm_overview_active)) hwm_plane_resize_tick(hwm_view(),hwm_now());
     if (!hwm_ready || hwm_paused || hwm_suspended || mission_control_is_active()) return;
     double start = hwm_now(), latency = hwm_tick_note(start);
     if(hwm_overview_active) { hwm_drawn_time=start; hwm_overview_tick(); hwm_tick_previous_active=hwm_active; return; }
@@ -654,8 +656,9 @@ static void horizontal_tick(void)
     hwm_batch_hold=true;
     hwm_scale_reset_all();
     hwm_drag_autoscroll(view,start);
+    hwm_plane_resize_tick(view,start);
     struct window *edge=window_manager_find_window(&g_window_manager,hwm_edge_window);
-    if(edge) hwm_edge_update(edge,view);
+    if(edge && !hwm_resize_owned) hwm_edge_update(edge,view);
     mark=hwm_prof_mark(HWM_PROF_DRAG,mark);
     bool active = hwm_render(view, frame) || edge!=NULL || hwm_drag_window!=0;
     mark=hwm_prof_mark(HWM_PROF_RENDER,mark);
@@ -666,6 +669,7 @@ static void horizontal_tick(void)
     mark=hwm_prof_mark(HWM_PROF_EXTRAS,mark);
     active |= hwm_preview_render(frame);
     hwm_plane_border_tick(view,frame);
+    hwm_plane_resize_publish(view);
     hwm_batch_release();
     mark=hwm_prof_mark(HWM_PROF_PREVIEW,mark);
     active |= hwm_nav_pending || hwm_settle_pending;
@@ -1098,6 +1102,7 @@ static NSString *hwm_shortcut_action(CGEventRef event,int code)
 static bool horizontal_event(CGEventType type, CGEventRef event)
 {
     if (!hwm_ready) return false;
+    if(atomic_load(&hwm_resize_captured) && hwm_plane_resize_event(type,event)) return true;
     // Native setup and palette editing must keep ordinary app keyboard/mouse behavior.
     if(NSApp.keyWindow && (NSApp.keyWindow==[TanaSetup shared].window || NSApp.keyWindow==[TanaPalette shared].panel)) return false;
     if(hwm_overview_active && (type==kCGEventKeyDown || type==kCGEventKeyUp) &&
@@ -1105,6 +1110,7 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
     // Let the engine's own Space-recovery gesture reach Dock.
     if ((type == 29 || type == 30) && CGEventGetIntegerValueField(event,kCGEventSourceUnixProcessID) == getpid()) return false;
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        atomic_store(&hwm_resize_captured,false);
         hwm_swiping = false;
         hwm_vertical_swiping=false;
         if(hwm_overview_active) event_loop_post(&g_event_loop,HORIZONTAL_INPUT,NULL,HWM_OVERVIEW_CANCEL);
@@ -1116,6 +1122,7 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         if (code >= 0 && code < 128 && hwm_keys[code]) { hwm_keys[code] = false; return true; }
     }
     if (hwm_paused) return false;
+    if(hwm_plane_resize_event(type,event)) return true;
     if((hwm_plane_selecting && type==kCGEventLeftMouseDown) ||
        (hwm_plane_select_click && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp))) {
         hwm_plane_select_click=type!=kCGEventLeftMouseUp;
@@ -1324,13 +1331,14 @@ static void horizontal_input(void *context, int action)
         if(hwm_vertical_mode && !hwm_overview_active) hwm_shelf_gesture((CGEventRef)context); else hwm_overview_gesture((CGEventRef)context);
         CFRelease(context); return;
     }
+    if(action==HWM_PLANE_RESIZE) { hwm_plane_resize_input(context); return; }
     if(action==HWM_PLANE_PICK) {
         hwm_plane_pointer(CGEventGetType((CGEventRef)context),CGEventGetLocation((CGEventRef)context)); CFRelease(context); return;
     }
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
         struct view *view=hwm_view();
-        if(view && !hwm_paused && !hwm_suspended && !mission_control_is_active()) {
+        if(view && !hwm_paused && !hwm_suspended && !hwm_resize_owned && !mission_control_is_active()) {
             int select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
             if(select || hwm_selection_gesture.engaged || sample->count>=4) {
                 hwm_plane_gesture.active=false;
