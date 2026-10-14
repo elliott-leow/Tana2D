@@ -6,11 +6,30 @@
  * projection used to show the existing arrangement. */
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "strip_geometry.h"
 
 typedef struct { double x, y, width, height; } HWMPlaneRect;
 typedef struct { double x, y, scale; } HWMPlaneCamera;
 typedef struct { double x, y; } HWMPlanePoint;
+
+static inline bool hwm_plane_camera_valid(HWMPlaneCamera camera)
+{
+    return isfinite(camera.x) && isfinite(camera.y) && isfinite(camera.scale) && camera.scale>0;
+}
+
+static inline HWMPlaneCamera hwm_plane_camera_fallback(HWMPlaneCamera from,HWMPlaneCamera to)
+{
+    if(hwm_plane_camera_valid(from)) return from;
+    if(hwm_plane_camera_valid(to)) return to;
+    return (HWMPlaneCamera){0,0,1};
+}
+
+static inline bool hwm_plane_rect_valid(HWMPlaneRect rect)
+{
+    return isfinite(rect.x) && isfinite(rect.y) && isfinite(rect.width) && isfinite(rect.height) &&
+           rect.width > 0 && rect.height > 0 && isfinite(rect.x+rect.width) && isfinite(rect.y+rect.height);
+}
 
 /* Interpolate world-space viewport centers and logarithmic zoom together.
  * This keeps a zoom's path smooth even when the two endpoint scales differ
@@ -18,13 +37,17 @@ typedef struct { double x, y; } HWMPlanePoint;
 static inline HWMPlaneCamera hwm_plane_camera_mix(HWMPlaneCamera from,HWMPlaneCamera to,
                                                   double width,double height,double progress)
 {
+    HWMPlaneCamera fallback=hwm_plane_camera_fallback(from,to);
+    if(!hwm_plane_camera_valid(from) || !hwm_plane_camera_valid(to) ||
+       !isfinite(width) || !isfinite(height) || width<=0 || height<=0 || !isfinite(progress)) return fallback;
     if(progress<=0) return from;
     if(progress>=1) return to;
     double scale=exp(log(from.scale)+(log(to.scale)-log(from.scale))*progress);
     double cx=from.x+width/(2*from.scale),cy=from.y+height/(2*from.scale);
     double tx=to.x+width/(2*to.scale),ty=to.y+height/(2*to.scale);
-    return (HWMPlaneCamera){cx+(tx-cx)*progress-width/(2*scale),
-                            cy+(ty-cy)*progress-height/(2*scale),scale};
+    HWMPlaneCamera mixed={cx+(tx-cx)*progress-width/(2*scale),
+                           cy+(ty-cy)*progress-height/(2*scale),scale};
+    return hwm_plane_camera_valid(mixed) ? mixed : fallback;
 }
 
 #define HWM_PLANE_PHYSICAL_LIMIT 1000000.0
@@ -54,8 +77,8 @@ static inline double hwm_plane_physical_size(double value)
 
 static inline HWMPlaneCamera hwm_plane_camera_pan(HWMPlaneCamera camera,double dx,double dy)
 {
-    if(isfinite(dx)) camera.x+=dx;
-    if(isfinite(dy)) camera.y+=dy;
+    if(isfinite(dx)) { double next=camera.x+dx; if(isfinite(next)) camera.x=next; }
+    if(isfinite(dy)) { double next=camera.y+dy; if(isfinite(next)) camera.y=next; }
     return camera;
 }
 
@@ -96,46 +119,93 @@ static inline HWMPlaneCamera hwm_plane_camera_fit(HWMPlaneRect world,HWMPlaneRec
 
 static inline bool hwm_plane_reveal(HWMPlaneCamera camera,HWMPlaneRect world,HWMPlaneRect viewport,HWMPlaneCamera *out)
 {
-    if(!out || camera.scale<=0 || !isfinite(camera.scale)) return false;
+    if(!out) return false;
+    *out=camera;
+    if(!hwm_plane_camera_valid(camera) || !hwm_plane_rect_valid(world) || !hwm_plane_rect_valid(viewport)) return false;
     double visible_w=viewport.width/camera.scale, visible_h=viewport.height/camera.scale;
+    if(!isfinite(visible_w) || !isfinite(visible_h) ||
+       !isfinite(camera.x+visible_w) || !isfinite(camera.y+visible_h)) return false;
     HWMPlaneCamera next=camera;
     if(world.x<camera.x) next.x=world.x;
     else if(world.x+world.width>camera.x+visible_w) next.x=world.x+world.width-visible_w;
     if(world.y<camera.y) next.y=world.y;
     else if(world.y+world.height>camera.y+visible_h) next.y=world.y+world.height-visible_h;
+    if(!hwm_plane_camera_valid(next)) return false;
     *out=next;
     return next.x!=camera.x || next.y!=camera.y;
 }
 
-/* Magnetize adjacent edges, with optional top/bottom or left/right alignment.
- * The caller expresses the range in world units, keeping its screen radius
- * consistent at every zoom. Rectangles away from one another stay untouched. */
+/* Rectangles which only touch at an edge do not overlap. */
+static inline bool hwm_plane_rects_overlap(HWMPlaneRect a,HWMPlaneRect b)
+{
+    return a.x < b.x+b.width && a.x+a.width > b.x &&
+           a.y < b.y+b.height && a.y+a.height > b.y;
+}
+
+static inline bool hwm_plane_snap_candidate_clear(HWMPlaneRect moving,HWMPlanePoint point,
+                                                  const HWMPlaneRect *neighbors,size_t count)
+{
+    HWMPlaneRect candidate={point.x,point.y,moving.width,moving.height};
+    for(size_t i=0;i<count;i++)
+        if(hwm_plane_rect_valid(neighbors[i]) && hwm_plane_rects_overlap(candidate,neighbors[i])) return false;
+    return true;
+}
+
+/* Choose the closest adjacent edge among all neighbors.  `range` and `gap`
+ * are world-space distances; a caller wanting a 24-screen-point magnet passes
+ * 24/scale.  Alignment to either perpendicular edge is included only when it
+ * is also within range.  Candidates colliding with any neighbor are rejected.
+ */
+static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                                   size_t count,double gap,double range,HWMPlanePoint *out)
+{
+    if(!out || !hwm_plane_rect_valid(moving) || (!neighbors && count) ||
+       !isfinite(gap) || gap < 0 || !isfinite(range) || range < 0) return false;
+    HWMPlanePoint best={moving.x,moving.y};
+    /* Preserve the single-neighbor contract: a missed magnet returns the
+     * original position, while the boolean tells callers that no snap won. */
+    *out=best;
+    double cost=INFINITY;
+    for(size_t i=0;i<count;i++) {
+        HWMPlaneRect other=neighbors[i];
+        if(!hwm_plane_rect_valid(other)) continue;
+        double xs[2]={other.x-moving.width-gap,other.x+other.width+gap};
+        double ys[2]={other.y-moving.height-gap,other.y+other.height+gap};
+        bool overlap_y=moving.y+moving.height>=other.y-range && moving.y<=other.y+other.height+range;
+        bool overlap_x=moving.x+moving.width>=other.x-range && moving.x<=other.x+other.width+range;
+        for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
+            if(axis==0 ? !overlap_y : !overlap_x) continue;
+            double delta=axis==0 ? xs[side]-moving.x : ys[side]-moving.y;
+            if(!isfinite(delta) || fabs(delta)>range) continue;
+            HWMPlanePoint candidate={axis==0 ? xs[side] : moving.x,axis==1 ? ys[side] : moving.y};
+            double a=axis==0 ? other.y-moving.y : other.x-moving.x;
+            double b=axis==0 ? other.y+other.height-moving.height-moving.y : other.x+other.width-moving.width-moving.x;
+            double align=fabs(a)<=fabs(b) ? a : b;
+            if(fabs(align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
+            if(!isfinite(candidate.x) || !isfinite(candidate.y) ||
+               !hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count)) continue;
+            double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
+            /* Lexicographic ties make selection stable even if the window list is reordered. */
+            if(distance<cost || (distance==cost &&
+               (candidate.x<best.x || (candidate.x==best.x && candidate.y<best.y)))) {
+                best=candidate; cost=distance;
+            }
+        }
+    }
+    if(!isfinite(cost)) return false;
+    *out=best;
+    return true;
+}
+
+/* Compatibility wrapper for existing callers with one neighbor. */
 static inline bool hwm_plane_snap_neighbor_target(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range,HWMPlanePoint *out)
 {
-    HWMPlanePoint best={moving.x,moving.y}; double cost=INFINITY;
-    double xs[2]={other.x-moving.width-gap,other.x+other.width+gap};
-    double ys[2]={other.y-moving.height-gap,other.y+other.height+gap};
-    bool overlap_y=moving.y+moving.height>=other.y-range && moving.y<=other.y+other.height+range;
-    bool overlap_x=moving.x+moving.width>=other.x-range && moving.x<=other.x+other.width+range;
-    for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
-        if(axis==0 ? !overlap_y : !overlap_x) continue;
-        double delta=axis==0?xs[side]-moving.x:ys[side]-moving.y;
-        if(fabs(delta)>range) continue;
-        HWMPlanePoint candidate={axis==0?xs[side]:moving.x,axis==1?ys[side]:moving.y};
-        double a=axis==0?other.y-moving.y:other.x-moving.x;
-        double b=axis==0?other.y+other.height-moving.height-moving.y:other.x+other.width-moving.width-moving.x;
-        double align=fabs(a)<=fabs(b)?a:b;
-        if(fabs(align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
-        double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
-        if(distance<cost) { best=candidate; cost=distance; }
-    }
-    *out=best;
-    return isfinite(cost);
+    return hwm_plane_snap_neighbors_target(moving,&other,1,gap,range,out);
 }
 
 static inline HWMPlanePoint hwm_plane_snap_neighbor(HWMPlaneRect moving,HWMPlaneRect other,double gap,double range)
 {
-    HWMPlanePoint result;
+    HWMPlanePoint result={moving.x,moving.y};
     hwm_plane_snap_neighbor_target(moving,other,gap,range,&result);
     return result;
 }
@@ -144,15 +214,17 @@ typedef struct { int side; double began; } HWMPlaneEdgePan;
 static inline HWMPlanePoint hwm_plane_edge_pan(HWMPlaneEdgePan *state,HWMPlaneRect bounds,HWMPlanePoint pointer,double now,double scale)
 {
     const double band=16;
+    if(!state || !hwm_plane_rect_valid(bounds) || !isfinite(pointer.x) || !isfinite(pointer.y) ||
+       !isfinite(now) || !isfinite(scale) || scale<=0) return (HWMPlanePoint){0,0};
     double x=0,y=0;
     if(pointer.x<bounds.x+band) x=-fmin(1,(bounds.x+band-pointer.x)/band);
     else if(pointer.x>bounds.x+bounds.width-band) x=fmin(1,(pointer.x-bounds.x-bounds.width+band)/band);
     if(pointer.y<bounds.y+band) y=-fmin(1,(bounds.y+band-pointer.y)/band);
     else if(pointer.y>bounds.y+bounds.height-band) y=fmin(1,(pointer.y-bounds.y-bounds.height+band)/band);
     int side=(x<0?-1:x>0?1:0)+(y<0?-3:y>0?3:0);
-    if(!side || side!=state->side) { state->side=side; state->began=now; }
+    if(!side || side!=state->side || !isfinite(state->began)) { state->side=side; state->began=now; }
     double held=now-state->began;
-    if(!side || held<=.25 || scale<=0) return (HWMPlanePoint){0,0};
+    if(!side || held<=.25) return (HWMPlanePoint){0,0};
     double rate=600*fmin(1,(held-.25)/.3)/scale;
     return (HWMPlanePoint){x*rate,y*rate};
 }

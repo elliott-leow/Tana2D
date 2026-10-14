@@ -1162,7 +1162,13 @@ static EVENT_HANDLER(FIREFOX_WINDOWS_DISCOVER)
 static EVENT_HANDLER(MOUSE_DOWN)
 {
     firefox_discovery_begin(NULL, false);
+    int button = CGEventGetIntegerValueField(context, kCGMouseEventButtonNumber);
     if (mission_control_is_active())                     goto out;
+    /* The legacy mouse state has one owner.  A different button cannot
+     * replace an exact press that is still physically active, even before a
+     * native title-bar move has been noticed by the renderer. */
+    if (button != hwm_mouse_pointer_button &&
+        hwm_pointer_sample_generation_is_active(hwm_mouse_pointer_generation)) goto out;
     if (g_mouse_state.current_action != MOUSE_MODE_NONE) goto out;
 
     CGPoint point = CGEventGetLocation(context);
@@ -1174,12 +1180,13 @@ static EVENT_HANDLER(MOUSE_DOWN)
     if (!window || window_check_flag(window, WINDOW_FULLSCREEN)) goto out;
 
     g_mouse_state.window = window;
+    hwm_mouse_pointer_button = button;
+    hwm_mouse_pointer_generation = hwm_pointer_sample_generation_for_event_ref(context);
     g_mouse_state.window_frame = g_mouse_state.window->frame;
     SLSGetWindowBounds(g_connection,window->id,&g_mouse_state.window_frame);
     g_mouse_state.down_location = point;
     g_mouse_state.direction = 0;
 
-    int64_t button = CGEventGetIntegerValueField(context, kCGMouseEventButtonNumber);
     uint8_t mod = (uint8_t) param1;
 
     if (button == kCGMouseButtonLeft && g_mouse_state.modifier == mod) {
@@ -1204,7 +1211,12 @@ out:
 static EVENT_HANDLER(MOUSE_UP)
 {
     firefox_discovery_end();
+    int button = CGEventGetIntegerValueField(context, kCGMouseEventButtonNumber);
     if (mission_control_is_active()) goto out;
+    /* A late up from another button must not drop the active owner's window
+     * or action. Unlike down, this uses the stored owner even though the
+     * matching sampler press is already terminal by the time we run. */
+    if (hwm_mouse_pointer_button != -1 && button != hwm_mouse_pointer_button) goto out;
     if (!g_mouse_state.window)       goto res;
 
     if (!__sync_bool_compare_and_swap(&g_mouse_state.window->id_ptr, &g_mouse_state.window->id, &g_mouse_state.window->id)) {
@@ -1279,6 +1291,10 @@ static EVENT_HANDLER(MOUSE_UP)
 err:
     g_mouse_state.window = NULL;
 res:
+    if (button == hwm_mouse_pointer_button) {
+        hwm_mouse_pointer_generation = 0;
+        hwm_mouse_pointer_button = -1;
+    }
     g_mouse_state.current_action = MOUSE_MODE_NONE;
 out:
     CFRelease(context);
@@ -1286,7 +1302,9 @@ out:
 
 static EVENT_HANDLER(MOUSE_DRAGGED)
 {
-    horizontal_dragged_queued = false;
+    int button = CGEventGetIntegerValueField(context, kCGMouseEventButtonNumber);
+    if (button == kCGMouseButtonLeft || button == kCGMouseButtonRight)
+        atomic_store(&horizontal_dragged_queued[button], false);
     firefox_discovery_drag();
     if (horizontal_drag(context)) goto out;
     if (mission_control_is_active()) goto out;

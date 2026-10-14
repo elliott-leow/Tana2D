@@ -25,6 +25,7 @@ void horizontal_plane_action(const char *name);
 
 static bool horizontal_hover_allowed(CGPoint point);
 static void horizontal_activated(struct application *application);
+static void horizontal_unmanaging(struct window *window);
 static void horizontal_removing(struct window *window, bool whole_app);
 
 static void horizontal_resume(void);
@@ -45,6 +46,16 @@ static uint32_t horizontal_expected_focus(struct application *application);
 
 static void horizontal_mouse_down(struct window *window, CGPoint point);
 static bool horizontal_resize_event(struct window *window);
-/* Set while a pointer event of that kind is queued; newer ones are dropped. */
-static _Atomic bool horizontal_moved_queued, horizontal_dragged_queued;
+/* Set while a pointer event of that kind is queued; coalesce each mouse
+ * button independently so an in-flight right drag never drops a left drag. */
+static _Atomic bool horizontal_moved_queued, horizontal_dragged_queued[2];
+static _Atomic bool hwm_drag_release_pending;
+/* Read by the event loop before horizontal.m's implementation is included. */
+static _Atomic bool hwm_drag_native;
+/* The serialized mouse state is tied to this exact button-down generation. */
+static uint64_t hwm_mouse_pointer_generation;
+static int hwm_mouse_pointer_button=-1;
+#include "plane_pointer_sample.h"
 static void horizontal_title_changed(struct window *window);
+
+static void horizontal_input_trace(CGEventType type,CGEventRef event);

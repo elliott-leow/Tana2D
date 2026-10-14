@@ -3,6 +3,67 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
+## Drag audit and display verification — October 14, 2026
+
+This section supersedes earlier claims that the SLS anchor/matrix alone proves
+native title-bar presentation. `CGWindowListCopyWindowInfo` supplies the public
+displayed rectangle; native anchors and requested transforms can differ during
+AppKit movement. The focus outline follows that displayed rectangle.
+
+The repair separates AppKit title-bar ownership from plane-owned movement,
+uses press generations and per-button queue coalescing, recovers native drags
+after a disabled event tap, and invalidates transforms after failed helper
+batches. Camera, zoom, navigation, and delayed focus actions respect drag/resize
+ownership. Owned movement remains exact while held; adjacency snaps on release.
+
+Five rounds used the same ten scoped auditors: snap geometry, native drag,
+input queue, selection, renderer, borders, resize, camera/focus, lifecycle, and
+verification. The fifth pass reported counts `0,0,0,0,0,0,0,0,1,0`, satisfying
+the requested threshold of zero auditors finding more than one defect. The
+remaining lifecycle finding concerned clearing the new mouse-owner fields; it
+was repaired along with mismatched-button terminal-event handling. This is a
+bounded audit result, not a proof that no software defect can exist.
+
+Final source validation: `make all test` passed, including sanitizer-backed
+native regressions and 20 Python tests (`build/drag-audit-final-build-test.log`).
+The signed package and installed executable match SHA-256
+`b4e5f2ed2751133c39516d723049a98c893c2ebef4a820327f9356af47b843ca`;
+strict/deep signature verification passed. The final installed build passed all
+26 live cases below: 20 pointer replay cases and six snap/release cases
+(`build/pointer-replay-report.json`, `build/snap-release-report.json`, and
+`build/drag-audit-final-live-{pointer,snap}.log`). Afterward, all fixture windows
+were closed, the original camera and zoom were restored, and all seven user
+windows retained their exact world geometry. The installed manager reports
+`ready:true`, `backend:true`, and `paused:false`.
+
+Live verification scripts:
+
+- `tests/live_pointer_replay.py`: 20 cases across 50%, 70%, 100%, and 200% zoom.
+  Normal drag, overview drag, both corner-resize directions, and programmatic
+  native-bounds synchronization check public displayed bounds, native sizes,
+  actual border bounds, held command guards, and unchanged free release.
+- `tests/live_snap_release.py`: six cases across 50%, 100%, and 200% zoom, using
+  owned and programmatic-native movement. Held geometry stays unsnapped;
+  release yields a 12-world-point adjacent gap. Subsequent camera pan moves the
+  displayed window and outline while preserving its world position.
+- Both scripts use disposable fixture windows and production controllers. They
+  do not post OS input and do not measure physical input-to-photon latency.
+  Non-fixture neighbors are checked before treating the replay area as isolated.
+
+The final replay exposed a test-fixture defect: newly allocated synthetic
+CGEvents had timestamp zero, so timestamp-based ownership could resolve an older
+inactive fixture press and stop automatic native sampling. Fixture events now
+receive a monotonic nonzero timestamp; the production sampler remains strict.
+The native replay also waits for asynchronous AppKit movement within its existing
+500 ms deadline, and always writes an incomplete report after failure.
+
+Full-desktop screenshots `build/snap-released.png` and `build/snap-panned.png`
+were inspected: the focused outline matches the window, the adjacent gap is
+visible, and the pair moves with the camera. The recorded title-bar automation
+attempt produced no event-tap samples and no native movement, including earlier
+attempts with the manager paused. Physical AppKit title-bar input therefore
+remains unverified; the controller replay must not be presented as proof of it.
+
 ## Earlier checks on October 13, 2026
 
 - `make all test` passed: 15 native test executables and 20 Python tests. The build
@@ -25,7 +86,7 @@ in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 - External `borders` surfaces were observed at zero alpha while Tana2D owns the
   desktop. Tana2D draws one focused outline and restores external alpha on quit.
 
-## Latest repair status and unresolved behavior
+## Earlier repair status and unresolved behavior
 
 A live trace reproduced the native-frame conflict: Firefox’s projected top edge
 was -246 points while macOS clamped its native top edge to 38 points, producing
@@ -247,3 +308,86 @@ and unchanged coordinates on release. The installed build passed all 11 live
 geometry checks again (`build/direct-drag-live.log`). The post-install 60-second passive
 capture contained no drag input (`build/direct-drag-user-profile.json`), so the
 new physical input path and perceived smoothness remain unconfirmed.
+
+
+## Frozen cursor input corrected on October 14, 2026
+
+The preceding direct-transaction fix did not fix physical dragging. A physical
+Ghostty drag was recorded at the event tap. Its global event position advanced
+from (684.4805, 62.0156) to (1008.8203, 183.6875), while
+`SLSGetCurrentCursorLocation` stopped at (699.2344, 70.6914). The maximum disagreement
+was 329.563 display points. Consumed drag events left the cursor query stale;
+both movement and owned edge resizing were repeatedly reading that stale value.
+Mouse-up formerly recomputed movement using the fresh event coordinate, causing
+the apparent catch-up jump. An intermediate change that only preserved the
+release position did not restore movement, and the user rejected it.
+
+The event tap now publishes each event's global location before coalescing. Normal
+dragging, overview dragging, camera-edge tracking, drag-start detection, and owned
+edge resizing read this snapshot. Release commits the last displayed position,
+and a release fence prevents delayed drag work from moving it afterwards. Resize
+origins use the same pixel rounding during the drag and after release; the live
+replay caught a half-pixel difference before this was corrected.
+
+Below 70% zoom, a left click on a managed window is consumed through release and
+centers that window at 100%. At 70% and above, normal clicks remain available.
+The tap classifies a drag before coalescing, so a delayed drag or a drag returning
+to its origin cannot become a center command. Drags preserve zoom. Native manager
+panels and unmanaged windows remain outside this automatic selection capture.
+
+The captured coordinates are retained as the content-free fixture
+`tests/fixtures/drag_cursor_stall.json`. Production-controller regression tests
+replay the frozen-cursor case at 25%, 59.474%, 70%, 100%, and 200% zoom. They check
+movement before a display tick, immunity to the stale cursor on later ticks,
+release stability, resizing from current event coordinates, and delayed drag/click
+classification. Restoring the old cursor query independently to the drag and resize
+paths makes these regressions fail (`build/cursor-stall-regression-proof.txt` and
+`build/resize-cursor-stall-regression-proof.txt`). The full automated suite passed:
+15 native executables, including AddressSanitizer/UndefinedBehaviorSanitizer checks,
+and 20 Python tests (`build/pointer-final-tests.log`).
+
+`tests/live_pointer_replay.py` uses the fixture-only `strip fixture-pointer`
+diagnostic to replay the event locations through the installed production
+controllers and check actual WindowServer geometry. This diagnostic rejects
+non-fixture apps and never posts events to the system input stream. It exercises
+the controller-to-compositor path, not hardware input-to-photon latency. The
+opt-in `strip input-trace-start` / `strip input-trace` diagnostic records only
+mouse event coordinates/deltas in an in-memory ring and is disabled by default.
+
+The installed build passed all 16 live replay cases: normal drag, overview drag,
+bottom-right resize, and top-left resize at 50%, 70%, 100%, and 200% zoom. Each
+case checks 27 motion samples, native sizes, compositor positions, fixed resize
+edges, and unchanged geometry at three points after release. World-coordinate
+checks allow the documented displayed-origin pixel quantization; release checks
+allow only 0.01 point. The fixture's asynchronous native resize must settle within
+0.5 seconds for each request. No new movement failures occurred during the run.
+Evidence: `build/pointer-replay-report.json`, `build/pointer-replay-live.log`.
+The package signature and installed/package binary identity checks passed. The
+user was away for these final automated checks; physical feel is not claimed as
+user-confirmed, and the code does not establish a universal latency bound.
+
+### Native drag ownership follow-up
+
+The user subsequently reported border-only movement and a Firefox window that
+would not move. The preceding fixture replay was insufficient to establish
+native title-bar behavior. The native path now forwards the application's entire
+drag stream and stops issuing competing window transforms while AppKit owns the
+move. Tana follows the actual compositor origin with its model and outline.
+Native bounds alone are insufficient: at 70% zoom a fixture's native origin was
+(600, 450) while its displayed origin was (572, 361). Saving the native origin
+would corrupt the next redraw. The native path now reads the compositor transform.
+
+The production regression covers an independent native anchor at four zooms,
+zero competing transforms during a native move, stable release, and a subsequent
+forced redraw. Restoring the native-anchor assumption makes it fail
+(`build/native-origin-regression-proof.txt`). The full automated suite passed
+again (`build/native-owner-final-tests.log`). The installed native AppKit movement
+replay passed at 50%, 70%, 100%, and 200% (`build/native-move-live.log`): the
+fixture moves its own NSWindow and the production controller observes it; this
+does not synthesize a physical drag or establish hardware latency.
+
+At that earlier checkpoint, a broader replay exposed intermittent
+camera/geometry differences that were still under investigation. Firefox responded to keyboard focus, but automated title-bar
+dragging did not move either Firefox or the disposable fixture, including with
+Tana paused. Native input behavior remained unverified; Tana was
+paused temporarily to isolate the user's Firefox movement report.

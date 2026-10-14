@@ -1,13 +1,19 @@
+static bool hwm_plane_window_selectable(struct view *view,struct window *w)
+{
+    return view && w && w->application && view_find_window_node(view,w->id) &&
+           !w->strip_close_ghost && !w->strip_offscreen && !hwm_workflow_tab_hidden(w) &&
+           !window_check_flag(w,WINDOW_MINIMIZE) && !w->application->is_hidden;
+}
 static struct window *hwm_plane_window_at(struct view *view,CGPoint point)
 {
     if(!view) return NULL;
     struct window *target=window_manager_find_window_at_point(&g_window_manager,point);
-    if(!target || !view_find_window_node(view,target->id)) target=NULL;
+    if(!hwm_plane_window_selectable(view,target)) target=NULL;
     // Empty space keeps selection open. Use displayed geometry so a click
     // during the zoom animation selects the surface actually under the pointer.
     for(struct window_node *n=window_node_find_first_leaf(view->root);!target && n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
         struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
-        if(!w || w->strip_close_ghost || w->strip_offscreen) continue;
+        if(!hwm_plane_window_selectable(view,w)) continue;
         CGRect frame=w->strip_last_frame;
         frame.size.width*=w->strip_last_plane_scale; frame.size.height*=w->strip_last_plane_scale;
         if(CGRectContainsPoint(frame,point)) { target=w; break; }
@@ -16,7 +22,7 @@ static struct window *hwm_plane_window_at(struct view *view,CGPoint point)
 }
 static void hwm_plane_choose_window(struct view *view,struct window *target)
 {
-    if(!view || !target || !view_find_window_node(view,target->id)) return;
+    if(!hwm_plane_window_selectable(view,target)) return;
     hwm_plane_selecting=false; hwm_hold_focus();
     CGRect bounds=hwm_bounds(view);
     hwm_nav_window=target->id; hwm_nav_time=hwm_now(); hwm_nav_pending=true;

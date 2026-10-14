@@ -188,13 +188,25 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
     if (hwm_edge_update(window,view)) return true;
     if (hwm_drag_window==window->id) return true;
     if (!resized && g_mouse_state.window==window && !CGRectIsNull(window->strip_last_frame)) {
-        CGRect actual=CGRectNull;
-        SLSGetWindowBounds(g_connection,window->id,&actual);
-        CGPoint point; SLSGetCurrentCursorLocation(g_connection,&point);
-        if (hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3 &&
-            !CGRectIsNull(actual) && (fabs(actual.origin.x-g_mouse_state.window_frame.origin.x)>2 || fabs(actual.origin.y-g_mouse_state.window_frame.origin.y)>2)) {
-            hwm_drag_started(window);
-            return true;
+        /* A delayed native window notification must follow the left press that
+         * owns g_mouse_state, never the newest tap sample from a later right
+         * click. A terminal left press has no active sample and cannot reopen
+         * a native drag. */
+        uint64_t generation=hwm_mouse_pointer_generation;
+        CGPoint point;
+        if(hwm_mouse_pointer_button==kCGMouseButtonLeft && generation &&
+           hwm_pointer_sample_active_point_for_generation(generation,&point)) {
+            CGRect actual=CGRectNull;
+            SLSGetWindowBounds(g_connection,window->id,&actual);
+            if (hypot(point.x-g_mouse_state.down_location.x,point.y-g_mouse_state.down_location.y)>3 &&
+                !CGRectIsNull(actual) && (fabs(actual.origin.x-g_mouse_state.window_frame.origin.x)>2 || fabs(actual.origin.y-g_mouse_state.window_frame.origin.y)>2)) {
+                hwm_drag_point=point;
+                hwm_drag_started(window);
+                if(hwm_drag_window==window->id) {
+                    hwm_drag_pointer_generation=generation;
+                }
+                return true;
+            }
         }
     }
     // Accessibility notifications can arrive behind the display-link renderer.

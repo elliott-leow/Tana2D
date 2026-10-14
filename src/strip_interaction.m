@@ -1,32 +1,37 @@
 /* Native edge resizing owns the dragged window until mouse-up. Never animate
  * an AX notification back at the application while its resize loop is active. */
+#include "plane_resize_geometry.h"
 static uint32_t hwm_edge_window, hwm_edge_neighbor;
 static unsigned hwm_edge_direction;
 static CGRect hwm_edge_origin;
 static double hwm_edge_world_x,hwm_edge_world_y;
 static bool hwm_edge_changed,hwm_resize_owned;
+static bool hwm_plane_resize_abort_interaction(struct window *window,bool keep_capture_until_up);
 
 static void horizontal_mouse_down(struct window *w, CGPoint p)
 {
+    /* A physical next press may arrive before the former plane resize's short
+     * post-up reconciliation window. Finalize that session before changing the
+     * shared edge fields, otherwise its stale pointer delta can target this
+     * window on the next display tick. */
+    if(hwm_resize_owned) hwm_plane_resize_abort_interaction(NULL,false);
     hwm_edge_window=0; hwm_edge_neighbor=0; hwm_edge_changed=false;
     if(!hwm_ready || hwm_paused || hwm_overview_active || !w) return;
     struct view *v=window_manager_find_managed_window(&g_window_manager,w);
     if(!v || v->layout!=VIEW_STRIP || g_mouse_state.current_action==MOUSE_MODE_MOVE) return;
     CGRect f=g_mouse_state.window_frame, hit=w->strip_last_frame;
     if(CGRectIsNull(hit)) hit=f;
-    hit.size.width*=hwm_plane_scale; hit.size.height*=hwm_plane_scale;
+    double displayed_scale=w->strip_last_plane_scale>0 ? w->strip_last_plane_scale : hwm_plane_scale;
+    hit.size.width*=displayed_scale; hit.size.height*=displayed_scale;
     unsigned direction=0;
     if(g_mouse_state.current_action==MOUSE_MODE_RESIZE) {
         direction=(p.x<CGRectGetMidX(hit)?HANDLE_LEFT:HANDLE_RIGHT)|(p.y<CGRectGetMidY(hit)?HANDLE_TOP:HANDLE_BOTTOM);
         g_mouse_state.direction=direction;
     }
-    else {
-        if(fabs(p.x-CGRectGetMinX(hit))<=9) direction|=HANDLE_LEFT;
-        if(fabs(p.x-CGRectGetMaxX(hit))<=9) direction|=HANDLE_RIGHT;
-        if(fabs(p.y-CGRectGetMinY(hit))<=6) direction|=HANDLE_TOP;
-        if(fabs(p.y-CGRectGetMaxY(hit))<=9) direction|=HANDLE_BOTTOM;
-    }
+    else direction=hwm_plane_resize_hit((HWMPlaneRect){hit.origin.x,hit.origin.y,hit.size.width,hit.size.height},
+                                         (HWMPlanePoint){p.x,p.y});
     if(!direction) return;
+    hwm_nav_pending=false; hwm_nav_window=0;
     hwm_edge_window=w->id; hwm_edge_origin=f; hwm_edge_direction=direction;
     hwm_edge_world_x=w->strip_world_x; hwm_edge_world_y=w->strip_world_y;
     v->strip_scrolling=false;
@@ -43,7 +48,15 @@ static bool hwm_edge_update(struct window *w, struct view *v)
         // real geometry evidence rather than treating every such click as a resize.
         if(!hwm_resize_owned && g_mouse_state.current_action!=MOUSE_MODE_RESIZE &&
            hypot(actual.origin.x-hwm_edge_origin.origin.x,actual.origin.y-hwm_edge_origin.origin.y)>3) {
-            hwm_edge_window=0; hwm_edge_neighbor=0; hwm_drag_started(w);
+            uint64_t generation=hwm_mouse_pointer_generation;
+            CGPoint point;
+            hwm_edge_window=0; hwm_edge_neighbor=0;
+            if(hwm_mouse_pointer_button==kCGMouseButtonLeft && generation &&
+               hwm_pointer_sample_active_point_for_generation(generation,&point)) {
+                hwm_drag_point=point;
+                hwm_drag_started(w);
+                if(hwm_drag_window==w->id) hwm_drag_pointer_generation=generation;
+            }
             return false;
         }
         return true;
@@ -57,8 +70,8 @@ static bool hwm_edge_update(struct window *w, struct view *v)
     w->strip_world_x=hwm_edge_world_x+((hwm_edge_direction&HANDLE_LEFT)?hwm_edge_origin.size.width-actual.size.width:0);
     w->strip_world_y=hwm_edge_world_y+((hwm_edge_direction&HANDLE_TOP)?hwm_edge_origin.size.height-actual.size.height:0);
     CGRect bounds=hwm_bounds(v);
-    CGRect projected=CGRectMake(bounds.origin.x+(w->strip_world_x-hwm_offset(v,hwm_now()))*hwm_plane_scale,
-                                bounds.origin.y+(w->strip_world_y-hwm_plane_camera_y(hwm_now()))*hwm_plane_scale,
+    CGRect projected=CGRectMake(round(bounds.origin.x+(w->strip_world_x-hwm_offset(v,hwm_now()))*hwm_plane_scale),
+                                round(bounds.origin.y+(w->strip_world_y-hwm_plane_camera_y(hwm_now()))*hwm_plane_scale),
                                 actual.size.width,actual.size.height);
     w->frame=actual;
     w->strip_last_frame=projected; w->strip_last_offset=v->strip_offset;

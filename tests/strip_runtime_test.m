@@ -7,12 +7,14 @@
 #include <stdatomic.h>
 #include <os/lock.h>
 #include "../src/strip_columns.h"
+#include "../src/plane_geometry.h"
 
 #define VIEW_STRIP 1
 #define VIEW_IS_DIRTY 1
 #define LAYER_AUTO 0
 #define LAYER_BELOW -1
 #define LAYER_NORMAL 0
+#define MOUSE_MODE_NONE 0
 #define MOUSE_MODE_MOVE 1
 #define MOUSE_MODE_RESIZE 2
 #define HANDLE_LEFT 4
@@ -56,6 +58,8 @@ static int g_connection;
 static bool hwm_ready=true,hwm_paused,hwm_overview_active,hwm_state_pending,hwm_backend_ok=true;
 static bool __pending_gesture;
 static uint32_t hwm_drag_window,hwm_close_source,hwm_feedback_focus_id;
+static uint64_t hwm_mouse_pointer_generation;
+static int hwm_mouse_pointer_button=-1;
 static double hwm_duration=.24,hwm_close_time,hwm_last_input;
 static double hwm_plane_scale=1;
 static bool hwm_plane_y_scrolling,hwm_plane_fit_active,hwm_camera_animating;
@@ -104,14 +108,20 @@ static struct window_node *view_find_window_node(struct view *v,uint32_t id) { f
 static void view_clear_flag(struct view *v,int flag) { (void)v; (void)flag; }
 static int bounds_reads;
 static CGError SLSGetWindowBounds(int connection,uint32_t id,CGRect *frame) { ++bounds_reads; (void)connection; *frame=actual[id-1]; return kCGErrorSuccess; }
+static CGError SLSGetWindowTransform(int connection,uint32_t id,CGAffineTransform *transform) {
+    (void)connection; double inv=1/test_scales[id-1];
+    *transform=CGAffineTransformMake(inv,0,0,inv,-projected[id-1].origin.x*inv,-projected[id-1].origin.y*inv);
+    return kCGErrorSuccess;
+}
 static CGPoint test_cursor;
 static void SLSGetCurrentCursorLocation(int connection,CGPoint *point) { (void)connection; *point=test_cursor; }
 static void SLSDisableUpdate(int connection) { (void)connection; assert(update_depth==0); ++update_depth; ++disable_calls; }
 static void SLSReenableUpdate(int connection) { (void)connection; assert(update_depth==1); --update_depth; }
 static bool scripting_addition_set_layer(uint32_t id,int layer) { (void)id; (void)layer; return true; }
 static int sa_batch_depth, sa_batch_flushes;
+static bool sa_batch_fails;
 static void scripting_addition_batch_begin(void) { ++sa_batch_depth; }
-static bool scripting_addition_batch_flush(void) { ++sa_batch_flushes; return true; }
+static bool scripting_addition_batch_flush(void) { ++sa_batch_flushes; return !sa_batch_fails; }
 static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return sa_batch_depth>0?true:scripting_addition_batch_flush(); }
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
@@ -130,6 +140,7 @@ static bool resize_busy;
 static bool hwm_resize_busy(struct window *w) { (void)w; return resize_busy; }
 static void hwm_close_submit(struct window *w) { window_manager_close_window(w); }
 static bool hwm_window_left_strip(struct window *w) { (void)w; return false; }
+static void hwm_plane_border_batch_failed(void) {}
 #include "../src/strip_layout.m"
 static bool hwm_borders_external;
 static CGError SLSGetWindowOwner(int connection,uint32_t wid,int *owner) { (void)connection; (void)wid; *owner=1; return kCGErrorSuccess; }
@@ -150,16 +161,34 @@ static void hwm_undo_capture(void) { ++undo_captures; }
 static void hwm_hold_focus(void) {}
 static CGPoint hwm_drag_world_origin,hwm_drag_pointer_origin,hwm_drag_point,hwm_drag_move;
 static double hwm_drag_camera_x,hwm_drag_camera_y,hwm_drag_scale;
-static bool hwm_drag_shadow,hwm_drag_move_pending,hwm_drag_cancelled;
+static bool hwm_drag_shadow,hwm_drag_move_pending,hwm_drag_cancelled,hwm_plane_pick_automatic,hwm_drag_native,hwm_drag_native_moved;
+static _Atomic bool hwm_drag_release_pending;
+#include "../src/plane_pointer_sample.h"
 static uint64_t hwm_prof_drag_events;
 static uint32_t hwm_plane_pick_window;
 static CGPoint hwm_plane_pick_origin;
 static void scripting_addition_set_shadow(uint32_t id,bool shadow) { (void)id; (void)shadow; }
-static void hwm_drag_started(struct window *w) {
-    hwm_drag_window=w->id; hwm_undo_capture();
-    hwm_drag_world_origin=CGPointMake(w->strip_world_x,w->strip_world_y);
-    hwm_drag_camera_x=view.strip_offset; hwm_drag_camera_y=test_camera_y; hwm_drag_scale=hwm_plane_scale;
+static bool hwm_drag_camera_owned;
+static bool hwm_plane_selecting,hwm_nav_pending,hwm_magnetic_centering=true;
+static uint32_t hwm_nav_window;
+static double hwm_nav_time;
+static double hwm_drag_tick_time;
+static HWMPlaneEdgePan hwm_drag_edge_pan;
+static void hwm_plane_set_camera(struct view *v,double x,double y,bool animate);
+static bool presentation_unavailable;
+static CFArrayRef test_presentation_list(CGWindowListOption option,CGWindowID wid) {
+    (void)option;
+    if(presentation_unavailable) return NULL;
+    CGRect f=wid>=1 && wid<=4 ? projected[wid-1] : CGRectZero;
+    CFDictionaryRef bounds=CGRectCreateDictionaryRepresentation(f);
+    NSArray *list=@[@{(id)kCGWindowNumber:@(wid),(id)kCGWindowBounds:(id)bounds}];
+    CFRelease(bounds); return (CFArrayRef)[list copy];
 }
+#define CGWindowListCopyWindowInfo test_presentation_list
+#include "../src/plane_presentation.h"
+#undef CGWindowListCopyWindowInfo
+#define WINDOW_SHADOW 16
+#include "../src/plane_drag_begin.m"
 #include "../src/strip_interaction.m"
 #include "../src/strip_renderer.m"
 #include "../src/window_transitions.m"
@@ -171,7 +200,20 @@ static bool hwm_plane_border_drag(uint32_t wid,CGRect projected_frame) {
 }
 static void hwm_plane_border_drag_failed(void) {}
 static struct window *hwm_tile(uint32_t id) { return window_manager_find_window(&g_window_manager,id); }
+static uint32_t hwm_drop_target;
+static bool test_preview_visible;
+static CGRect test_preview_frame;
+static void hwm_preview_hide(void) { test_preview_visible=false; }
+static void hwm_preview_hide_immediately(void) { test_preview_visible=false; }
+static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
+    (void)inner; (void)animate; test_preview_frame=outer; test_preview_visible=true;
+}
+#include "../src/plane_snap.m"
 #include "../src/plane_drag.m"
+static void hwm_drag_snap_commit(struct view *v,struct window *w) {
+    CGPoint target;
+    if(hwm_drag_snap_target(v,w,&target)) hwm_drag_submit_plane(v,w,target);
+}
 static bool hwm_suspended;
 static uint32_t hwm_preserve_focus_window;
 static double hwm_preserve_focus_until;
@@ -182,9 +224,6 @@ static void hwm_plane_transition_to(struct view *v,double x,double y,double scal
 }
 static void hwm_plane_actual_size(struct view *v) { hwm_plane_transition_to(v,v->strip_offset,test_camera_y,1,true); }
 #include "../src/plane_actions.m"
-static bool hwm_plane_selecting,hwm_nav_pending,hwm_magnetic_centering=true;
-static uint32_t hwm_nav_window;
-static double hwm_nav_time;
 static struct window *selection_hit;
 
 static struct window *window_manager_find_window_at_point(void *manager,CGPoint point) { (void)manager; (void)point; return selection_hit; }
@@ -192,20 +231,28 @@ static void hwm_feedback_focus(void *old,struct window *next) { (void)old; (void
 #include "../src/plane_selection.m"
 static void hwm_plane_camera_stop(struct view *v,double now) { (void)v; (void)now; hwm_camera_animating=false; }
 #include "../src/plane_pointer.m"
+#define hwm_plane_y test_camera_y
+static void window_manager_resize_window_relative_internal(struct window *w,CGRect frame,int direction,double dx,double dy,bool animate) { (void)w; (void)frame; (void)direction; (void)dx; (void)dy; (void)animate; assert(!"unexpected native modifier resize in pointer regression"); }
+#include "../src/plane_motion.m"
 static uint32_t hwm_plane_border_id,test_hit_id=1;
 static int test_hit_owner=1,g_event_loop;
-enum { HORIZONTAL_INPUT, HWM_PLANE_RESIZE };
+enum { HORIZONTAL_INPUT, HWM_PLANE_RESIZE, HWM_PLANE_PICK };
+static bool hwm_plane_select_click;
+static _Atomic bool hwm_plane_pick_drag_queued;
+static int test_action;
 static void *test_input;
 static void event_loop_post(void *loop,int type,void *input,int action) {
-    (void)loop; assert(type==HORIZONTAL_INPUT && action==HWM_PLANE_RESIZE); assert(!test_input); test_input=input;
+    (void)loop; assert(type==HORIZONTAL_INPUT); assert(!test_input); test_input=input; test_action=action;
 }
 static void SLSFindWindowAndOwner(int cid,uint32_t relative,int direction,int flags,CGPoint *point,CGPoint *local,uint32_t *wid,int *owner) {
     (void)cid; (void)relative; (void)direction; (void)flags; (void)point; (void)local; *wid=test_hit_id; *owner=test_hit_owner;
 }
 #include "../src/plane_resize.m"
+#include "../src/plane_pick_event.m"
 #include "../src/plane_feedback.m"
 static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
     CGEventRef event=CGEventCreateMouseEvent(NULL,type,p,kCGMouseButtonLeft); CGEventSetFlags(event,flags);
+    hwm_pointer_sample_event(type,event);
     bool consumed=hwm_plane_resize_event(type,event); CFRelease(event);
     if(test_input) { void *input=test_input; test_input=NULL; hwm_plane_resize_input(input); }
     return consumed;
@@ -216,6 +263,12 @@ static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
 
 static void reset(void)
 {
+    test_preview_visible=false; test_preview_frame=CGRectNull; presentation_unavailable=false; sa_batch_fails=false;
+    hwm_drag_native=false;
+    hwm_pointer_sample_reset(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
+    hwm_plane_pick_automatic=false; hwm_plane_select_click=false; atomic_store(&hwm_drag_release_pending,false);
+    atomic_store(&hwm_plane_pick_drag_queued,false);
+    atomic_store(&hwm_plane_pick_drag_generation,0); hwm_plane_pick_queued_drag_allowed=false; hwm_plane_pick_dispatch_generation=0;
     atomic_store(&hwm_resize_captured,false); hwm_resize_owned=false; hwm_resize_releasing=false; resize_busy=false;
     hwm_paused=false; hwm_suspended=false; test_hit_owner=1; test_hit_id=1;
     hwm_drag_window=0; hwm_plane_pick_window=0; hwm_drag_move_pending=false; hwm_plane_selecting=false;
@@ -226,7 +279,7 @@ static void reset(void)
     hwm_move_failures=0; hwm_resize_operations=0; ax_calls=0; moves=0; disable_calls=0; update_depth=0;
     hwm_backend_ok=true; move_fails=false; clamp_native_sizes=false;
     hwm_shelf=0; hwm_shelf_from=0; hwm_shelf_start=-100; hwm_shelf_holding=false; memset(hwm_shelf_offsets,0,sizeof(hwm_shelf_offsets));
-    g_mouse_state.window=NULL; close_calls=0; hwm_edge_window=0; hwm_edge_neighbor=0; undo_captures=0;
+    g_mouse_state.window=NULL; hwm_mouse_pointer_generation=0; hwm_mouse_pointer_button=-1; close_calls=0; hwm_edge_window=0; hwm_edge_neighbor=0; undo_captures=0;
     for(int i=0;i<4;i++) {
         windows[i].id=i+1; windows[i].application=&application;
         windows[i].frame=actual[i]=projected[i]=CGRectMake(100+i*80,100,400,600); test_scales[i]=1;
@@ -698,8 +751,10 @@ static void test_zoomed_edge_hit(void)
     reset(); struct window *w=&windows[0];
     g_mouse_state.window=w; g_mouse_state.window_frame=actual[0];
     hwm_plane_scale=.5; hwm_plane_fit_active=true;
+    hwm_render(&view,clock_now);
     CGRect f=w->strip_last_frame;
-    CGPoint edge=CGPointMake(f.origin.x+f.size.width*.5,f.origin.y+f.size.height*.25);
+    CGPoint edge=CGPointMake(f.origin.x+f.size.width*w->strip_last_plane_scale,
+                             f.origin.y+f.size.height*w->strip_last_plane_scale*.25);
     horizontal_mouse_down(w,edge);
     assert(hwm_edge_window==w->id && (hwm_edge_direction&HANDLE_RIGHT));
     hwm_edge_window=0;
@@ -805,8 +860,9 @@ static void test_overview_pointer(void)
 {
     reset(); struct window *w=&windows[0];
     hwm_plane_scale=.5; hwm_plane_selecting=true; selection_hit=w;
-    hwm_motion_scale=0;
-    double x=w->strip_world_x,y=w->strip_world_y,width=w->strip_width,height=w->strip_height;
+    hwm_motion_scale=0; hwm_render(&view,clock_now);
+    CGRect viewport=hwm_bounds(&view);
+    double x=(projected[0].origin.x-viewport.origin.x)/hwm_plane_scale,y=(projected[0].origin.y-viewport.origin.y)/hwm_plane_scale,width=w->strip_width,height=w->strip_height;
     hwm_plane_pointer(kCGEventLeftMouseDown,CGPointMake(200,200));
     assert(hwm_plane_selecting && !hwm_drag_window);
     hwm_plane_pointer(kCGEventLeftMouseDragged,CGPointMake(202,201));
@@ -816,7 +872,7 @@ static void test_overview_pointer(void)
     assert(w->strip_world_x==x+300 && w->strip_world_y==y+180);
     hwm_plane_pointer(kCGEventLeftMouseUp,CGPointMake(360,300));
     assert(hwm_plane_selecting && !hwm_drag_window && !hwm_plane_pick_window);
-    assert(w->strip_world_x==x+320 && w->strip_world_y==y+200);
+    assert(w->strip_world_x==x+300 && w->strip_world_y==y+180);
     assert(w->strip_width==width && w->strip_height==height && ax_calls==0 && moves==0);
     // A later click, without a drag, still centers at 100 percent.
     hwm_plane_pointer(kCGEventLeftMouseDown,CGPointMake(360,300));
@@ -824,6 +880,173 @@ static void test_overview_pointer(void)
     hwm_plane_pointer(kCGEventLeftMouseUp,CGPointMake(360,300));
     assert(!hwm_plane_selecting && hwm_plane_scale==1 && hwm_nav_window==w->id);
     hwm_motion_scale=1; selection_hit=NULL;
+}
+static bool pick_event(CGEventType type,CGPoint point)
+{
+    CGEventRef event=CGEventCreateMouseEvent(NULL,type,point,kCGMouseButtonLeft);
+    hwm_pointer_sample_event(type,event);
+    bool consumed=hwm_plane_pick_event(type,event); CFRelease(event);
+    if(test_input) {
+        assert(test_action==HWM_PLANE_PICK);
+        HWMPlanePickInput *queued=test_input; test_input=NULL;
+        if(type==kCGEventLeftMouseDragged) atomic_store(&hwm_plane_pick_drag_queued,false);
+        if(type==kCGEventLeftMouseUp) hwm_plane_pointer_finish(!queued->dragged);
+        else hwm_plane_pointer(type,queued->point);
+        free(queued);
+    }
+    return consumed;
+}
+static void test_low_zoom_click_ownership(void)
+{
+    double scales[]={.25,.69999,.70,.70001,1};
+    for(size_t i=0;i<5;i++) {
+        reset(); hwm_plane_scale=scales[i]; selection_hit=&windows[0];
+        hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+        bool low=scales[i]<.70;
+        assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200))==low);
+        assert(hwm_plane_pick_automatic==low && !hwm_plane_selecting);
+        assert(pick_event(kCGEventLeftMouseUp,CGPointMake(200,200))==low);
+        assert(!hwm_plane_pick_automatic && !hwm_plane_select_click);
+        if(low) assert(hwm_plane_scale==1 && hwm_nav_window==windows[0].id);
+        else assert(hwm_plane_scale==scales[i]);
+        assert(ax_calls==0 && moves==0);
+    }
+    reset(); hwm_plane_scale=.5; selection_hit=&windows[0];
+    hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+    test_hit_id=999; assert(!pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
+    test_hit_id=1; test_hit_owner=g_connection; // Native manager panels remain interactive.
+    assert(!pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
+    test_hit_owner=1;
+    // The automatic capture remains owned even if zoom crosses 70% mid-press.
+    assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
+    assert(pick_event(kCGEventLeftMouseDragged,CGPointMake(250,220)));
+    assert(hwm_drag_window==windows[0].id && !hwm_plane_selecting);
+    double x=windows[0].strip_world_x,y=windows[0].strip_world_y;
+    atomic_store(&hwm_drag_release_pending,true);
+    assert(pick_event(kCGEventLeftMouseDragged,CGPointMake(900,900))); // Delayed drag after physical release.
+    assert(windows[0].strip_world_x==x && windows[0].strip_world_y==y);
+    hwm_plane_scale=.8; hwm_plane_resize_publish(&view);
+    assert(pick_event(kCGEventLeftMouseUp,CGPointMake(900,900)));
+    assert(windows[0].strip_world_x==x && windows[0].strip_world_y==y && hwm_plane_scale==.8);
+    assert(!hwm_drag_window && !hwm_plane_pick_automatic && !hwm_plane_select_click);
+    reset(); hwm_plane_scale=.5; selection_hit=&windows[0]; hwm_plane_resize_publish(&view);
+    assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
+    atomic_store(&hwm_drag_release_pending,true);
+    assert(pick_event(kCGEventLeftMouseDragged,CGPointMake(250,220)));
+    assert(!hwm_drag_window);
+    assert(pick_event(kCGEventLeftMouseUp,CGPointMake(200,200))); // Even returning to origin was a drag.
+    assert(hwm_plane_scale==.5 && !hwm_plane_pick_automatic);
+    selection_hit=NULL;
+}
+static void test_release_never_repositions(void)
+{
+    double scales[]={.25,.5947448417940966,.7,1,2};
+    for(size_t i=0;i<5;i++) for(int overview=0;overview<2;overview++) {
+        reset(); struct window *w=&windows[0]; hwm_plane_scale=scales[i];
+        view.strip_offset=1170.211; test_camera_y=-482.125;
+        hwm_drag_started(w); hwm_drag_pointer_origin=CGPointMake(727.4453125,146.12109375);
+        hwm_drag_point=CGPointMake(746.18359375,147.4375);
+        assert(hwm_drag_submit_plane(&view,w,CGPointMake(1776.75,-343.72)));
+        CGRect before=projected[0]; double x=w->strip_world_x,y=w->strip_world_y;
+        // Captured failure: mouse-up implied +379 screen px and +121 px y.
+        CGPoint remapped=CGPointMake(hwm_drag_point.x+379,hwm_drag_point.y+121);
+        if(overview) {
+            hwm_plane_selecting=true; hwm_plane_pick_window=w->id;
+            hwm_plane_pointer(kCGEventLeftMouseUp,remapped);
+        } else assert(horizontal_drop(w,remapped));
+        assert(w->strip_world_x==x && w->strip_world_y==y && !hwm_drag_window);
+        assert(CGRectEqualToRect(projected[0],before));
+        for(int frame=0;frame<120;frame++) { clock_now+=1./120; hwm_render(&view,clock_now); }
+        assert(CGRectEqualToRect(projected[0],before));
+        assert(w->strip_world_x==x && w->strip_world_y==y && ax_calls==0 && moves==0);
+    }
+}
+static void test_recorded_cursor_stall(void)
+{
+    NSData *data=[NSData dataWithContentsOfFile:@"tests/fixtures/drag_cursor_stall.json"];
+    NSArray *trace=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]; assert(trace.count>20);
+    double scales[]={.25,.5947448417940966,.7,1,2};
+    for(size_t z=0;z<5;z++) for(int mode=0;mode<3;mode++) {
+        reset(); struct window *w=&windows[0]; hwm_plane_scale=scales[z];
+        hwm_render(&view,clock_now); hwm_plane_resize_publish(&view); selection_hit=w;
+        CGPoint recorded=CGPointMake([trace[0][@"event"][0] doubleValue],[trace[0][@"event"][1] doubleValue]);
+        CGPoint down=mode==2?CGPointMake(CGRectGetMaxX(projected[0]),CGRectGetMaxY(projected[0])):CGPointMake(400,400);
+        CGRect viewport=hwm_bounds(&view);
+    double x=(projected[0].origin.x-viewport.origin.x)/hwm_plane_scale,y=(projected[0].origin.y-viewport.origin.y)/hwm_plane_scale,width=w->strip_width,height=w->strip_height;
+        g_mouse_state.window=w; g_mouse_state.down_location=down; g_mouse_state.current_action=MOUSE_MODE_MOVE;
+        hwm_plane_selecting=mode==1;
+        CGRect last=projected[0]; double max_stall=0;
+        for(NSDictionary *row in trace) {
+            CGEventType type=[row[@"type"] unsignedIntValue];
+            CGPoint point=CGPointMake(down.x+[row[@"event"][0] doubleValue]-recorded.x,down.y+[row[@"event"][1] doubleValue]-recorded.y);
+            test_cursor=CGPointMake(down.x+[row[@"cursor"][0] doubleValue]-recorded.x,down.y+[row[@"cursor"][1] doubleValue]-recorded.y);
+            max_stall=fmax(max_stall,hypot(point.x-test_cursor.x,point.y-test_cursor.y));
+            CGEventRef event=CGEventCreateMouseEvent(NULL,type,point,kCGMouseButtonLeft);
+            hwm_pointer_sample_event(type,event);
+            if(mode==2) {
+                assert(resize_event(type,point,0)); hwm_plane_resize_tick(&view,clock_now);
+                if(type==kCGEventLeftMouseDragged) {
+                    assert(fabs(w->strip_width-round(width+(point.x-down.x)/scales[z]))<.01);
+                    assert(fabs(w->strip_height-round(height+(point.y-down.y)/scales[z]))<.01);
+                }
+            } else {
+                if(type==kCGEventLeftMouseDown && mode==1) hwm_plane_pointer(type,point);
+                if(type==kCGEventLeftMouseDragged) {
+                    if(mode==0) assert(horizontal_drag(event)); else hwm_plane_pointer(type,point);
+                    if(hwm_drag_window) {
+                        assert(fabs(w->strip_world_x-(x+(point.x-down.x)/scales[z]))<.01);
+                        assert(fabs(w->strip_world_y-(y+(point.y-down.y)/scales[z]))<.01);
+                        last=projected[0];
+                        // A render tick with a frozen system cursor must not undo the event.
+                        hwm_drag_autoscroll(&view,clock_now); assert(CGRectEqualToRect(projected[0],last));
+                    }
+                }
+                if(type==kCGEventLeftMouseUp) {
+                    // Queue contains old drag events after release; neither they nor ticks move it.
+                    assert(horizontal_drag(event)); hwm_drag_autoscroll(&view,clock_now);
+                    if(mode==0) assert(horizontal_drop(w,point)); else hwm_plane_pointer(type,point);
+                    assert(CGRectEqualToRect(projected[0],last));
+                }
+            }
+            CFRelease(event); clock_now+=.004;
+        }
+        assert(max_stall>329); assert(!hwm_drag_window);
+        if(mode<2) assert(ax_calls==0 && moves==0);
+    }
+    selection_hit=NULL;
+}
+static void test_native_titlebar_keeps_surface_ownership(void)
+{
+    double scales[]={.5,.7,1,2};
+    for(size_t z=0;z<4;z++) {
+        reset(); struct window *w=&windows[0]; hwm_plane_scale=scales[z]; hwm_render(&view,clock_now);
+        CGRect original=projected[0];
+        g_mouse_state.window=w; g_mouse_state.window_frame=actual[0]; g_mouse_state.current_action=MOUSE_MODE_NONE;
+        g_mouse_state.down_location=CGPointMake(original.origin.x+100,original.origin.y+15);
+        int calls=scale_calls;
+        for(int i=2;i<=61;i++) {
+            // The native tracking loop owns both actual bounds and visible pixels.
+            CGPoint origin=CGPointMake(original.origin.x+i*2,original.origin.y+i);
+            actual[0].origin=CGPointMake(origin.x+73,origin.y-41);
+            projected[0].origin=origin;
+            CGPoint point=CGPointMake(g_mouse_state.down_location.x+i*2,g_mouse_state.down_location.y+i);
+            CGEventRef event=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDragged,point,kCGMouseButtonLeft);
+            hwm_pointer_sample_event(kCGEventLeftMouseDragged,event); horizontal_drag(event); CFRelease(event);
+            assert(hwm_drag_native && hwm_drag_window==w->id);
+            assert(hypot(w->strip_last_frame.origin.x-origin.x,w->strip_last_frame.origin.y-origin.y)<1e-9);
+            assert(scale_calls==calls && moves==0); // No competing surface transform or native move.
+            hwm_drag_autoscroll(&view,clock_now); hwm_render(&view,clock_now);
+            assert(scale_calls==calls && CGPointEqualToPoint(projected[0].origin,origin));
+        }
+        CGPoint held=projected[0].origin;
+        horizontal_drop(w,CGPointMake(9999,9999));
+        assert(hwm_drag_native && hwm_drag_window==w->id);
+        clock_now+=.16; hwm_drag_autoscroll(&view,clock_now); hwm_render(&view,clock_now);
+        assert(!hwm_drag_native && !hwm_drag_window);
+        assert(hypot(projected[0].origin.x-held.x,projected[0].origin.y-held.y)<1);
+        w->strip_transform_dirty=true; hwm_render(&view,clock_now+.2);
+        assert(hypot(projected[0].origin.x-held.x,projected[0].origin.y-held.y)<1);
+    }
 }
 static void test_resize_notification_after_release(void)
 {
@@ -923,11 +1146,14 @@ static void test_owned_edge_resize(void)
             assert(w->strip_world_y==world_y);
             assert(fabs(CGRectGetMaxY(projected[0])-test_cursor.y)<=1+.5*scales[z]);
         }
+        CGPoint held_origin=projected[0].origin;
         assert(resize_event(kCGEventLeftMouseUp,test_cursor,0));
         assert(!atomic_load(&hwm_resize_captured));
         resize_busy=true; hwm_plane_resize_tick(&view,clock_now+.2); assert(hwm_resize_owned);
         resize_busy=false; hwm_plane_resize_tick(&view,clock_now+.21);
         assert(!hwm_resize_owned && hwm_edge_window==0 && w->strip_native_resize_pending);
+        hwm_render(&view,clock_now+.22);
+        assert(CGPointEqualToPoint(projected[0].origin,held_origin));
         assert(undo_captures==1);
     }
     reset(); hwm_plane_resize_publish(&view);
@@ -951,6 +1177,10 @@ int main(void)
     test_drag_feedback_cost_and_snap_axes();
     test_owned_edge_resize();
     test_overview_pointer();
+    test_low_zoom_click_ownership();
+    test_release_never_repositions();
+    test_recorded_cursor_stall();
+    test_native_titlebar_keeps_surface_ownership();
     test_resize_notification_after_release();
     test_plane_click_to_center();
     test_native_anchor_is_independent_of_projection();
@@ -966,4 +1196,5 @@ int main(void)
     test_zoomed_edge_hit();
     puts("plane runtime tests passed");
     }
+    return 0;
 }

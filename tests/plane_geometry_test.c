@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include "../src/plane_geometry.h"
@@ -15,6 +16,55 @@ static void test_edge_pan_hold(void)
     v=hwm_plane_edge_pan(&state,bounds,(HWMPlanePoint){500,1100},1000.41,.5); assert(v.y==0);
     v=hwm_plane_edge_pan(&state,bounds,(HWMPlanePoint){500,400},1001,.5); assert(v.x==0 && v.y==0);
     v=hwm_plane_edge_pan(&state,bounds,p,2000,.5); assert(v.y==0);
+    HWMPlaneEdgePan invalid_scale={0};
+    (void)hwm_plane_edge_pan(&invalid_scale,bounds,p,10,1);
+    v=hwm_plane_edge_pan(&invalid_scale,bounds,p,11,NAN);
+    near(v.x,0); near(v.y,0);
+}
+
+static void test_multi_neighbor_snap(void)
+{
+    HWMPlaneRect neighbor={100,100,100,100};
+    HWMPlanePoint snap;
+    HWMPlaneRect one[]={neighbor};
+
+    /* Every edge can be selected, while a close perpendicular edge aligns. */
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){215,110,40,50},one,1,12,24,&snap));
+    near(snap.x,212); near(snap.y,100);
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){45,110,40,50},one,1,12,24,&snap));
+    near(snap.x,48); near(snap.y,100);
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){110,35,40,50},one,1,12,24,&snap));
+    near(snap.x,100); near(snap.y,38);
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){110,215,40,50},one,1,12,24,&snap));
+    near(snap.x,100); near(snap.y,212);
+
+    /* A 24-point magnet becomes 12 world units at 2x zoom. */
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){223,100,40,50},one,1,12,24.0/2.0,&snap));
+    near(snap.x,212);
+    assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){225,100,40,50},one,1,12,24.0/2.0,&snap));
+
+    /* Closest valid target wins, and a reordered window array gives the same tie result. */
+    HWMPlaneRect candidates[]={ {100,100,100,100}, {400,100,100,100} };
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){215,100,40,50},candidates,2,12,24,&snap));
+    near(snap.x,212); near(snap.y,100);
+    HWMPlaneRect symmetric[]={ {88,100,100,100}, {276,100,100,100} };
+    HWMPlaneRect reversed[]={ symmetric[1],symmetric[0] };
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){212,100,40,50},symmetric,2,12,24,&snap));
+    near(snap.x,200); near(snap.y,100);
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){212,100,40,50},reversed,2,12,24,&snap));
+    near(snap.x,200); near(snap.y,100);
+
+    /* The nearby anchor would snap, but its landing rectangle hits a third window. */
+    HWMPlaneRect blocked[]={ {100,100,100,100}, {212,100,40,50} };
+    assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){215,100,40,50},blocked,2,12,24,&snap));
+
+    HWMPlaneRect invalid[]={ {NAN,100,100,100}, {100,100,-1,100}, neighbor };
+    assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){215,100,40,50},invalid,3,12,24,&snap));
+    near(snap.x,212);
+    snap=(HWMPlanePoint){7,9};
+    assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){NAN,100,40,50},one,1,12,24,&snap));
+    near(snap.x,7); near(snap.y,9);
+    assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){1000,1000,40,50},one,1,12,24,&snap));
 }
 
 int main(void)
@@ -26,10 +76,21 @@ int main(void)
     near(middle.y+900/(2*middle.scale),((from.y+2250)+(to.y+450))*.5);
     HWMPlaneCamera start=hwm_plane_camera_mix(from,to,1200,900,0),end=hwm_plane_camera_mix(from,to,1200,900,1);
     near(start.x,from.x); near(start.scale,from.scale); near(end.y,to.y); near(end.scale,1);
+    HWMPlaneCamera invalid_from={0,0,0};
+    HWMPlaneCamera fallback=hwm_plane_camera_mix(invalid_from,to,1200,900,.5);
+    near(fallback.x,to.x); near(fallback.y,to.y); near(fallback.scale,to.scale);
+    fallback=hwm_plane_camera_mix(from,to,INFINITY,900,.5);
+    near(fallback.x,from.x); near(fallback.y,from.y); near(fallback.scale,from.scale);
+    fallback=hwm_plane_camera_mix(from,to,1200,900,NAN);
+    near(fallback.x,from.x); near(fallback.y,from.y); near(fallback.scale,from.scale);
     test_edge_pan_hold();
+    test_multi_neighbor_snap();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);
     near(camera.x,-900); near(camera.y,640); /* plane has no walls */
+    camera=(HWMPlaneCamera){DBL_MAX,0,1};
+    camera=hwm_plane_camera_pan(camera,DBL_MAX,5);
+    near(camera.x,DBL_MAX); near(camera.y,5);
     HWMPlaneRect viewport={0,0,1000,700}, world={-600,-350,2800,1400};
     camera=hwm_plane_camera_fit(world,viewport,40);
     assert(camera.scale>0 && camera.scale<1);
@@ -39,6 +100,9 @@ int main(void)
     HWMPlaneCamera revealed={0,0,1}, next;
     assert(hwm_plane_reveal(revealed,(HWMPlaneRect){1300,-400,400,300},viewport,&next));
     near(next.x,700); near(next.y,-400);
+    next=(HWMPlaneCamera){7,9,1};
+    assert(!hwm_plane_reveal(revealed,(HWMPlaneRect){DBL_MAX,0,DBL_MAX,1},viewport,&next));
+    near(next.x,revealed.x); near(next.y,revealed.y); near(next.scale,revealed.scale);
     /* Native pointer movement is in screen points.  At both zoom directions
      * it must write the corresponding world delta, including edge pan. */
     HWMPlanePoint dragged=hwm_plane_drag_world((HWMPlanePoint){-80,120},
@@ -65,6 +129,8 @@ int main(void)
     assert(hwm_plane_snap_neighbor_target((HWMPlaneRect){912,200,300,250},neighbor,12,24,&snap));
     near(snap.x,912); near(snap.y,200);
     assert(!hwm_plane_snap_neighbor_target((HWMPlaneRect){925,2000,300,250},neighbor,12,24,&snap));
+    snap=hwm_plane_snap_neighbor((HWMPlaneRect){NAN,7,300,250},neighbor,12,24);
+    assert(isnan(snap.x)); near(snap.y,7);
     double magnet_scales[]={.1,.5,1,2,4};
     for(int i=0;i<5;i++) {
         double z=magnet_scales[i];

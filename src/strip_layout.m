@@ -25,9 +25,19 @@ static void hwm_batch_begin(void)
     if(!hwm_batch_open) { SLSDisableUpdate(g_connection); scripting_addition_batch_begin(); hwm_batch_open=true; }
     ++hwm_batch_depth;
 }
+static void hwm_batch_failed(void)
+{
+    hwm_backend_ok=false; ++hwm_move_failures;
+    hwm_plane_border_batch_failed();
+    // Queued commands updated caches before the helper acknowledged them.
+    // Retain reset ownership, but retry every initialized plane transform.
+    table_for(struct window *w,g_window_manager.window, {
+        if(w->strip_initialized) w->strip_transform_dirty=true;
+    })
+}
 static void hwm_batch_present(void)
 {
-    if(!scripting_addition_batch_end()) { hwm_backend_ok=false; ++hwm_move_failures; }
+    if(!scripting_addition_batch_end()) hwm_batch_failed();
     SLSReenableUpdate(g_connection); hwm_batch_open=false;
 }
 static void hwm_batch_end(void)
@@ -44,7 +54,7 @@ static void hwm_batch_release(void)
  * has queued for the helper must have been applied first. */
 static void hwm_batch_settle(void)
 {
-    if(hwm_batch_open && !scripting_addition_batch_flush()) { hwm_backend_ok=false; ++hwm_move_failures; }
+    if(hwm_batch_open && !scripting_addition_batch_flush()) hwm_batch_failed();
 }
 /* A column about to leave the strip. Once layout has closed the hole the camera
  * follows by hstrip_close_shift, so the neighbours on both sides converge

@@ -21,51 +21,64 @@ static inline uint8_t mouse_mod_from_cgflags(uint32_t cgflags)
 static MOUSE_HANDLER(mouse_handler)
 {
     struct mouse_state *mouse_state = context;
+    horizontal_input_trace(type,event);
+    hwm_pointer_sample_event(type,event);
     if (horizontal_event(type, event)) return NULL;
 
     switch (type) {
     case kCGEventTapDisabledByTimeout:
     case kCGEventTapDisabledByUserInput: {
+        mouse_capture_cancel(mouse_state);
         CFMachPortRef handle = __atomic_load_n(&mouse_state->handle, __ATOMIC_RELAXED);
         if (handle) CGEventTapEnable(handle, true);
     } break;
     case kCGEventLeftMouseDown:
     case kCGEventRightMouseDown: {
+        mouse_capture_note_down(mouse_state,event);
         uint8_t mod = mouse_mod_from_cgflags(CGEventGetFlags(event));
         event_loop_post(&g_event_loop, MOUSE_DOWN, (void *) CFRetain(event), mod);
 
-        if (mod == mouse_state->modifier) {
-            mouse_state->consume_mouse_click = true;
-            mouse_state->consumed_event = (CGEventRef) CFRetain(event);
+        /* One consumed press owns its matching stream. An overlapping other
+         * button stays native instead of overwriting its retained down. */
+        if (mod == mouse_state->modifier && !mouse_state->consume_mouse_click) {
+            mouse_capture_begin(mouse_state, event);
             return NULL;
         }
     } break;
     case kCGEventLeftMouseUp:
     case kCGEventRightMouseUp: {
+        if (mouse_capture_consume_late_up(mouse_state, event)) return NULL;
         event_loop_post(&g_event_loop, MOUSE_UP, (void *) CFRetain(event), 0);
 
-        if (mouse_state->consume_mouse_click) {
-            if (!mouse_state->drag_detected) {
+        if (mouse_capture_matches_up(mouse_state, event)) {
+            if (mouse_capture_should_replay(mouse_state)) {
                 CGEventTapPostEvent(proxy, mouse_state->consumed_event);
                 CGEventTapPostEvent(proxy, event);
             }
-
-            mouse_state->drag_detected = false;
-            mouse_state->consume_mouse_click = false;
-            CFRelease(mouse_state->consumed_event);
+            mouse_capture_finish(mouse_state);
             return NULL;
         }
     } break;
     case kCGEventLeftMouseDragged:
     case kCGEventRightMouseDragged: {
-        mouse_state->drag_detected = true;
+        CGMouseButton button = mouse_event_button(event);
+        /* The down for this interrupted button was swallowed. Do not leak any
+         * of its trailing drags while waiting for the one terminal up. */
+        if (mouse_state->consume_mouse_up_pending && mouse_state->consume_mouse_up_button == button) return NULL;
+        if (mouse_state->consume_mouse_click && mouse_state->consumed_button == button)
+            mouse_state->drag_detected = true;
         // A pointer can report far faster than the display refreshes. Only one
         // drag event waits in the queue at a time, so frames are never starved;
         // the strip reads the live cursor position each frame regardless.
-        if (!atomic_exchange(&horizontal_dragged_queued, true))
+        if (!atomic_exchange(&horizontal_dragged_queued[button], true))
             event_loop_post(&g_event_loop, MOUSE_DRAGGED, (void *) CFRetain(event), 0);
-        // Once plane dragging starts, AppKit must stop moving the same surface.
-        // Mouse-up still reaches the app to finish its title-bar interaction.
+        /* A modifier press consumed its down synchronously.  The event-loop
+         * has not necessarily set hwm_drag_window when this first drag arrives,
+         * so gate on the press ownership as well: AppKit must never receive a
+         * dragged/up half-stream without its down. */
+        if(mouse_state->consume_mouse_click && mouse_state->consumed_button == button) return NULL;
+        // Captured overview drags belong to Tana. A native title-bar drag keeps
+        // its entire event stream so AppKit moves the actual window.
         if(horizontal_owns_native_drag()) return NULL;
     } break;
     case kCGEventMouseMoved: {

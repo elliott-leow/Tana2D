@@ -32,8 +32,28 @@ test:
 	./build/plane_gesture_test
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_transform_test.m -framework Cocoa -o build/plane_transform_test
 	./build/plane_transform_test
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_presentation_test.m -framework Cocoa -o build/plane_presentation_test
+	./build/plane_presentation_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/strip_runtime_test.m -framework Cocoa -o build/strip_runtime_test
 	./build/strip_runtime_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_native_drag_test.m -framework Cocoa -o build/plane_native_drag_test
+	./build/plane_native_drag_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_snap_runtime_test.m -framework Cocoa -o build/plane_snap_runtime_test
+	./build/plane_snap_runtime_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_batch_recovery_test.m -framework Cocoa -o build/plane_batch_recovery_test
+	./build/plane_batch_recovery_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_input_queue_test.m -framework Cocoa -o build/plane_input_queue_test
+	./build/plane_input_queue_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_selection_visibility_test.m -framework Cocoa -o build/plane_selection_visibility_test
+	./build/plane_selection_visibility_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_border_test.m -framework Cocoa -o build/plane_border_test
+	./build/plane_border_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_resize_session_test.m -framework Cocoa -o build/plane_resize_session_test
+	./build/plane_resize_session_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_lifecycle_test.m -framework Cocoa -o build/plane_lifecycle_test
+	./build/plane_lifecycle_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-variable -fsanitize=address,undefined -g tests/mouse_capture_test.m -framework Cocoa -o build/mouse_capture_test
+	./build/mouse_capture_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc tests/overview_input_test.m -framework Cocoa -framework QuartzCore -o build/overview_input_test
 	./build/overview_input_test
 	$(CC) -Wall -Wextra -Werror -fno-objc-arc -framework Cocoa -I src src/tana_config.m tests/tana_config_test.m -o build/tana_config_test

@@ -287,6 +287,7 @@ struct view *window_manager_find_managed_window(struct window_manager *wm, struc
 
 void window_manager_remove_managed_window(struct window_manager *wm, uint32_t wid)
 {
+    horizontal_unmanaging(window_manager_find_window(wm,wid));
     table_remove(&wm->managed_window, &wid);
 }
 

@@ -423,6 +423,7 @@ static bool hwm_plane_direction_action(const char *name)
     int dx=!strcmp(direction,"right")?1:!strcmp(direction,"left")?-1:0;
     int dy=!strcmp(direction,"down")?1:!strcmp(direction,"up")?-1:0;
     if(!dx && !dy) return false;
+    if(hwm_plane_pointer_owned()) return true;
     struct view *view=hwm_view(); struct window *window=hwm_action_window();
     if(hwm_paused || hwm_suspended || !view || !window || !view_find_window_node(view,window->id)) return true;
     if(moving) {
@@ -494,6 +495,7 @@ static bool hwm_named_action(const char *name)
     // Every recognized command below acts on the window the cursor reached.
     // Do not flush while probing an unknown or read-only daemon token.
     if(!hwm_named_action_requires_navigation_flush(name)) return false;
+    if(hwm_plane_pointer_owned() && strcmp(name,"pause") && strcmp(name,"quit") && strcmp(name,"close")) return true;
     hwm_nav_flush();
     if(strcmp(name,"reload-config")==0) { hwm_config_reload(true); return true; }
     if(strcmp(name,"arrange-grid")==0) { hwm_plane_arrange_grid(hwm_view()); return true; }

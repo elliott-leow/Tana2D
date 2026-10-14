@@ -1,5 +1,6 @@
 /* Read-only, fresh-process WindowServer metrics (avoids per-process caches). */
 #import <Cocoa/Cocoa.h>
+#include "../src/plane_presentation.h"
 extern int SLSMainConnectionID(void);
 extern CGError SLSGetWindowBounds(int,uint32_t,CGRect *);
 extern int SLSGetWindowSubLevel(int,uint32_t);
@@ -22,9 +23,13 @@ int main(int argc,char **argv) { @autoreleasepool {
         if(error!=kCGErrorSuccess) return 1;
         CGAffineTransform t;
         if(SLSGetWindowTransform(SLSMainConnectionID(),wid,&t)!=kCGErrorSuccess) return 1;
+        CGRect displayed=CGRectNull;
+        if(!hwm_plane_displayed_frame(wid,&displayed)) return 1;
         float alpha=0; SLSGetWindowAlpha(SLSMainConnectionID(),wid,&alpha);
         [result addObject:@{@"id":@(wid),@"x":@(f.origin.x),@"y":@(f.origin.y),@"w":@(f.size.width),@"h":@(f.size.height),@"sublevel":@(SLSGetWindowSubLevel(SLSMainConnectionID(),wid)),
-            @"a":@(t.a),@"b":@(t.b),@"c":@(t.c),@"d":@(t.d),@"tx":@(t.tx),@"ty":@(t.ty),@"alpha":@(alpha)}];
+            @"a":@(t.a),@"b":@(t.b),@"c":@(t.c),@"d":@(t.d),@"tx":@(t.tx),@"ty":@(t.ty),@"alpha":@(alpha),
+            @"public_display_x":@(displayed.origin.x),@"public_display_y":@(displayed.origin.y),
+            @"public_display_width":@(displayed.size.width),@"public_display_height":@(displayed.size.height)}];
     }
     NSData *data=[NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
     puts([[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] UTF8String]);

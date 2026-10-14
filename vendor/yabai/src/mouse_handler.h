@@ -68,6 +68,12 @@ struct mouse_state
     bool consume_mouse_click;
     bool drag_detected;
     CGEventRef consumed_event;
+    CGMouseButton consumed_button;
+    /* A disabled tap can lose the matching up after we swallowed its down.
+     * Consume only that button's late terminal event; another button remains
+     * an ordinary native click. */
+    bool consume_mouse_up_pending;
+    CGMouseButton consume_mouse_up_button;
     enum mouse_mode action1;
     enum mouse_mode action2;
     volatile uint8_t modifier;
@@ -81,6 +87,68 @@ struct mouse_state
     uint8_t direction;
     struct window_node *feedback_node;
 };
+
+static inline CGMouseButton mouse_event_button(CGEventRef event)
+{
+    return (CGMouseButton)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+}
+
+static inline void mouse_capture_note_down(struct mouse_state *state, CGEventRef event)
+{
+    CGMouseButton button = mouse_event_button(event);
+    if (state->consume_mouse_up_pending && state->consume_mouse_up_button == button)
+        state->consume_mouse_up_pending = false;
+}
+
+static inline void mouse_capture_begin(struct mouse_state *state, CGEventRef event)
+{
+    CGMouseButton button = mouse_event_button(event);
+    mouse_capture_note_down(state,event);
+    state->consume_mouse_click = true;
+    state->drag_detected = false;
+    state->consumed_button = button;
+    state->consumed_event = (CGEventRef) CFRetain(event);
+}
+
+/* Drop the retained press after an event-tap interruption, while suppressing
+ * only its own late mouse-up. The physical terminal event may arrive after
+ * the tap has recovered, so it must not reach AppKit without its down. */
+static inline void mouse_capture_cancel(struct mouse_state *state)
+{
+    if (!state->consume_mouse_click) return;
+    state->consume_mouse_up_pending = true;
+    state->consume_mouse_up_button = state->consumed_button;
+    state->consume_mouse_click = false;
+    state->drag_detected = false;
+    if (state->consumed_event) CFRelease(state->consumed_event);
+    state->consumed_event = NULL;
+}
+
+/* Return whether this up closes the retained consumed press. */
+static inline bool mouse_capture_matches_up(const struct mouse_state *state, CGEventRef event)
+{
+    return state->consume_mouse_click && state->consumed_button == mouse_event_button(event);
+}
+
+static inline bool mouse_capture_should_replay(const struct mouse_state *state)
+{
+    return !state->drag_detected;
+}
+
+static inline void mouse_capture_finish(struct mouse_state *state)
+{
+    state->consume_mouse_click = false;
+    state->drag_detected = false;
+    if (state->consumed_event) CFRelease(state->consumed_event);
+    state->consumed_event = NULL;
+}
+
+static inline bool mouse_capture_consume_late_up(struct mouse_state *state, CGEventRef event)
+{
+    if (!state->consume_mouse_up_pending || state->consume_mouse_up_button != mouse_event_button(event)) return false;
+    state->consume_mouse_up_pending = false;
+    return true;
+}
 
 static char *mouse_mod_str[] =
 {

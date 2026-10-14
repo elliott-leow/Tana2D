@@ -47,7 +47,8 @@ require testing on the target Mac.
 | Command + Shift + W | Open Firefox |
 | Option + Command + arrow | Focus the nearest window in that direction |
 | Shift + Option + Command + arrow | Move the focused window one grid step |
-| Drag a title bar, or Option-drag a window | Move directly with the pointer, without edge snapping |
+| Click a window below 70% zoom | Center it at 100% without sending the click to the app; dragging only moves it |
+| Drag a title bar, or Option-drag a window | Follow the pointer; preview and snap beside a nearby window on release |
 | Drag a window edge or corner | Resize in plane coordinates, preserving the opposite edge |
 | Option + Command + F | Fit the focused window |
 | Option + Command + 0 | Return to actual size |

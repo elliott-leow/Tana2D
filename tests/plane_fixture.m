@@ -19,6 +19,11 @@
 - (void)command:(NSNotification *)n {
     NSString *command=n.userInfo[@"command"];
     if ([command isEqual:@"new"]) [self add];
+    if ([command isEqual:@"move"]) {
+        NSWindow *w=self.windows.lastObject;
+        [w setFrameTopLeftPoint:NSMakePoint([n.userInfo[@"x"] doubleValue],
+            NSScreen.screens.firstObject.frame.size.height-[n.userInfo[@"y"] doubleValue])];
+    }
     if ([command isEqual:@"resize"]) {
         NSWindow *w=self.windows.lastObject;
         NSSize size=NSMakeSize([n.userInfo[@"width"] doubleValue],[n.userInfo[@"height"] doubleValue]);
@@ -34,9 +39,12 @@
 }
 @end
 int main(int argc,char **argv) { @autoreleasepool {
-    if (argc==2 || (argc==4 && !strcmp(argv[1],"resize"))) {
+    if (argc==2 || (argc==4 && (!strcmp(argv[1],"resize") || !strcmp(argv[1],"move")))) {
         NSMutableDictionary *info=[NSMutableDictionary dictionaryWithObject:@(argv[1]) forKey:@"command"];
-        if(argc==4) { info[@"width"]=@(atof(argv[2])); info[@"height"]=@(atof(argv[3])); }
+        if(argc==4) {
+            bool move=!strcmp(argv[1],"move");
+            info[move?@"x":@"width"]=@(atof(argv[2])); info[move?@"y":@"height"]=@(atof(argv[3]));
+        }
         [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.tana2d.fixture" object:nil userInfo:info deliverImmediately:YES]; return 0;
     }
     [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];

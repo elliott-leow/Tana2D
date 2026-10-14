@@ -8,6 +8,12 @@ static CGContextRef hwm_plane_border_context;
 static CGRect hwm_plane_border_frame;
 static CGSize hwm_plane_border_canvas;
 static bool hwm_plane_border_visible;
+/* The outer frame batch can reject a transform after this file has returned.
+ * strip_layout calls this hook at that acknowledgement boundary. */
+static void hwm_plane_border_batch_failed(void)
+{
+    hwm_plane_border_frame=CGRectNull;
+}
 static void hwm_plane_border_hide(void)
 {
     if(hwm_plane_border_id && hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,0,0);
@@ -75,13 +81,18 @@ static void hwm_plane_border_tick(struct view *view,double now)
         }
         hwm_plane_border_canvas=canvas;
     }
+    bool transformed=false;
     if(hwm_plane_border_id) {
-        scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
-                                                 frame.size.width/canvas.width,frame.size.height/canvas.height);
-        if(!hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,1,0);
-        hwm_plane_border_visible=true; hwm_plane_border_frame=frame; hwm_plane_border_focus=focus->id;
+        transformed=scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
+                                                               frame.size.width/canvas.width,frame.size.height/canvas.height);
+        if(transformed && !hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,1,0);
     }
     hwm_batch_end();
+    // A queued helper command is not a displayed outline until the batch is
+    // acknowledged. Do not cache a requested frame on either failure path:
+    // otherwise the equality fast path suppresses every later retry.
+    if(!transformed || !hwm_backend_ok) { hwm_plane_border_batch_failed(); return; }
+    hwm_plane_border_visible=true; hwm_plane_border_frame=frame; hwm_plane_border_focus=focus->id;
 }
 
 /* The held-drag path only translates an existing cached outline. Its command
@@ -97,4 +108,4 @@ static bool hwm_plane_border_drag(uint32_t wid,CGRect projected)
     if(ok) hwm_plane_border_frame=frame;
     return ok;
 }
-static void hwm_plane_border_drag_failed(void) { hwm_plane_border_frame=CGRectNull; }
+static void hwm_plane_border_drag_failed(void) { hwm_plane_border_batch_failed(); }

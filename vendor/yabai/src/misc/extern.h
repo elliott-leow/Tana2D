@@ -85,6 +85,7 @@ extern CGError SLSGetCurrentCursorLocation(int cid, CGPoint *point);
 extern CGError SLSWindowSetShadowProperties(uint32_t wid, CFDictionaryRef options);
 extern CGError SLSRequestNotificationsForWindows(int cid, uint32_t *window_list, int window_count);
 extern CGError SLSSetWindowTransform(int cid, uint32_t wid, CGAffineTransform t);
+extern CGError SLSGetWindowTransform(int cid, uint32_t wid, CGAffineTransform *t);
 extern CFTypeRef SLSTransactionCreate(int cid);
 extern void SLSTransactionCommit(CFTypeRef transaction, int synchronous);
 extern void SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform t);
