@@ -746,7 +746,9 @@ static void hwm_hold_focus(void)
 }
 static bool horizontal_hover_allowed(CGPoint point)
 {
-    if (hwm_overview_active || hwm_plane_selecting) return false;
+    // Plane selection keeps the live windows visible. Hover may focus them
+    // without raising or moving the camera; only a click chooses and zooms in.
+    if (hwm_overview_active) return false;
     if (!hwm_ready || !hwm_focus_guard) return true;
     if (hwm_now()-hwm_focus_guard_time<.35) return false;
     if (hypot(point.x-hwm_focus_guard_point.x,point.y-hwm_focus_guard_point.y)<6) return false;
@@ -1598,7 +1600,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.4\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.5\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1697,6 +1699,7 @@ static void horizontal_command(FILE *rsp, char *message)
         NSDictionary *state=@{@"id":@(w->id),@"displayedValid":@(displayedValid),@"borderValid":@(borderValid),@"borderVisible":@(borderVisible),
             @"displayedX":@(displayed.origin.x),@"displayedY":@(displayed.origin.y),@"displayedWidth":@(displayed.size.width),@"displayedHeight":@(displayed.size.height),
             @"borderX":@(border.origin.x),@"borderY":@(border.origin.y),@"borderWidth":@(border.size.width),@"borderHeight":@(border.size.height),
+            @"borderWindow":@(hwm_plane_border_id),
             @"borderPad":@(fmax(2,hwm_border_width)),@"cameraX":@(view?hwm_offset(view,hwm_now()):0),@"cameraY":@(hwm_plane_camera_y(hwm_now())),@"cameraScale":@(hwm_plane_scale),
             @"navigationPending":@(hwm_nav_pending),@"navigationWindow":@(hwm_nav_window),@"focusedWindow":@(g_window_manager.focused_window_id),
             @"nativeX":@(actual.origin.x),@"nativeY":@(actual.origin.y),@"nativeWidth":@(actual.size.width),@"nativeHeight":@(actual.size.height),
@@ -1771,7 +1774,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.4\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.5\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {

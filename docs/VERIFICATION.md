@@ -639,3 +639,24 @@ peaked at 1.682 ms. There were zero extra preview rasterizations, haptic
 engagements, AX resizes, or movement failures in the slide. The display link still
 reports 60 Hz; these software timings do not establish a physical 120 FPS output.
 Final package signature and installed/package identity checks passed.
+
+
+### Zoomed-out hover border (0.5.5)
+
+Reproduced the reported stale border in plane selection: WindowServer hit the
+hovered fixture correctly, but `horizontal_hover_allowed` rejected all hover
+while `hwm_plane_selecting` was true. Ordinary reduced zoom already allowed hover.
+Plane selection now permits the existing focus-without-raise path, which updates
+the border without changing the camera or ending click-to-select mode. The
+separate native overview retains its own hover handling. Border raster caching
+and configured appearance are unchanged.
+
+`make all test` passed, including 20 Python checks. On the installed signed build,
+`tests/live_border_hover.py` passed 24 actual CGEvent hover transitions across
+three disposable windows at 10%, 25%, 50%, and 100%, in ordinary and selection
+modes. Ordinary-mode zoom used generated pinch events. Each check verified focus,
+selection-state preservation, unchanged camera, and alignment between the public
+window rectangle and the independently measured border surface. Evidence:
+`build/border-hover-live.json` and `build/border-hover-final-live.log`.
+Installed/package binary identity and code-signature validation passed. These are
+injected-input and WindowServer checks, not physical trackpad or screenshot QA.
