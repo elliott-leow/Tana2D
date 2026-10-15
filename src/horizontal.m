@@ -4,6 +4,7 @@
 #include "strip_geometry.h"
 #include "plane_geometry.h"
 #include "strip_columns.h"
+#include "focus_policy.h"
 #include "window_overview.m"
 #include "tana_config.m"
 #include "strip_workflow.h"
@@ -100,6 +101,7 @@ static int hwm_new_placement; // 0 centre gap, 1 beside focused, 2 strip end
 static uint32_t hwm_nav_window; // Keyboard navigation cursor; leads the reported focus.
 static double hwm_nav_time;
 static bool hwm_nav_pending;
+static bool hwm_nav_automatic;
 static void hwm_nav_flush(void);
 static void hwm_preview_show(CGRect target,CGRect start,bool animate);
 static bool hwm_move_column(struct view *view,struct window *window,int mode);
@@ -707,11 +709,15 @@ static void horizontal_tick(void)
     if (!active && hwm_focus_after_scroll && hwm_backend_ok) {
         hwm_focus_after_scroll = false;
         if(hwm_pointer_focus) { hwm_hold_focus(); }
-        CGPoint cursor; SLSGetCurrentCursorLocation(g_connection,&cursor);
-        struct window *target = window_manager_find_window_at_point(&g_window_manager,cursor);
-        if (!hwm_pointer_focus && !hwm_focus_follow && target && window_manager_is_window_eligible(target)) {
-            hwm_last_input = start; // A partially visible hover must not snap the viewport.
-            window_manager_focus_window_without_raise(&target->application->psn,target->id);
+        // This is focus inferred from a completed gesture, never an explicit
+        // click.  Do not let it dismiss a just-opened menu or popup.
+        if (!menu_focus_suppressed() && !popup_focus_suppressed()) {
+            CGPoint cursor; SLSGetCurrentCursorLocation(g_connection,&cursor);
+            struct window *target = window_manager_find_window_at_point(&g_window_manager,cursor);
+            if (!hwm_pointer_focus && !hwm_focus_follow && target && window_manager_is_window_eligible(target)) {
+                hwm_last_input = start; // A partially visible hover must not snap the viewport.
+                window_manager_focus_window_without_raise(&target->application->psn,target->id);
+            }
         }
     }
     if (!active && hwm_state_pending) { hwm_ipc_layout(view); hwm_save_state(); }
@@ -743,6 +749,14 @@ static void hwm_hold_focus(void)
     hwm_focus_guard=true; hwm_focus_guard_time=hwm_now();
     SLSGetCurrentCursorLocation(g_connection,&hwm_focus_guard_point);
     hwm_focus_after_scroll=false;
+}
+/* Called directly from the AX menu-open path.  It only clears focus inferred
+ * from strip motion; keyboard navigation, clicks, and close handoffs retain
+ * their explicit user intent. */
+static void horizontal_cancel_automatic_focus(void)
+{
+    hwm_focus_after_scroll=false;
+    hwm_focus_queue_cancel_automatic(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic);
 }
 static bool horizontal_hover_allowed(CGPoint point)
 {
@@ -797,7 +811,7 @@ static void horizontal_removing(struct window *window, bool whole_app)
     if (!hwm_ready || !window) return;
     hwm_plane_abort_interaction(window,HWM_PLANE_INTERRUPT_DESTROY);
     if(hwm_paused) return;
-    if(hwm_nav_window==window->id) { hwm_nav_window=0; hwm_nav_pending=false; }
+    if(hwm_nav_window==window->id) hwm_focus_queue_clear(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic);
     hwm_hole_note(window_manager_find_managed_window(&g_window_manager,window),window);
     if (whole_app && hwm_close_target) {
         struct window *anchor=window_manager_find_window(&g_window_manager,hwm_close_target);
@@ -860,10 +874,17 @@ static struct window *hwm_neighbor_column(struct view *view,struct window *from,
  * is what made quick presses stutter. */
 static void hwm_nav_flush(void)
 {
-    if(hwm_plane_pointer_owned()) { hwm_nav_pending=false; hwm_nav_window=0; return; }
+    if(hwm_plane_pointer_owned()) { hwm_focus_queue_clear(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic); return; }
     if(!hwm_nav_pending) return;
-    hwm_nav_pending=false;
-    struct window *w=window_manager_find_window(&g_window_manager,hwm_nav_window);
+    bool suppressed = hwm_nav_automatic && (menu_focus_suppressed() || popup_focus_suppressed());
+    uint32_t target = hwm_nav_window;
+    if(!hwm_focus_queue_take(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic, suppressed)) {
+        // A strip motion may have queued focus before the user opened a menu.
+        // Drop it instead of firing after dismissal; the next real hover can
+        // choose a target normally.
+        return;
+    }
+    struct window *w=window_manager_find_window(&g_window_manager,target);
     if(!w) return;
     hwm_preserve_focus_window=w->id; hwm_preserve_focus_until=hwm_now()+.6;
     hwm_workflow_note_explicit_focus(w,hwm_view());
@@ -888,7 +909,7 @@ static void hwm_nav_to(struct view *view,struct window *target)
 {
     if(hwm_plane_pointer_owned()) return;
     double now=hwm_now();
-    hwm_nav_window=target->id; hwm_nav_time=now; hwm_nav_pending=true; hwm_last_input=now;
+    hwm_focus_queue_enqueue(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic, target->id, false); hwm_nav_time=now; hwm_last_input=now;
     hwm_hold_focus();
     hwm_plane_set_camera(view,hwm_center_target(view,target),target->strip_world_y+target->strip_height*.5-hwm_bounds(view).size.height/(2*hwm_plane_scale),true);
     hwm_feedback_focus(NULL,target);
@@ -932,7 +953,11 @@ static void hwm_focus_follow_to(struct view *view,double offset)
     if(!target || target==current) return;
     // In centre mode, staying within the focused column keeps the row already in use.
     if(hwm_focus_follow==1 && current && view_find_window_node(view,current->id) && hwm_column_of(current)==hwm_column_of(target)) return;
-    hwm_nav_window=target->id; hwm_nav_time=hwm_now(); hwm_nav_pending=true;
+    // Do this only after finding a possible target.  Native menu notification
+    // state is cheap to check; popup enumeration is then avoided for empty
+    // canvas movement and neither automatic border nor queue changes occur.
+    if(menu_focus_suppressed() || popup_focus_suppressed()) return;
+    hwm_focus_queue_enqueue(&hwm_nav_window, &hwm_nav_pending, &hwm_nav_automatic, target->id, true); hwm_nav_time=hwm_now();
     hwm_hold_focus();
     hwm_feedback_focus(NULL,target);
 }
@@ -1601,7 +1626,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.8\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.9\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1685,6 +1710,24 @@ static void horizontal_command(FILE *rsp, char *message)
         }
         fprintf(rsp,"]\n"); pthread_mutex_unlock(&hwm_input_trace_lock);
         atomic_store(&hwm_input_trace_enabled,start); return;
+    }
+    if(token_equals(command,"focus-status")) {
+        CGPoint cursor=CGPointZero; SLSGetCurrentCursorLocation(g_connection,&cursor);
+        NSMutableArray *menus=[NSMutableArray array];
+        if(ffm_menus) for(id item in (NSArray *)ffm_menus) {
+            AXUIElementRef menu=(AXUIElementRef)item; pid_t owner=0;
+            AXError owner_error=AXUIElementGetPid(menu,&owner);
+            uint32_t wid=ax_window_id(menu); uint8_t ordered=0;
+            CGError error=wid?SLSWindowIsOrderedIn(g_connection,wid,&ordered):kCGErrorFailure;
+            [menus addObject:@{@"pid":@(owner),@"pidError":@(owner_error),@"window":@(wid),@"ordered":@(ordered),@"orderError":@(error)}];
+        }
+        NSDictionary *state=@{@"focusedWindow":@(g_window_manager.focused_window_id),@"frontPid":@(g_process_manager.front_pid),
+            @"hoverFocusPending":@(g_mouse_state.ffm_window_id),@"focusGuard":@(hwm_focus_guard),
+            @"focusGuardAge":@(hwm_now()-hwm_focus_guard_time),@"focusGuardPoint":@[@(hwm_focus_guard_point.x),@(hwm_focus_guard_point.y)],
+            @"cursor":@[@(cursor.x),@(cursor.y)],@"menus":menus,
+            @"menuSuppressed":@(menu_focus_suppressed()),@"popupSuppressed":@(popup_focus_suppressed())};
+        NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
+        fwrite(data.bytes,1,data.length,rsp); fputc('\n',rsp); return;
     }
     if(token_equals(command,"presentation-status")) {
         double identifier;
@@ -1775,7 +1818,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.8\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.9\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {

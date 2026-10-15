@@ -17,6 +17,12 @@ int main(int argc,char **argv) {
         double progress=fmin(i,24)/24.;
         CGPoint point=CGPointMake(numbers[0]+numbers[2]*progress,numbers[1]+numbers[3]*progress);
         CGEventType type=hover?kCGEventMouseMoved:i==0?kCGEventLeftMouseDown:i==25?kCGEventLeftMouseUp:kCGEventLeftMouseDragged;
+        // A posted event can carry P while the global cursor still remains at
+        // a previous point. Native tracking and polling must observe the same
+        // position, as they do for hardware input.
+        if(CGWarpMouseCursorPosition(point)!=kCGErrorSuccess) {
+            CGWarpMouseCursorPosition(original); return 1;
+        }
         CGEventRef event=CGEventCreateMouseEvent(NULL,type,point,kCGMouseButtonLeft);
         CGEventSetTimestamp(event,clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
         CGEventSetFlags(event,option?kCGEventFlagMaskAlternate:0);

@@ -8,6 +8,9 @@ static uint64_t ffm_menu_check_time;
 
 static void menu_focus_open(AXUIElementRef menu)
 {
+    // A menu can open between a strip movement and its delayed autofocus.
+    // Never let that now-stale handoff dismiss the menu.
+    horizontal_cancel_automatic_focus();
     if (!ffm_menus) ffm_menus = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
     CFRange range = CFRangeMake(0, CFArrayGetCount(ffm_menus));
     if (!CFArrayContainsValue(ffm_menus, range, menu)) {

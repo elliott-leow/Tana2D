@@ -8,6 +8,7 @@
 #include <os/lock.h>
 #include "../src/strip_columns.h"
 #include "../src/plane_geometry.h"
+#include "../src/focus_policy.h"
 
 #define VIEW_STRIP 1
 #define VIEW_IS_DIRTY 1
@@ -178,7 +179,7 @@ static uint32_t hwm_plane_pick_window;
 static CGPoint hwm_plane_pick_origin;
 static void scripting_addition_set_shadow(uint32_t id,bool shadow) { (void)id; (void)shadow; }
 static bool hwm_drag_camera_owned;
-static bool hwm_plane_selecting,hwm_nav_pending,hwm_settle_pending,hwm_magnetic_centering=true;
+static bool hwm_plane_selecting,hwm_nav_pending,hwm_nav_automatic,hwm_settle_pending,hwm_magnetic_centering=true;
 static uint32_t hwm_nav_window;
 static double hwm_nav_time;
 static double hwm_drag_tick_time;
@@ -859,8 +860,9 @@ static void test_plane_click_to_center(void)
     for(int i=1;i<4;i++) windows[i].strip_offscreen=true;
     hwm_plane_choose_at(CGPointMake(800,800));
     assert(hwm_plane_selecting); // Empty canvas does not choose a window.
+    hwm_nav_automatic=true; // Explicit selection replaces any old inferred focus.
     hwm_plane_choose_at(CGPointMake(100,100));
-    assert(!hwm_plane_selecting && hwm_nav_pending && hwm_nav_window==w->id);
+    assert(!hwm_plane_selecting && hwm_nav_pending && !hwm_nav_automatic && hwm_nav_window==w->id);
     assert(hwm_plane_scale==1 && view.strip_offset==-1140 && test_camera_y==120);
     assert(w->strip_width==400 && w->strip_height==300 && ax_calls==0 && moves==0);
     // A real WindowServer hit selects the topmost window in overlapping surfaces.

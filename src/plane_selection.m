@@ -25,7 +25,7 @@ static void hwm_plane_choose_window(struct view *view,struct window *target)
     if(!hwm_plane_window_selectable(view,target)) return;
     hwm_plane_selecting=false; hwm_hold_focus();
     CGRect bounds=hwm_bounds(view);
-    hwm_nav_window=target->id; hwm_nav_time=hwm_now(); hwm_nav_pending=true;
+    hwm_focus_queue_enqueue(&hwm_nav_window,&hwm_nav_pending,&hwm_nav_automatic,target->id,false); hwm_nav_time=hwm_now();
     hwm_last_input=hwm_now(); hwm_preserve_focus_window=target->id; hwm_preserve_focus_until=hwm_now()+1;
     hwm_feedback_focus(NULL,target);
     hwm_plane_transition_to(view,target->strip_world_x+(target->strip_width-bounds.size.width)*.5,

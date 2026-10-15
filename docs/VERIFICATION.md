@@ -809,3 +809,38 @@ four 2x native failures; cleanup restored camera/focus and changed no user-windo
 world geometry. `build/held-snap-release-tests.log` records the final passing
 build/test suite; `build/held-snap-release-matrix.log` records the live failures.
 The matrix CLI now exits nonzero on failed cases or failed restoration.
+
+### Native menus and transient focus (0.5.9)
+
+Delayed camera-follow focus now records whether its request was automatic or
+explicit. A native menu opening or direct pointer press cancels automatic focus
+that was queued before the menu appeared. The flush, gesture-completion, and
+follow-target paths also check menu/popup suppression before changing focus.
+Keyboard navigation and explicit window selection retain their intent.
+
+The front application's visible custom popups hold focus without an arbitrary
+800-point size cutoff. Empty and fully transparent surfaces do not suppress
+focus. A negative result is rechecked on the next possible focus change; a
+positive result is reused for at most 75 ms. `strip focus-status` exposes the
+menu, popup, pointer-hold, and pending-hover state for targeted diagnosis.
+
+`make all test` passed, including the compiled production menu/popup guards and
+automatic-versus-explicit queue regressions. The installed 0.5.9 live fixture
+passed native root-menu/submenu holding during scroll and a WindowServer-verified
+crossing onto another application's fixture. Hover resumed after dismissal.
+The separate 1000-by-850 custom popup held focus after the ordinary pointer hold
+was explicitly cleared, allowed direct focus to another fixture, and released
+hover focus after closing. Its alpha-zero negative case also passed.
+
+The live harness gives generated pointer events the same global cursor position,
+clears the existing pointer hold through a real crossing, and remeasures targets
+after camera changes. Cleanup disables autofocus while removing its own surfaces
+and restores the exact configuration bytes, autofocus mode, user-window worlds,
+focus, camera, and cursor. `build/menu-focus-final-pass.json` records the passing
+result with all restoration checks true. The strictly verified installed
+executable SHA-256 was
+`9501864595c1ce86c9d8659359bbc803a5338f36c3a8ceb926ae00e6677766c3`.
+
+This verifies menu focus protection. The application-content hover coordinate
+bridge remains an unshipped prototype pending independent cross-window tracking
+checks; the remaining 2x native-titlebar cases are not declared fixed here.

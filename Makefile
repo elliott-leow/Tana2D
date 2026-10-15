@@ -5,7 +5,7 @@ SOURCES = vendor/yabai/src/manifest.m vendor/yabai/src/osax/payload_bin.c vendor
 HEADERS = $(shell find src vendor/yabai/src -name '*.h' -o -name '*.c' -o -name '*.m')
 OSAX_DEPS = $(wildcard vendor/yabai/src/osax/*.m vendor/yabai/src/osax/*.h vendor/yabai/src/misc/*.h)
 
-.PHONY: all test test-plane-visibility-failure bench clean
+.PHONY: all test test-plane-visibility-failure test-menu-focus-guard bench clean
 all: build/tana2d
 vendor/yabai/src/osax/payload_bin.c: $(OSAX_DEPS)
 	$(MAKE) -B -C vendor/yabai ./src/osax/payload_bin.c
@@ -77,7 +77,12 @@ test:
 	./build/setup_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/plane_controls_test.m -framework Cocoa -framework QuartzCore -o build/plane_controls_test
 	./build/plane_controls_test
+	$(MAKE) test-menu-focus-guard
 	python3 -m unittest discover -s tests -p 'test_*.py'
+test-menu-focus-guard:
+	mkdir -p build
+	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc tests/menu_focus_guard_test.m -framework Cocoa -o build/menu_focus_guard_test
+	./build/menu_focus_guard_test
 test-plane-visibility-failure:
 	mkdir -p build
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_visibility_failure_test.m -framework Cocoa -o build/plane_visibility_failure_test
@@ -91,7 +96,7 @@ bench:
 clean:
 	rm -f build/tana2d build/strip_geometry_test
 
-.PHONY: live-tools
+.PHONY: live-tools live-menu-focus
 live-tools:
 	mkdir -p build/Tana2DFixture.app/Contents/MacOS
 	$(CC) -fno-objc-arc tests/plane_fixture.m -framework Cocoa -framework QuartzCore -o build/Tana2DFixture.app/Contents/MacOS/plane_fixture
@@ -110,3 +115,7 @@ live-tools:
 	$(CC) -Wno-unused-function -fobjc-arc tests/live_helper_batch.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_helper_batch
 
 	$(CC) -Wno-unused-function tests/live_drag_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_drag_transaction
+
+live-menu-focus:
+	mkdir -p build
+	$(CC) -fno-objc-arc -fblocks tests/live_menu_focus.m -framework Cocoa -framework QuartzCore -o build/live_menu_focus

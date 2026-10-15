@@ -12,6 +12,10 @@ volatile bool __pending_window_focus;
 volatile bool __pending_gesture;
 volatile uint64_t __last_gesture_time;
 volatile uint64_t __last_cmd_tab_time;
+/* Defined by horizontal.m later in this single translation unit.  A native
+ * menu notification must discard only focus that Tana queued automatically;
+ * keyboard navigation and pointer clicks remain explicit user requests. */
+static void horizontal_cancel_automatic_focus(void);
 
 static EVENT_HANDLER(HORIZONTAL_RECONCILE) { (void)context; (void)param1; horizontal_reconcile(); }
 static EVENT_HANDLER(HORIZONTAL_RESUME) { (void)context; (void)param1; horizontal_resume(); }
@@ -1164,6 +1168,9 @@ static EVENT_HANDLER(MOUSE_DOWN)
     firefox_discovery_begin(NULL, false);
     int button = CGEventGetIntegerValueField(context, kCGMouseEventButtonNumber);
     if (mission_control_is_active())                     goto out;
+    /* A direct press supersedes inferred focus, including menu-bar presses
+     * that have no managed window and precede the AX menu-open notification. */
+    horizontal_cancel_automatic_focus();
     /* The legacy mouse state has one owner.  A different button cannot
      * replace an exact press that is still physically active, even before a
      * native title-bar move has been noticed by the renderer. */
@@ -1511,12 +1518,12 @@ static EVENT_HANDLER(MOUSE_MOVED)
             }
         }
     } else {
-        if (popup_focus_suppressed()) goto out;
         uint32_t cursor_did = display_manager_point_display_id(point);
         if (g_display_manager.current_display_id == cursor_did) goto out;
 
         CGRect bounds = display_bounds_constrained(cursor_did, false);
         if (!cgrect_contains_point(bounds, point)) goto out;
+        if (popup_focus_suppressed()) goto out;
 
         uint32_t wid = display_manager_focus_display_with_window_at_point(point);
         if (!wid) display_manager_set_active_display_id(cursor_did);
