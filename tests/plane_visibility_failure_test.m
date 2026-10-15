@@ -21,6 +21,8 @@ static struct { int unused; } g_window_manager;
 static int g_connection;
 static bool hwm_borders_external,hwm_overview_active,hwm_plane_fit_active,hwm_backend_ok=true;
 static uint64_t hwm_move_failures;
+static uint32_t hwm_drag_window;
+static int desktop_scans;
 static float alpha[3]={0,1,.75f};
 static CGRect frames[3];
 static int primary_opacity_failures,companion_moves;
@@ -44,7 +46,7 @@ static CGError SLSGetWindowBounds(int connection,uint32_t wid,CGRect *out)
 static CFArrayRef SLSCopyAssociatedWindows(int connection,uint32_t wid)
 { (void)connection; (void)wid; return NULL; }
 static CFArrayRef test_window_list(CGWindowListOption option,CGWindowID wid)
-{ (void)option; (void)wid; return NULL; }
+{ (void)option; (void)wid; ++desktop_scans; return NULL; }
 static bool scripting_addition_set_opacity(uint32_t wid,float value,float duration)
 {
     (void)duration;
@@ -111,6 +113,11 @@ int main(void)
     @autoreleasepool {
         test_failed_hide_keeps_companion_visible();
         test_failed_reveal_keeps_companion_hidden();
+        hwm_borders_external=true; hwm_drag_window=1;
+        for(int i=0;i<240;i++) hwm_visibility_prepare(NULL,10+i/120.0);
+        assert(desktop_scans==0);
+        hwm_drag_window=0; hwm_visibility_prepare(NULL,12);
+        assert(desktop_scans==1);
         puts("plane visibility failure tests passed");
     }
     return 0;

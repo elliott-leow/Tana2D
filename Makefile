@@ -51,6 +51,8 @@ test:
 	$(MAKE) test-plane-visibility-failure
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_border_test.m -framework Cocoa -o build/plane_border_test
 	./build/plane_border_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_preview_test.m -framework Cocoa -o build/plane_preview_test
+	./build/plane_preview_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_resize_session_test.m -framework Cocoa -o build/plane_resize_session_test
 	./build/plane_resize_session_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_lifecycle_test.m -framework Cocoa -o build/plane_lifecycle_test

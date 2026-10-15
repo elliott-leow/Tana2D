@@ -210,6 +210,9 @@ static struct window *hwm_tile(uint32_t id) { return window_manager_find_window(
 static uint32_t hwm_drop_target;
 static bool test_preview_visible;
 static CGRect test_preview_frame;
+static int test_preview_edge,test_haptic_engages,test_haptic_commits;
+static void hwm_haptic(int kind) { if(kind) ++test_haptic_commits; else ++test_haptic_engages; }
+static void hwm_preview_snap_show(CGRect frame,int edge) { test_preview_frame=frame; test_preview_edge=edge; test_preview_visible=true; }
 static void hwm_preview_hide(void) { test_preview_visible=false; }
 static void hwm_preview_hide_immediately(void) { test_preview_visible=false; }
 static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
@@ -219,7 +222,10 @@ static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
 #include "../src/plane_drag.m"
 static void hwm_drag_snap_commit(struct view *v,struct window *w) {
     CGPoint target;
-    if(hwm_drag_snap_target(v,w,&target)) hwm_drag_submit_plane(v,w,target);
+    if(hwm_drag_snap_target(v,w,&target)) {
+        bool accepted=(target.x==w->strip_world_x && target.y==w->strip_world_y) || hwm_drag_submit_plane(v,w,target);
+        if(accepted) { ++hwm_snap_commits; hwm_haptic(1); }
+    }
 }
 static bool hwm_suspended;
 static uint32_t hwm_preserve_focus_window;
@@ -270,7 +276,7 @@ static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
 
 static void reset(void)
 {
-    resize_cancellations=0;
+    resize_cancellations=0; hwm_drag_snap_reset(); test_haptic_engages=test_haptic_commits=0;
     test_preview_visible=false; test_preview_frame=CGRectNull; presentation_unavailable=false; sa_batch_fails=false;
     hwm_drag_native=false;
     hwm_pointer_sample_reset(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};

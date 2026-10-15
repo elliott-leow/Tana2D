@@ -142,29 +142,41 @@ static inline bool hwm_plane_rects_overlap(HWMPlaneRect a,HWMPlaneRect b)
            a.y < b.y+b.height && a.y+a.height > b.y;
 }
 
+static inline double hwm_plane_overlap_area(HWMPlaneRect a,HWMPlaneRect b)
+{
+    return fmax(0,fmin(a.x+a.width,b.x+b.width)-fmax(a.x,b.x))*
+           fmax(0,fmin(a.y+a.height,b.y+b.height)-fmax(a.y,b.y));
+}
 static inline bool hwm_plane_snap_candidate_clear(HWMPlaneRect moving,HWMPlanePoint point,
-                                                  const HWMPlaneRect *neighbors,size_t count)
+                                                  const HWMPlaneRect *neighbors,size_t count,size_t anchor)
 {
     HWMPlaneRect candidate={point.x,point.y,moving.width,moving.height};
-    for(size_t i=0;i<count;i++)
-        if(hwm_plane_rect_valid(neighbors[i]) && hwm_plane_rects_overlap(candidate,neighbors[i])) return false;
+    for(size_t i=0;i<count;i++) {
+        if(!hwm_plane_rect_valid(neighbors[i])) continue;
+        /* Windows already stacked with the chosen neighbor are not separate
+         * docking obstacles. Otherwise approaching that neighbor from outside
+         * would require overshooting its edge before the magnet could engage. */
+        if(i!=anchor && hwm_plane_rects_overlap(neighbors[i],neighbors[anchor])) continue;
+        /* An existing overlap must not disable docking that reduces it.
+         * Reject new or deeper overlap; do not move unrelated windows. */
+        double before=hwm_plane_overlap_area(moving,neighbors[i]);
+        double after=hwm_plane_overlap_area(candidate,neighbors[i]);
+        if(after>before+1e-8) return false;
+    }
     return true;
 }
 
-/* Choose the closest adjacent edge among all neighbors.  `range` and `gap`
- * are world-space distances. The Euclidean displacement, including optional
- * perpendicular alignment, never exceeds range. Candidates colliding with
- * any neighbor are rejected.
- */
-static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
-                                                   size_t count,double gap,double range,HWMPlanePoint *out)
+typedef struct { HWMPlanePoint point; size_t neighbor; int axis,side; } HWMPlaneSnapTarget;
+
+/* World-space geometry with a radial movement bound. Prefer the engaged edge
+ * while it remains valid, so crossing a near-tie cannot flicker the preview. */
+static inline bool hwm_plane_snap_choose(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                        size_t count,double gap,double range,
+                                        const HWMPlaneSnapTarget *preferred,HWMPlaneSnapTarget *out)
 {
     if(!out || !hwm_plane_rect_valid(moving) || (!neighbors && count) ||
-       !isfinite(gap) || gap < 0 || !isfinite(range) || range < 0) return false;
-    HWMPlanePoint best={moving.x,moving.y};
-    /* Preserve the single-neighbor contract: a missed magnet returns the
-     * original position, while the boolean tells callers that no snap won. */
-    *out=best;
+       !isfinite(gap) || gap<0 || !isfinite(range) || range<0) return false;
+    HWMPlaneSnapTarget best={{moving.x,moving.y},0,0,0};
     double cost=INFINITY;
     for(size_t i=0;i<count;i++) {
         HWMPlaneRect other=neighbors[i];
@@ -177,25 +189,40 @@ static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWM
             if(axis==0 ? !overlap_y : !overlap_x) continue;
             double delta=axis==0 ? xs[side]-moving.x : ys[side]-moving.y;
             if(!isfinite(delta) || fabs(delta)>range) continue;
-            HWMPlanePoint candidate={axis==0 ? xs[side] : moving.x,axis==1 ? ys[side] : moving.y};
+            HWMPlanePoint raw={axis==0 ? xs[side] : moving.x,axis==1 ? ys[side] : moving.y};
+            HWMPlanePoint candidate=raw;
             double a=axis==0 ? other.y-moving.y : other.x-moving.x;
             double b=axis==0 ? other.y+other.height-moving.height-moving.y : other.x+other.width-moving.width-moving.x;
             double align=fabs(a)<=fabs(b) ? a : b;
             if(hypot(delta,align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
+            /* Perpendicular alignment is optional. A blocked alignment must
+             * not veto a clear side-to-side docking position. */
+            if(!hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count,i)) candidate=raw;
             if(!isfinite(candidate.x) || !isfinite(candidate.y) ||
-               !hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count)) continue;
+               !hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count,i)) continue;
             double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
             if(distance>range) continue;
-            /* Lexicographic ties make selection stable even if the window list is reordered. */
+            HWMPlaneSnapTarget choice={candidate,i,axis,side};
+            if(preferred && preferred->neighbor==i && preferred->axis==axis && preferred->side==side) {
+                *out=choice; return true;
+            }
             if(distance<cost || (distance==cost &&
-               (candidate.x<best.x || (candidate.x==best.x && candidate.y<best.y)))) {
-                best=candidate; cost=distance;
+               (candidate.x<best.point.x || (candidate.x==best.point.x && candidate.y<best.point.y)))) {
+                best=choice; cost=distance;
             }
         }
     }
     if(!isfinite(cost)) return false;
-    *out=best;
-    return true;
+    *out=best; return true;
+}
+static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                                   size_t count,double gap,double range,HWMPlanePoint *out)
+{
+    if(!out) return false;
+    if(hwm_plane_rect_valid(moving)) *out=(HWMPlanePoint){moving.x,moving.y};
+    HWMPlaneSnapTarget target;
+    if(!hwm_plane_snap_choose(moving,neighbors,count,gap,range,NULL,&target)) return false;
+    *out=target.point; return true;
 }
 
 /* Compatibility wrapper for existing callers with one neighbor. */

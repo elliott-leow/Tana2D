@@ -28,6 +28,10 @@ static void hwm_visibility_record(struct window *w,uint32_t wid,pid_t pid,CGRect
  * The periodic refresh picks up new borders without scanning each frame. */
 static void hwm_visibility_prepare(struct view *view,double now)
 {
+    /* Discovery enumerates the whole desktop and can block on WindowServer.
+     * Keep it outside the pointer-owned path; cached companions still update
+     * normally, and the first frame after release refreshes discovery. */
+    if(hwm_drag_window) return;
     bool fresh=now-hwm_visibility_frame>.1;
     hwm_visibility_frame=now;
     if(!fresh && now-hwm_visibility_scan<.5) return;

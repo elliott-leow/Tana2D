@@ -57,6 +57,44 @@ static void test_release_commits_gap_at_each_zoom(void)
     }
 }
 
+static void test_snap_feedback_engages_once_and_clears(void)
+{
+    snap_scene(1,6);
+    struct window *moving=&windows[0];
+    for(int i=0;i<50;i++) {
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100+i%3)));
+        assert(test_preview_visible && test_preview_edge==0);
+    }
+    assert(test_haptic_engages==1 && test_haptic_commits==0);
+    assert(hwm_snap_neighbor==windows[1].id);
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(214,100)));
+    assert(!test_preview_visible && !hwm_snap_neighbor);
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
+    assert(test_haptic_engages==2);
+    hwm_drag_release(&view,moving);
+    assert(test_haptic_commits==1 && !hwm_snap_neighbor && !test_preview_visible);
+    assert(moving->strip_world_x==188);
+}
+
+static void test_runtime_snap_reduces_existing_overlap(void)
+{
+    snap_scene(1,6);
+    struct window *moving=&windows[0];
+    windows[2].strip_world_x=195; windows[2].strip_world_y=90;
+    windows[2].strip_width=100; windows[2].strip_height=120;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
+    assert(test_preview_visible);
+    hwm_drag_release(&view,moving);
+    assert(moving->strip_world_x==188);
+    snap_scene(1,-6); moving=&windows[0];
+    windows[2].strip_world_x=195; windows[2].strip_world_y=90;
+    windows[2].strip_width=110; windows[2].strip_height=120;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(182,100)));
+    assert(test_preview_visible);
+    hwm_drag_release(&view,moving);
+    assert(moving->strip_world_x==188);
+}
+
 static void test_missed_and_blocked_releases_do_not_snap(void)
 {
     snap_scene(1,25); /* Well beyond the 12-screen-point radius. */
@@ -131,6 +169,8 @@ int main(void)
 {
     @autoreleasepool {
         test_held_drag_and_preview_target();
+        test_snap_feedback_engages_once_and_clears();
+        test_runtime_snap_reduces_existing_overlap();
         test_release_commits_gap_at_each_zoom();
         test_missed_and_blocked_releases_do_not_snap();
         test_snap_ignores_offscreen_neighbors_and_bounds_rounding();

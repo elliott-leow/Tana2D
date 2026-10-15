@@ -67,6 +67,30 @@ static void test_multi_neighbor_snap(void)
     assert(!hwm_plane_snap_neighbors_target((HWMPlaneRect){1000,1000,40,50},one,1,12,24,&snap));
 }
 
+static void test_snap_can_escape_existing_overlap_and_keeps_edge(void)
+{
+    HWMPlaneRect stacked[]={{100,100,100,100},{220,90,300,200}};
+    HWMPlaneRect moving={215,100,40,50}; HWMPlanePoint point;
+    assert(hwm_plane_snap_neighbors_target(moving,stacked,2,12,12,&point));
+    near(point.x,212); near(point.y,100);
+    assert(hwm_plane_overlap_area((HWMPlaneRect){point.x,point.y,40,50},stacked[1])<hwm_plane_overlap_area(moving,stacked[1]));
+    /* An overlapping target stack must work from either side of its edge,
+     * including a point that has not yet overshot the ideal docking gap. */
+    HWMPlaneRect target_stack[]={{300,100,100,100},{195,90,110,120}};
+    for(int offset=-6;offset<=6;offset+=12) {
+        assert(hwm_plane_snap_neighbors_target((HWMPlaneRect){188+offset,100,100,100},target_stack,2,12,12,&point));
+        near(point.x,188); near(point.y,100);
+    }
+
+    HWMPlaneRect peers[]={{88,100,100,100},{276,100,100,100}};
+    HWMPlaneSnapTarget preferred={{224,100},1,0,0},target;
+    assert(hwm_plane_snap_choose((HWMPlaneRect){212,100,40,50},peers,2,12,12,&preferred,&target));
+    near(target.point.x,224); assert(target.neighbor==1);
+    /* The held edge loses its preference outside the same small radius. */
+    assert(hwm_plane_snap_choose((HWMPlaneRect){211,100,40,50},peers,2,12,12,&preferred,&target));
+    near(target.point.x,200); assert(target.neighbor==0);
+}
+
 static void test_snap_has_radial_bound(void)
 {
     const double scales[]={.1,.25,.5,.7,1,2,4};
@@ -108,6 +132,7 @@ int main(void)
     near(fallback.x,from.x); near(fallback.y,from.y); near(fallback.scale,from.scale);
     test_edge_pan_hold();
     test_multi_neighbor_snap();
+    test_snap_can_escape_existing_overlap_and_keeps_edge();
     test_snap_has_radial_bound();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);

@@ -1454,85 +1454,7 @@ static void horizontal_input(void *context, int action)
     CFRelease(event);
 }
 
-static void hwm_preview_hide(void)
-{
-    if(!hwm_preview_visible || hwm_preview_hiding) return;
-    hwm_preview_alpha_from=hwm_preview_alpha;
-    hwm_preview_alpha_start=hwm_now(); hwm_preview_hiding=true; hwm_wake();
-}
-static void hwm_preview_hide_immediately(void)
-{
-    hwm_preview_visible=false;
-    hwm_preview_hiding=false; hwm_preview_alpha=0;
-    if(hwm_preview_id) SLSOrderWindow(g_connection,hwm_preview_id,0,0);
-}
-static bool hwm_preview_render(double now)
-{
-    if(!hwm_preview_visible) return false;
-    double previous_alpha=hwm_preview_alpha;
-    double fade=(now-hwm_preview_alpha_start)/.14;
-    hwm_preview_alpha=hwm_preview_alpha_from+((hwm_preview_hiding?0:1)-hwm_preview_alpha_from)*horizontal_ease(fade);
-    if(hwm_preview_hiding && fade>=1) { hwm_preview_hide_immediately(); return false; }
-    if(hwm_preview_id && previous_alpha!=hwm_preview_alpha) SLSSetWindowAlpha(g_connection,hwm_preview_id,hwm_preview_alpha);
-    double span=fmax(.001,.18*hwm_motion_scale), t=(now-hwm_preview_start)/span, p=hstrip_spring_progress(now-hwm_preview_start,span);
-    CGRect a=hwm_preview_from,b=hwm_preview_target;
-    CGRect f=CGRectMake(a.origin.x+(b.origin.x-a.origin.x)*p,a.origin.y+(b.origin.y-a.origin.y)*p,
-                       a.size.width+(b.size.width-a.size.width)*p,a.size.height+(b.size.height-a.size.height)*p);
-    bool active=t<1 || fade<1;
-    // Opacity can continue changing without recreating paths, regions, or the
-    // CGContext backing store once the geometry has settled.
-    if(hwm_preview_context && CGRectEqualToRect(f,hwm_preview_current)) return active;
-    hwm_preview_current=f;
-    CFTypeRef region; CGSNewRegionWithRect(&f,&region);
-    if(!hwm_preview_id) {
-        uint64_t tags=(1ULL<<1)|(1ULL<<9);
-        CFTypeRef empty=CGRegionCreateEmptyRegion();
-        SLSNewWindowWithOpaqueShapeAndContext(g_connection,2,region,empty,13,&tags,0,0,64,&hwm_preview_id,NULL);
-        CFRelease(empty);
-        sls_window_disable_shadow(hwm_preview_id);
-        SLSSetWindowResolution(g_connection,hwm_preview_id,1);
-        SLSSetWindowOpacity(g_connection,hwm_preview_id,0);
-        SLSSetWindowAlpha(g_connection,hwm_preview_id,hwm_preview_alpha);
-        SLSSetWindowLevel(g_connection,hwm_preview_id,3);
-        hwm_preview_context=SLWindowContextCreate(g_connection,hwm_preview_id,0);
-    }
-    if(!hwm_preview_context) { CFRelease(region); return false; }
-    CGRect local=CGRectMake(0,0,f.size.width,f.size.height);
-    hwm_batch_begin();
-    SLSSetWindowShape(g_connection,hwm_preview_id,0,0,region);
-    CGContextClearRect(hwm_preview_context,local);
-    CGPathRef path=CGPathCreateWithRoundedRect(CGRectInset(local,local.size.width<=4?0:2,2),local.size.width<=4?2:12,local.size.width<=4?2:12,NULL);
-    CGContextSetRGBFillColor(hwm_preview_context,.22,.55,1,.20);
-    CGContextSetRGBStrokeColor(hwm_preview_context,.28,.63,1,.95);
-    CGContextSetLineWidth(hwm_preview_context,2);
-    CGContextAddPath(hwm_preview_context,path); CGContextDrawPath(hwm_preview_context,kCGPathFillStroke);
-    CGContextFlush(hwm_preview_context);
-    SLSOrderWindow(g_connection,hwm_preview_id,1,0);
-    hwm_batch_end();
-    CGPathRelease(path); CFRelease(region);
-    return active;
-}
-/* `animate` glides to a new drop zone. Without it the box is pinned to a zone
- * that is itself moving (edge autoscroll), which must not restart the glide. */
-static void hwm_preview_show(CGRect target,CGRect start,bool animate)
-{
-    if(hwm_preview_visible && !hwm_preview_hiding && CGRectEqualToRect(target,hwm_preview_target)) return;
-    double now=hwm_now();
-    if(hwm_preview_visible && !hwm_preview_hiding && !animate) {
-        // Carry the remaining glide along with the zone instead of restarting it.
-        double dx=target.origin.x-hwm_preview_target.origin.x, dy=target.origin.y-hwm_preview_target.origin.y;
-        hwm_preview_from=CGRectOffset(hwm_preview_from,dx,dy);
-        hwm_preview_from.size.width+=target.size.width-hwm_preview_target.size.width;
-        hwm_preview_from.size.height+=target.size.height-hwm_preview_target.size.height;
-        hwm_preview_target=target; hwm_wake(); return;
-    }
-    if(hwm_preview_visible) hwm_preview_render(now);
-    hwm_preview_alpha_from=hwm_preview_visible?hwm_preview_alpha:0;
-    hwm_preview_alpha_start=now; hwm_preview_hiding=false;
-    hwm_preview_from=hwm_preview_visible?hwm_preview_current:start;
-    if(!hwm_preview_visible) hwm_preview_current=CGRectNull;
-    hwm_preview_target=target; hwm_preview_start=now; hwm_preview_visible=true; hwm_wake();
-}
+#include "plane_preview.m"
 static void hwm_preview_set(CGRect target,CGRect start) { hwm_preview_show(target,start,true); }
 static bool hwm_place(struct view *view,uint32_t source,uint32_t target,HStripPlacement placement,bool commit,CGRect *preview)
 {
@@ -1623,9 +1545,11 @@ static void hwm_drag_update(struct view *view,struct window *window,CGPoint poin
 static void hwm_drag_snap_commit(struct view *view,struct window *window)
 {
     CGPoint target;
-    if(hwm_drag_snap_target(view,window,&target) &&
-       (target.x!=window->strip_world_x || target.y!=window->strip_world_y))
-        hwm_drag_submit_plane(view,window,target);
+    if(hwm_drag_snap_target(view,window,&target)) {
+        bool accepted=(target.x==window->strip_world_x && target.y==window->strip_world_y) ||
+                      hwm_drag_submit_plane(view,window,target);
+        if(accepted) { ++hwm_snap_commits; hwm_haptic(1); }
+    }
 }
 #include "plane_pointer.m"
 static bool horizontal_owns_native_drag(void)
@@ -1674,7 +1598,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.3\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.4\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1779,6 +1703,11 @@ static void horizontal_command(FILE *rsp, char *message)
             @"worldWidth":@(w->strip_width),@"worldHeight":@(w->strip_height),@"nativeResizeEvents":@(w->strip_native_resize_events),
             @"worldX":@(w->strip_world_x),@"worldY":@(w->strip_world_y),@"cachedX":@(w->strip_last_frame.origin.x),@"cachedY":@(w->strip_last_frame.origin.y),
             @"nativeResizePending":@(w->strip_native_resize_pending),@"nativeMovePending":@(w->strip_native_move_pending),@"sizePending":@(w->strip_size_pending),@"resizeBusy":@(hwm_resize_busy(w)),
+            @"snapActive":@(hwm_snap_window==w->id && hwm_snap_neighbor!=0),@"snapNeighbor":@(hwm_snap_window==w->id?hwm_snap_neighbor:0),
+            @"snapEdge":@(hwm_snap_axis*2+hwm_snap_side),@"snapX":@(hwm_snap_point.x),@"snapY":@(hwm_snap_point.y),
+            @"snapEngagements":@(hwm_snap_engagements),@"snapCommits":@(hwm_snap_commits),@"hapticsEnabled":@(hwm_haptics),
+            @"snapPreviewVisible":@(hwm_preview_visible && hwm_preview_ordered && !hwm_preview_hiding),@"snapPreviewWindow":@(hwm_preview_id),
+            @"previewDraws":@(hwm_preview_draws),@"previewMoves":@(hwm_preview_moves),
             @"transformDirty":@(w->strip_transform_dirty),@"scale":@(w->strip_last_plane_scale),@"edge":@(hwm_edge_window==w->id),
             @"drag":@(hwm_drag_window==w->id),@"nativeDrag":@(hwm_drag_window==w->id && hwm_drag_native),@"hiddenTab":@(hwm_workflow_tab_hidden(w)),@"layout":@(view?view->layout:0)};
         NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
@@ -1842,7 +1771,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.3\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.4\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {

@@ -166,7 +166,7 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
         if(view) hwm_layout(view,false);
     }
     hwm_drag_committed=false;
-    hwm_drop_target=0; hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
+    hwm_drop_target=0; hwm_drag_snap_reset(); hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
 }
 
 /* A title-bar release is not immediately trustworthy: AppKit can publish the

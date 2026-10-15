@@ -564,3 +564,78 @@ A software-update authentication dialog obscured the original centered test
 coordinates. It was left untouched; the generated-pointer fixture now uses a
 clear upper-left area. Final package signature verification and installed/package
 binary comparison passed. Test windows were closed and camera/focus restored.
+
+
+### Adjacent-window docking feedback (2026-10-14, version 0.5.4)
+
+The old collision rule rejected every landing rectangle that overlapped another
+window, including existing stacks where docking would reduce the overlap. A
+real global-input fixture drag reproduced the missed snap on 0.5.3; the same
+scene docks on 0.5.4. The before/after pure-geometry probe also fails/passes
+respectively. Windows already stacked with the chosen neighbor do not veto docking from
+either approach direction. Separate obstacles still reject new or deeper
+overlaps while allowing existing overlaps to shrink. A blocked perpendicular alignment can fall back to a clear
+side-to-side landing. No unrelated window is repositioned or resized.
+
+The normal window gap is preserved, and the final movement remains bounded to
+12 screen points at every zoom. An engaged neighboring edge retains priority
+while it remains eligible; leaving the range releases it. Held windows retain
+pointer tracking. The landing outline and bright seam show the exact target
+before release, and the release commits that proposal. Engagement requests one
+alignment haptic; a successful drop requests a level-change confirmation. Motion
+within one target does not repeatedly trigger feedback, and the existing haptics
+preference remains respected.
+
+`src/plane_preview.m` owns one reusable, mouse-inert WindowServer surface. It
+redraws only for size or docking-edge changes. Translation uses the cached
+surface, stationary frames perform no geometry work, alpha writes stop after
+fading, and the snap proposal is submitted without a spatial spring or waiting
+for the next display tick. Production-renderer tests cover 240 translated frames
+without raster/shape changes, 120 stationary frames without movement, click-through
+flags, failure retry, and release fading. The four docking-edge raster variants
+were rendered and inspected (`build/snap-preview-edges.png`); the interior's
+9-percent alpha is asserted. A live hit test through the displayed preview
+returned the managed fixture window, not the overlay. CUA's per-app screenshot
+excludes separate overlay surfaces, so it was not used as pixel proof of the
+composited desktop preview.
+
+Verification completed on the installed build:
+
+- `make all test`: 28 native executables and 20 Python tests passed.
+- `tests/live_snap_feedback.py`: all four edges at 50%, 100%, and 200% zoom,
+  existing-overlap recovery, and a 120-sample sliding test passed. The actual
+  preview bounds match the proposed landing rectangle, engagement occurs once
+  per target, release commits once, and the slide adds zero raster redraws or
+  haptic engagements. No movement failures were added.
+- `tests/live_native_snap_feedback.py`: real global CGEvent title-bar drags
+  passed on all four sides, with a presented preview while held, native input
+  ownership, and the expected final gap and feedback counters.
+- The native overlapping-stack reproduction also passed after installation.
+
+Evidence: `build/snap-feedback-tests.log`, `build/snap-feedback-live.json`,
+`build/native-snap-feedback-live.json`, and
+`build/native-snap-overlap-before.json` / `build/native-snap-overlap-after.json`.
+The 120-sample slide took 1.044 seconds including subprocess/diagnostic overhead;
+helper presentation averaged 0.121 ms (0.200 ms maximum), with zero AX resizes.
+The maximum measured rendering tick in that run was 8.137 ms. These are measured
+software intervals, not input-to-photon measurements or a universal FPS bound.
+This session's display link reports 60 Hz. Haptic requests and their gating are
+verified; the tactile sensation itself is not instrumented.
+
+
+A follow-up checked the outside approach explicitly, so docking never requires
+overshooting the target's edge. All 14 controller checks and all four actual
+native drags passed with `--outside`; the native run also used `--stacked`.
+Evidence: `build/snap-feedback-outside-live.json` and
+`build/native-snap-feedback-stacked-outside-live.json`.
+
+A second timing run recorded a 23.445 ms rendering tick. Periodic whole-desktop
+border discovery was still running inside the held-drag render path; it now
+waits until release. Cached companion updates continue normally. A regression
+checks 240 held frames with zero desktop enumerations and a refresh after release.
+In the final 120-sample repeat, presentation averaged 0.084 ms (0.209 ms maximum),
+the renderer's maximum was 1.589 ms, and the complete measured rendering tick
+peaked at 1.682 ms. There were zero extra preview rasterizations, haptic
+engagements, AX resizes, or movement failures in the slide. The display link still
+reports 60 Hz; these software timings do not establish a physical 120 FPS output.
+Final package signature and installed/package identity checks passed.
