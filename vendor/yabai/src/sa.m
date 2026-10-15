@@ -399,6 +399,7 @@ out:
 // helper without waiting for each one; end waits for all of them together.
 static __thread HwmSaPipeline hwm_sa_pipeline;
 static __thread int hwm_sa_batch_depth;
+static __thread void (*hwm_sa_batch_barrier)(void);
 static __thread HwmPlaneTransform hwm_sa_plane_transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
 static __thread uint16_t hwm_sa_plane_transform_count;
 static bool hwm_sa_plane_flush(void);
@@ -408,9 +409,15 @@ void scripting_addition_batch_begin(void)
     ++hwm_sa_batch_depth;
 }
 
+void scripting_addition_batch_set_barrier(void (*barrier)(void))
+{
+    hwm_sa_batch_barrier=barrier;
+}
+
 // Wait until everything queued so far has been applied, leaving the batch open.
 bool scripting_addition_batch_flush(void)
 {
+    if(hwm_sa_batch_depth>0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
     return hwm_sa_plane_flush() && hwm_sa_pipeline_flush(&hwm_sa_pipeline);
 }
 
@@ -423,6 +430,7 @@ bool scripting_addition_batch_end(void)
 static bool scripting_addition_send_bytes(char *bytes, int length)
 {
     if (length <= 0) return false;
+    if(hwm_sa_batch_depth>0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
     /* An ordinary command following transforms must not overtake their
      * absolute transaction on the helper socket. */
     if (!hwm_sa_plane_flush()) return false;
@@ -496,7 +504,10 @@ bool scripting_addition_set_plane_transform_xy(uint32_t wid, double x, double y,
     }
     HwmPlaneTransform transform = { wid, x, y, scale_x, scale_y };
     if (!hwm_plane_transform_valid(transform)) return false;
-    if (hwm_sa_plane_transform_count == SA_PLANE_TRANSFORM_MAX_RECORDS && !hwm_sa_plane_flush()) return false;
+    if (hwm_sa_plane_transform_count == SA_PLANE_TRANSFORM_MAX_RECORDS) {
+        if(hwm_sa_batch_barrier) hwm_sa_batch_barrier();
+        if(!hwm_sa_plane_flush()) return false;
+    }
     hwm_sa_plane_transforms[hwm_sa_plane_transform_count++] = transform;
     return hwm_sa_batch_depth > 0 || hwm_sa_plane_flush();
 }

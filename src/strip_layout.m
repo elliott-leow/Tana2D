@@ -17,13 +17,27 @@ static double hwm_content_width;
  * nothing is presented until the frame has finished, so a window that is moved
  * and re-scaled in the same frame is never shown half-updated. */
 static int hwm_batch_depth;
-static bool hwm_batch_open, hwm_batch_hold;
+static bool hwm_batch_open, hwm_batch_hold, hwm_batch_updates;
+static void hwm_batch_require_updates(void)
+{
+    if(hwm_batch_open && !hwm_batch_updates) {
+        SLSDisableUpdate(g_connection); hwm_batch_updates=true;
+    }
+}
+static void hwm_batch_begin_plane(void)
+{
+    /* A single helper transform transaction is already atomic. Ordinary
+     * commands, intermediate flushes and capacity splits escalate through the
+     * thread-local barrier before presenting any partial work. */
+    if(!hwm_batch_open) {
+        scripting_addition_batch_set_barrier(hwm_batch_require_updates);
+        scripting_addition_batch_begin(); hwm_batch_open=true;
+    }
+    ++hwm_batch_depth;
+}
 static void hwm_batch_begin(void)
 {
-    // The helper commands of a batch are handed over together and awaited
-    // once, just before the batch is presented.
-    if(!hwm_batch_open) { SLSDisableUpdate(g_connection); scripting_addition_batch_begin(); hwm_batch_open=true; }
-    ++hwm_batch_depth;
+    hwm_batch_begin_plane(); hwm_batch_require_updates();
 }
 static void hwm_batch_failed(void)
 {
@@ -38,7 +52,9 @@ static void hwm_batch_failed(void)
 static void hwm_batch_present(void)
 {
     if(!scripting_addition_batch_end()) hwm_batch_failed();
-    SLSReenableUpdate(g_connection); hwm_batch_open=false;
+    if(hwm_batch_updates) SLSReenableUpdate(g_connection);
+    hwm_batch_updates=false; hwm_batch_open=false;
+    scripting_addition_batch_set_barrier(NULL);
 }
 static void hwm_batch_end(void)
 {

@@ -15,6 +15,7 @@ bool scripting_addition_focus_space(uint64_t sid);
 bool scripting_addition_move_space_to_display(uint64_t src_sid, uint64_t dst_sid, uint64_t src_prev_sid, bool focus);
 bool scripting_addition_move_space_after_space(uint64_t src_sid, uint64_t dst_sid, bool focus);
 void scripting_addition_batch_begin(void);
+void scripting_addition_batch_set_barrier(void (*barrier)(void));
 bool scripting_addition_batch_flush(void);
 bool scripting_addition_batch_end(void);
 bool scripting_addition_move_window(uint32_t wid, int x, int y);

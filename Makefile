@@ -42,6 +42,10 @@ test:
 	./build/plane_ax_cancel_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_snap_runtime_test.m -framework Cocoa -o build/plane_snap_runtime_test
 	./build/plane_snap_runtime_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -fblocks -g tests/strip_visibility_discovery_test.m -framework Cocoa -o build/strip_visibility_discovery_test
+	./build/strip_visibility_discovery_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O2 tests/strip_feedback_snapshot_test.m -framework Cocoa -o build/strip_feedback_snapshot_test
+	./build/strip_feedback_snapshot_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_batch_recovery_test.m -framework Cocoa -o build/plane_batch_recovery_test
 	./build/plane_batch_recovery_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_input_queue_test.m -framework Cocoa -o build/plane_input_queue_test
@@ -82,6 +86,8 @@ bench:
 	mkdir -p build
 	$(CC) -std=c11 -Wall -Wextra -Werror -O2 tests/performance_bench.c -o build/performance_bench
 	./build/performance_bench
+	$(CC) -std=c11 -Wall -Wextra -Werror -O2 tests/plane_snap_bench.c -o build/plane_snap_bench
+	./build/plane_snap_bench
 clean:
 	rm -f build/tana2d build/strip_geometry_test
 
@@ -93,6 +99,7 @@ live-tools:
 	$(CC) tests/window_metrics.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/window_metrics
 	$(CC) tests/plane_gesture_probe.m -framework Cocoa -o build/plane_gesture_probe
 	$(CC) tests/plane_pointer_probe.m -framework Cocoa -o build/plane_pointer_probe
+	$(CC) -fno-objc-arc -fblocks tests/live_input_projection.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_input_projection
 
 	$(CC) -fno-objc-arc tests/live_transform_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_transform_transaction
 	$(CC) -Wno-unused-function -fno-objc-arc tests/live_helper_bounds_lock.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_helper_bounds_lock

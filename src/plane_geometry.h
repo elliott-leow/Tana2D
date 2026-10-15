@@ -5,6 +5,7 @@
  * never clamped: camera movement is translation, and zoom only changes the
  * projection used to show the existing arrangement. */
 #include <math.h>
+#include <float.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include "strip_geometry.h"
@@ -166,7 +167,153 @@ static inline bool hwm_plane_snap_candidate_clear(HWMPlaneRect moving,HWMPlanePo
     return true;
 }
 
-typedef struct { HWMPlanePoint point; size_t neighbor; int axis,side; } HWMPlaneSnapTarget;
+typedef struct {
+    HWMPlanePoint point;
+    size_t neighbor;
+    int axis,side;
+    /* The primary neighbor remains available to the existing preview seam.
+     * contact_count reports edges whose final perpendicular spans overlap. */
+    size_t contact_count;
+} HWMPlaneSnapTarget;
+
+static inline bool hwm_plane_snap_coordinate_equal(double a,double b,double extent,double range)
+{
+    /* Target coordinates normally share arithmetic and compare exactly. This
+     * only absorbs floating-point accumulation: it is bounded by the smaller
+     * span/range, never grows with world position into a docking distance. */
+    double smallest=fmin(fmax(extent,1e-6),fmax(range,1e-6));
+    double numeric=16*DBL_EPSILON*fmax(1,fmax(fabs(a),fabs(b)));
+    double geometric=fmin(1e-5,smallest*1e-6);
+    double tolerance=fmin(smallest*.001,fmax(numeric,geometric));
+    return fabs(a-b)<=tolerance;
+}
+
+/* Is this edge eligible from the raw held point, and where would it land?
+ * Keeping this predicate tied to the held point preserves the old "near a
+ * compatible span" contract while later candidates may satisfy two axes. */
+static inline bool hwm_plane_snap_edge_target(HWMPlaneRect moving,HWMPlaneRect other,
+                                              int axis,int side,double gap,double range,double *coordinate)
+{
+    if(!hwm_plane_rect_valid(other) || !coordinate || (axis!=0 && axis!=1) || (side!=0 && side!=1)) return false;
+    bool perpendicular_overlap=axis==0
+        ? moving.y+moving.height>=other.y-range && moving.y<=other.y+other.height+range
+        : moving.x+moving.width>=other.x-range && moving.x<=other.x+other.width+range;
+    if(!perpendicular_overlap) return false;
+    double target=axis==0
+        ? (side==0 ? other.x-moving.width-gap : other.x+other.width+gap)
+        : (side==0 ? other.y-moving.height-gap : other.y+other.height+gap);
+    double from=axis==0 ? moving.x : moving.y;
+    if(!isfinite(target) || fabs(target-from)>range) return false;
+    *coordinate=target;
+    return true;
+}
+
+/* An anchor retains the established near-span magnet behavior. A contact,
+ * below, is stricter and may be counted with other independent contacts. */
+static inline bool hwm_plane_snap_anchor_matches(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                                 size_t count,size_t index,double gap,double range,
+                                                 HWMPlanePoint point,int axis,int side)
+{
+    if(index>=count) return false;
+    double target=0;
+    if(!hwm_plane_snap_edge_target(moving,neighbors[index],axis,side,gap,range,&target)) return false;
+    double extent=axis==0 ? moving.width : moving.height;
+    return hwm_plane_snap_coordinate_equal(axis==0 ? point.x : point.y,target,extent,range);
+}
+
+static inline bool hwm_plane_snap_contact_matches(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                                  size_t count,size_t index,double gap,double range,
+                                                  HWMPlanePoint point,int axis,int side)
+{
+    if(!hwm_plane_snap_anchor_matches(moving,neighbors,count,index,gap,range,point,axis,side)) return false;
+    HWMPlaneRect other=neighbors[index];
+    return axis==0 ? point.y<other.y+other.height && point.y+moving.height>other.y
+                   : point.x<other.x+other.width && point.x+moving.width>other.x;
+}
+
+static inline size_t hwm_plane_snap_contact_count(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
+                                                  size_t count,double gap,double range,HWMPlanePoint point)
+{
+    size_t contacts=0;
+    for(size_t i=0;i<count;i++) for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++)
+        contacts+=hwm_plane_snap_contact_matches(moving,neighbors,count,i,gap,range,point,axis,side);
+    return contacts;
+}
+
+static inline bool hwm_plane_snap_candidate_clear_contacts(HWMPlaneRect moving,HWMPlanePoint point,
+                                                           const HWMPlaneRect *neighbors,size_t count,
+                                                           double gap,double range)
+{
+    HWMPlaneRect candidate={point.x,point.y,moving.width,moving.height};
+    for(size_t i=0;i<count;i++) {
+        if(!hwm_plane_rect_valid(neighbors[i])) continue;
+        double before=hwm_plane_overlap_area(moving,neighbors[i]);
+        double after=hwm_plane_overlap_area(candidate,neighbors[i]);
+        if(after<=before+1e-8) continue;
+        /* Retain the existing stacked-peer exception for every chosen
+         * contact.  The extra scan only runs for an actual new/deeper
+         * collision, avoiding all-pairs work in ordinary proposals. */
+        bool stacked=false;
+        for(size_t j=0;j<count && !stacked;j++) {
+            if(i==j || !hwm_plane_rect_valid(neighbors[j])) continue;
+            bool contact=false;
+            for(int axis=0;axis<2 && !contact;axis++) for(int side=0;side<2;side++)
+                if(hwm_plane_snap_anchor_matches(moving,neighbors,count,j,gap,range,point,axis,side)) { contact=true; break; }
+            if(contact && hwm_plane_rects_overlap(neighbors[i],neighbors[j])) stacked=true;
+        }
+        if(!stacked) return false;
+    }
+    return true;
+}
+
+/* Most planes have only a few eligible edges. A fixed cache removes repeated
+ * work when many stacked peers describe the identical landing point, without
+ * allocating from the drag hot path. Overflow falls back to full evaluation,
+ * so it cannot omit a legitimate target. */
+enum { HWM_PLANE_SNAP_CANDIDATE_CACHE = 64 };
+typedef struct {
+    HWMPlanePoint points[HWM_PLANE_SNAP_CANDIDATE_CACHE];
+    size_t count;
+} HWMPlaneSnapCandidateCache;
+
+static inline bool hwm_plane_snap_candidate_cache_add(HWMPlaneSnapCandidateCache *cache,HWMPlanePoint point)
+{
+    for(size_t i=0;i<cache->count;i++)
+        if(cache->points[i].x==point.x && cache->points[i].y==point.y) return false;
+    if(cache->count<HWM_PLANE_SNAP_CANDIDATE_CACHE) cache->points[cache->count++]=point;
+    return true;
+}
+
+static inline void hwm_plane_snap_consider(HWMPlaneRect moving,const HWMPlaneRect *neighbors,size_t count,
+                                           double gap,double range,const HWMPlaneSnapTarget *preferred,
+                                           HWMPlanePoint candidate,HWMPlaneSnapTarget *best,double *cost,
+                                           bool *best_preferred,HWMPlaneSnapCandidateCache *cache)
+{
+    if(!isfinite(candidate.x) || !isfinite(candidate.y) || hypot(candidate.x-moving.x,candidate.y-moving.y)>range ||
+       !hwm_plane_snap_candidate_cache_add(cache,candidate) ||
+       !hwm_plane_snap_candidate_clear_contacts(moving,candidate,neighbors,count,gap,range)) return;
+    size_t contacts=hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,candidate);
+    bool has_preferred=false,have_primary=false;
+    size_t primary=0; int primary_axis=0,primary_side=0;
+    for(size_t i=0;i<count;i++) for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
+        if(!hwm_plane_snap_anchor_matches(moving,neighbors,count,i,gap,range,candidate,axis,side)) continue;
+        bool match=preferred && preferred->neighbor==i && preferred->axis==axis && preferred->side==side;
+        if(match || (!has_preferred && (!have_primary || axis<primary_axis ||
+           (axis==primary_axis && (side<primary_side || (side==primary_side && i<primary)))))) {
+            primary=i; primary_axis=axis; primary_side=side; have_primary=true;
+        }
+        has_preferred|=match;
+    }
+    if(!have_primary) return;
+    double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
+    HWMPlaneSnapTarget choice={candidate,primary,primary_axis,primary_side,contacts};
+    if(contacts>best->contact_count || (contacts==best->contact_count &&
+       (has_preferred>*best_preferred || (has_preferred==*best_preferred &&
+       (distance<*cost || (distance==*cost && (candidate.x<best->point.x ||
+       (candidate.x==best->point.x && candidate.y<best->point.y)))))))) {
+        *best=choice; *cost=distance; *best_preferred=has_preferred;
+    }
+}
 
 /* World-space geometry with a radial movement bound. Prefer the engaged edge
  * while it remains valid, so crossing a near-tie cannot flicker the preview. */
@@ -176,41 +323,50 @@ static inline bool hwm_plane_snap_choose(HWMPlaneRect moving,const HWMPlaneRect 
 {
     if(!out || !hwm_plane_rect_valid(moving) || (!neighbors && count) ||
        !isfinite(gap) || gap<0 || !isfinite(range) || range<0) return false;
-    HWMPlaneSnapTarget best={{moving.x,moving.y},0,0,0};
+    HWMPlaneSnapTarget best={{moving.x,moving.y},0,0,0,0};
     double cost=INFINITY;
-    for(size_t i=0;i<count;i++) {
-        HWMPlaneRect other=neighbors[i];
-        if(!hwm_plane_rect_valid(other)) continue;
-        double xs[2]={other.x-moving.width-gap,other.x+other.width+gap};
-        double ys[2]={other.y-moving.height-gap,other.y+other.height+gap};
-        bool overlap_y=moving.y+moving.height>=other.y-range && moving.y<=other.y+other.height+range;
-        bool overlap_x=moving.x+moving.width>=other.x-range && moving.x<=other.x+other.width+range;
-        for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
-            if(axis==0 ? !overlap_y : !overlap_x) continue;
-            double delta=axis==0 ? xs[side]-moving.x : ys[side]-moving.y;
-            if(!isfinite(delta) || fabs(delta)>range) continue;
-            HWMPlanePoint raw={axis==0 ? xs[side] : moving.x,axis==1 ? ys[side] : moving.y};
-            HWMPlanePoint candidate=raw;
-            double a=axis==0 ? other.y-moving.y : other.x-moving.x;
-            double b=axis==0 ? other.y+other.height-moving.height-moving.y : other.x+other.width-moving.width-moving.x;
-            double align=fabs(a)<=fabs(b) ? a : b;
-            if(hypot(delta,align)<=range) { if(axis==0) candidate.y+=align; else candidate.x+=align; }
-            /* Perpendicular alignment is optional. A blocked alignment must
-             * not veto a clear side-to-side docking position. */
-            if(!hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count,i)) candidate=raw;
-            if(!isfinite(candidate.x) || !isfinite(candidate.y) ||
-               !hwm_plane_snap_candidate_clear(moving,candidate,neighbors,count,i)) continue;
-            double distance=hypot(candidate.x-moving.x,candidate.y-moving.y);
-            if(distance>range) continue;
-            HWMPlaneSnapTarget choice={candidate,i,axis,side};
-            if(preferred && preferred->neighbor==i && preferred->axis==axis && preferred->side==side) {
-                *out=choice; return true;
-            }
-            if(distance<cost || (distance==cost &&
-               (candidate.x<best.point.x || (candidate.x==best.point.x && candidate.y<best.point.y)))) {
-                best=choice; cost=distance;
-            }
+    bool best_preferred=false;
+    HWMPlaneSnapCandidateCache candidates={0};
+    /* Candidates are edge coordinates, never triples: one X and one Y edge
+     * express a corner, a two-sided fit, or a natural four-contact landing.
+     * Edges outside the small radial range never enter the paired scan. */
+    for(size_t xi=0;xi<count;xi++) for(int xs=0;xs<2;xs++) {
+        double x=0;
+        if(!hwm_plane_snap_edge_target(moving,neighbors[xi],0,xs,gap,range,&x)) continue;
+        double a=neighbors[xi].y-moving.y;
+        double b=neighbors[xi].y+neighbors[xi].height-moving.height-moving.y;
+        double align=fabs(a)<=fabs(b) ? a : b;
+        HWMPlanePoint aligned={x,moving.y+align};
+        HWMPlanePoint raw={x,moving.y};
+        bool aligned_in_range=hypot(aligned.x-moving.x,aligned.y-moving.y)<=range;
+        bool aligned_clear=aligned_in_range && hwm_plane_snap_candidate_clear_contacts(moving,aligned,neighbors,count,gap,range);
+        /* The historic single-edge target aligned the perpendicular edge when
+         * possible. Keep that landing unless raw X holds more contacts. */
+        if(!aligned_clear || hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,raw)>
+                             hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,aligned))
+            hwm_plane_snap_consider(moving,neighbors,count,gap,range,preferred,raw,&best,&cost,&best_preferred,&candidates);
+        hwm_plane_snap_consider(moving,neighbors,count,gap,range,preferred,aligned,&best,&cost,&best_preferred,&candidates);
+        for(size_t yi=0;yi<count;yi++) if(yi!=xi) for(int ys=0;ys<2;ys++) {
+            double y=0;
+            if(hwm_plane_snap_edge_target(moving,neighbors[yi],1,ys,gap,range,&y))
+                hwm_plane_snap_consider(moving,neighbors,count,gap,range,preferred,(HWMPlanePoint){x,y},&best,&cost,&best_preferred,&candidates);
         }
+    }
+    /* A y-only proposal is still needed when no horizontal edge is near. */
+    for(size_t yi=0;yi<count;yi++) for(int ys=0;ys<2;ys++) {
+        double y=0;
+        if(!hwm_plane_snap_edge_target(moving,neighbors[yi],1,ys,gap,range,&y)) continue;
+        double a=neighbors[yi].x-moving.x;
+        double b=neighbors[yi].x+neighbors[yi].width-moving.width-moving.x;
+        double align=fabs(a)<=fabs(b) ? a : b;
+        HWMPlanePoint aligned={moving.x+align,y};
+        HWMPlanePoint raw={moving.x,y};
+        bool aligned_in_range=hypot(aligned.x-moving.x,aligned.y-moving.y)<=range;
+        bool aligned_clear=aligned_in_range && hwm_plane_snap_candidate_clear_contacts(moving,aligned,neighbors,count,gap,range);
+        if(!aligned_clear || hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,raw)>
+                             hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,aligned))
+            hwm_plane_snap_consider(moving,neighbors,count,gap,range,preferred,raw,&best,&cost,&best_preferred,&candidates);
+        hwm_plane_snap_consider(moving,neighbors,count,gap,range,preferred,aligned,&best,&cost,&best_preferred,&candidates);
     }
     if(!isfinite(cost)) return false;
     *out=best; return true;

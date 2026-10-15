@@ -660,3 +660,75 @@ window rectangle and the independently measured border surface. Evidence:
 `build/border-hover-live.json` and `build/border-hover-final-live.log`.
 Installed/package binary identity and code-signature validation passed. These are
 injected-input and WindowServer checks, not physical trackpad or screenshot QA.
+
+### Multi-neighbor docking and render cost (0.5.6)
+
+Docking now evaluates simultaneous compatible horizontal and vertical edges,
+including a same-size window between two peers and beside a third. It preserves
+the 12-screen-point radial limit, the held pointer position, the existing primary
+preview seam and haptics, and the window's dimensions. Contacts require overlapping
+perpendicular spans at the final landing; large world coordinates cannot inflate
+the contact tolerance into a visible gap.
+An exact-coordinate cache avoids scoring the same landing repeatedly when
+peers are stacked. Its fixed capacity falls back to normal evaluation when full.
+The 256-stacked-peer benchmark improved from 314.34 ms to 6.30 ms for ten
+proposals; this is a geometry microbenchmark, not a whole-manager speedup.
+
+Rendering changes preserve the existing drawing parameters and target geometry:
+
+- A single helper transform packet uses its existing atomic transaction without
+  a redundant global display freeze. Ordinary commands, intermediate flushes,
+  capacity splits, visibility changes, and direct surface mutations retain the
+  display barrier. The compiled production sender test covers these boundaries
+  and a failed overflow send.
+- Desktop border enumeration runs on one background worker with immutable
+  id/PID publication. The render thread consumes a new result on its next frame
+  and validates live ownership before changing a surface.
+- Tab member collection uses one traversal; the emitted order, titles, geometry,
+  and active state match the former repeated-scan output.
+- Border clear and gradient rendering use one transparency-layer composite.
+  The production border test compares complete bitmap pixels with the former
+  direct renderer across 20 sizes and translucent gradient colors.
+
+`make all test` passes, including 21 Python tests and the new compiled discovery,
+feedback, and batching checks. `tests/live_multi_snap.py` passed four actual
+CGEvent Option-drag cases: two and three contacts at 100% and 50%. Each verified
+the exact landing, unchanged size, visible preview, commit counter, and public
+border alignment. These tests do not establish physical haptic feel.
+The final duplicate-candidate optimization subsequently passed the full suite
+and geometry/runtime checks. Its installed live rerun is pending: the macOS
+session became locked, and Tana's startup gate reports `sessionUnlocked:false`.
+The final installed/package executable hashes match and the app signature
+verifies. This is an installed build, not a verified running session after that
+last replacement.
+
+Three trials per stage used twelve disposable windows, the camera/zoom sequence
+in `tests/live_performance.py`, and the built-in frame log. Aggregate event-loop
+frame timings in ms:
+
+| Stage | Before mean | After mean | Before p95 | After p95 | Before maximum | After maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pan | 5.13 | 4.85 | 8.859 | 9.662 | 24.218 | 26.020 |
+| Zoom | 20.25 | 17.32 | 33.065 | 30.813 | 543.163 | 527.582 |
+| Focus | 4.80 | 4.62 | 17.340 | 16.553 | 21.680 | 21.670 |
+
+This is a modest measured improvement, not a guarantee of all-frame smoothness.
+A prior candidate run had no half-second stall, but the repeat caught one in
+border presentation; it remains open. Two helper failures occurred during
+fixture setup, before measured stages; the failure counter stayed unchanged
+through all nine measured trials and cleanup. Reports are in
+`build/perf-before-valid.json`, `build/perf-final.json`, their sample traces, and
+`build/multi-snap-live.json`. User window worlds, camera, and focus were restored.
+Screenshot inspection failed with ScreenCaptureKit error -3811, so no screenshot
+or physical trackpad verification is claimed.
+
+The reported app-content hover mismatch is **not fixed** in this release.
+`tests/live_input_projection.m` reproduces the distinction on its own NSPanel:
+delivered event-local coordinates follow the transformed surface, while native
+cursor polling and screen-to-window conversion use the native frame. Moving
+that frame can align the polled point, but asynchronous frame updates introduce
+lag, and synchronous AppKit updates clamp negative vertical origins. A prototype
+that appeared correct at several positive origins failed the small-scale and
+offscreen cases. None of those cursor/frame workarounds is shipped. A reliable
+solution still needs presentation and application input coordinates to agree;
+the passing border-focus tests above do not prove application-content hover.

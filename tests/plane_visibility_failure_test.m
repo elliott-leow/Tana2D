@@ -30,6 +30,8 @@ static int primary_opacity_failures,companion_moves;
 #define table_for(declaration,table,body) for(int slot=0;slot<2;slot++) { declaration=&windows[slot]; body; }
 
 static float hwm_window_alpha(struct window *w) { (void)w; return 1; }
+static void hwm_batch_require_updates(void) {}
+static void hwm_wake(void) {}
 static bool hwm_visibility_owned(uint32_t wid,pid_t pid);
 static struct window *window_manager_find_window(void *manager,uint32_t wid)
 { (void)manager; return wid>=1 && wid<=2 ? &windows[wid-1] : NULL; }
@@ -62,7 +64,9 @@ static bool scripting_addition_move_window(uint32_t wid,double x,double y)
 }
 
 #define CGWindowListCopyWindowInfo test_window_list
+#define HWM_VISIBILITY_SCHEDULE(work) (work)()
 #include "../src/strip_visibility.m"
+#undef HWM_VISIBILITY_SCHEDULE
 #undef CGWindowListCopyWindowInfo
 
 static void reset_scene(bool hidden)

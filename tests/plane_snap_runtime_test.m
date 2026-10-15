@@ -23,6 +23,52 @@ static void snap_scene(double scale,double offset)
     hwm_drag_window=windows[0].id;
 }
 
+static void multi_snap_scene(double scale,double offset)
+{
+    reset();
+    hwm_plane_scale=scale;
+    for(int i=0;i<4;i++) {
+        windows[i].strip_initialized=true;
+        windows[i].strip_width=100;
+        windows[i].strip_height=100;
+    }
+    /* Window zero can preserve its size at (200,200), fitting between the
+     * left/right peers and above the lower peer with the normal 12-point gap. */
+    windows[0].strip_world_x=200+offset; windows[0].strip_world_y=200+offset;
+    windows[1].strip_world_x=0; windows[1].strip_world_y=200; windows[1].strip_width=188;
+    windows[2].strip_world_x=312; windows[2].strip_world_y=200;
+    windows[3].strip_world_x=200; windows[3].strip_world_y=312;
+    hwm_drag_window=windows[0].id;
+}
+
+static void test_runtime_multi_neighbor_snap(void)
+{
+    const double scales[]={.7,1,2};
+    for(size_t i=0;i<sizeof(scales)/sizeof(scales[0]);i++) {
+        double scale=scales[i],offset=4/scale,raw=200+offset;
+        multi_snap_scene(scale,offset);
+        struct window *moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(raw,raw)));
+        /* Held movement remains exact; the common three-contact point is only
+         * previewed until release. */
+        assert(moving->strip_world_x==raw && moving->strip_world_y==raw);
+        CGPoint target;
+        assert(hwm_drag_snap_target(&view,moving,&target));
+        assert(target.x==200 && target.y==200 && test_preview_visible && hwm_snap_contact_count==3);
+        double sx=round(12+target.x*scale)-round(12+raw*scale);
+        double sy=round(51+target.y*scale)-round(51+raw*scale);
+        assert(hypot(sx,sy)<=12);
+        hwm_drag_release(&view,moving);
+        assert(moving->strip_world_x==200 && moving->strip_world_y==200);
+        assert(hwm_snap_contact_count==0);
+        assert(windows[1].strip_world_x+windows[1].strip_width==188);
+        assert(moving->strip_world_x-(windows[1].strip_world_x+windows[1].strip_width)==12);
+        assert(windows[2].strip_world_x-(moving->strip_world_x+moving->strip_width)==12);
+        assert(windows[3].strip_world_y-(moving->strip_world_y+moving->strip_height)==12);
+        assert(test_haptic_engages==1 && test_haptic_commits==1);
+    }
+}
+
 static void test_held_drag_and_preview_target(void)
 {
     const double scales[]={.5,1,2};
@@ -169,6 +215,7 @@ int main(void)
 {
     @autoreleasepool {
         test_held_drag_and_preview_target();
+        test_runtime_multi_neighbor_snap();
         test_snap_feedback_engages_once_and_clears();
         test_runtime_snap_reduces_existing_overlap();
         test_release_commits_gap_at_each_zoom();

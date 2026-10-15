@@ -41,7 +41,7 @@ static bool hwm_render(struct view *view, double now)
                 window->strip_native_move_pending=false; window->strip_transform_dirty=true;
             }
             if(hwm_workflow_tab_hidden(window)) {
-                if(!batched) { hwm_batch_begin(); batched=true; }
+                if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 hwm_visibility_set(window,true,CGRectNull);
                 // Hidden tabs need opacity only. Never move a native anchor
                 // offscreen just to park its displayed surface.
@@ -97,7 +97,7 @@ static bool hwm_render(struct view *view, double now)
             bool hidden=!CGRectIntersectsRect(frame,screen);
             bool revealing=window->strip_offscreen && !hidden;
             if(hidden && (!window->strip_offscreen || hwm_visibility_companions.count)) {
-                if(!batched) { hwm_batch_begin(); batched=true; }
+                if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 hwm_visibility_set(window,true,frame);
             }
             bool resize = (CGRectIsNull(last) || fabs(last.size.width-base.size.width) >= 1 || fabs(last.size.height-base.size.height) >= 1);
@@ -111,7 +111,7 @@ static bool hwm_render(struct view *view, double now)
                 if(window->strip_width>window->frame.size.width && anchor.x+window->strip_width>CGRectGetMaxX(screen)) anchor.x=bounds.origin.x;
                 if(window->strip_height>window->frame.size.height && anchor.y+window->strip_height>CGRectGetMaxY(screen)) anchor.y=bounds.origin.y;
                 if(!CGPointEqualToPoint(anchor,window->frame.origin)) {
-                    if(!batched) { hwm_batch_begin(); batched=true; }
+                    if(!batched) { hwm_batch_begin_plane(); batched=true; }
                     if(!scripting_addition_move_window(window->id,anchor.x,anchor.y)) {
                         ++hwm_move_failures; hwm_backend_ok=false; hwm_batch_end(); return false;
                     }
@@ -125,7 +125,7 @@ static bool hwm_render(struct view *view, double now)
                 continue;
             }
             if(move || window->strip_transform_dirty || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale) {
-                if(!batched) { hwm_batch_begin(); batched=true; }
+                if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 if(!scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) {
                     ++hwm_move_failures; hwm_backend_ok=false;
                     hwm_batch_end(); return false;
@@ -138,7 +138,7 @@ static bool hwm_render(struct view *view, double now)
             }
             window->strip_last_plane_scale=plane_scale;
             if(!hidden && (window->strip_offscreen || hwm_visibility_companions.count)) {
-                if(!batched) { hwm_batch_begin(); batched=true; }
+                if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 hwm_visibility_set(window,false,frame);
             }
             if (resize) {

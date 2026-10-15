@@ -83,7 +83,7 @@ static void test_snap_can_escape_existing_overlap_and_keeps_edge(void)
     }
 
     HWMPlaneRect peers[]={{88,100,100,100},{276,100,100,100}};
-    HWMPlaneSnapTarget preferred={{224,100},1,0,0},target;
+    HWMPlaneSnapTarget preferred={{224,100},1,0,0,0},target;
     assert(hwm_plane_snap_choose((HWMPlaneRect){212,100,40,50},peers,2,12,12,&preferred,&target));
     near(target.point.x,224); assert(target.neighbor==1);
     /* The held edge loses its preference outside the same small radius. */
@@ -114,6 +114,77 @@ static void test_snap_has_radial_bound(void)
     }
 }
 
+static void test_simultaneous_multi_neighbor_snap(void)
+{
+    HWMPlaneRect moving={206,206,100,100};
+    HWMPlaneSnapTarget target;
+    /* A left and an upper neighbor meet at a true two-axis corner. */
+    HWMPlaneRect corner[]={ {0,200,188,100}, {200,0,100,188} };
+    assert(hwm_plane_snap_choose(moving,corner,2,12,12,NULL,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==2);
+
+    /* Preserve size while fitting exactly between two horizontal peers and a
+     * vertical one. All three contact equations share one landing point. */
+    HWMPlaneRect triple[]={ {0,200,188,100}, {312,200,100,100}, {200,312,100,100} };
+    assert(hwm_plane_snap_choose(moving,triple,3,12,12,NULL,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==3);
+    HWMPlaneRect four[]={ {0,200,188,100}, {312,200,100,100}, {200,0,100,188}, {200,312,100,100} };
+    HWMPlaneRect reversed[]={ four[3],four[2],four[1],four[0] };
+    assert(hwm_plane_snap_choose(moving,four,4,12,12,NULL,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==4);
+    assert(hwm_plane_snap_choose(moving,reversed,4,12,12,NULL,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==4);
+    HWMPlaneSnapTarget stale={{0,0},99,0,0,0};
+    assert(hwm_plane_snap_choose(moving,four,4,12,12,&stale,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==4);
+
+    /* More contacts win over a valid preferred single contact. */
+    HWMPlaneRect preference[]={ {0,200,188,100}, {312,200,100,100}, {200,0,100,188}, {318,200,100,100} };
+    HWMPlaneSnapTarget preferred={{206,200},3,0,0,0};
+    assert(hwm_plane_snap_choose(moving,preference,4,12,12,&preferred,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==3);
+
+    /* A non-contact overlap cannot be introduced merely to complete a fit. */
+    HWMPlaneRect blocked[]={ {0,200,188,100}, {312,200,100,100}, {200,312,100,100}, {200,200,100,100} };
+    assert(!hwm_plane_snap_choose(moving,blocked,4,12,12,NULL,&target));
+
+    /* Fractional coordinates still share the same radial world bound. */
+    HWMPlaneRect fractional[]={ {0.25,200.25,187.5,100}, {200.25,0.25,100,187.5} };
+    HWMPlaneRect fractional_moving={204.25,204.25,100,100};
+    assert(hwm_plane_snap_choose(fractional_moving,fractional,2,12.5,8,NULL,&target));
+    near(target.point.x,200.25); near(target.point.y,200.25);
+    assert(hypot(target.point.x-fractional_moving.x,target.point.y-fractional_moving.y)<=8);
+
+    /* Keep the legacy near-span single magnet, but do not let that ten-point
+     * final gap masquerade as a second simultaneous contact. */
+    HWMPlaneRect soft_and_real[]={ {112,110,100,100}, {0,112,100,100} };
+    HWMPlaneRect soft_moving={0,0,100,100};
+    assert(hwm_plane_snap_choose(soft_moving,soft_and_real,2,12,12,NULL,&target));
+    near(target.point.x,0); near(target.point.y,0); assert(target.contact_count==1);
+    HWMPlaneRect soft_only[]={ {112,110,100,100} };
+    assert(hwm_plane_snap_choose(soft_moving,soft_only,1,12,12,NULL,&target));
+    near(target.point.x,0); near(target.point.y,0); assert(target.contact_count==0);
+
+    /* Floating point tolerance must retain exact large-coordinate fits while
+     * refusing a five-point mismatch that used to fall inside a 10-point
+     * magnitude-scaled equality window. */
+    HWMPlaneRect large_moving={-1000000000,0,100,100};
+    HWMPlaneRect large_fit[]={ {-1000000112,0,100,100}, {-999999888,0,100,100} };
+    assert(hwm_plane_snap_choose(large_moving,large_fit,2,12,12,NULL,&target));
+    near(target.point.x,-1000000000); assert(target.contact_count==2);
+    HWMPlaneRect large_mismatch[]={ {-999999888,0,100,100}, {-999999883,0,100,100} };
+    assert(hwm_plane_snap_choose(large_moving,large_mismatch,2,12,12,NULL,&target));
+    near(target.point.x,-1000000000); assert(target.contact_count==1);
+
+    /* Stacked copies of the same X/Y constraints are equivalent to one
+     * landing point, while retaining every genuine contact in the result. */
+    HWMPlaneRect dense[80];
+    for(size_t i=0;i<40;i++) dense[i]=(HWMPlaneRect){0,200,188,100};
+    for(size_t i=40;i<80;i++) dense[i]=(HWMPlaneRect){200,0,100,188};
+    assert(hwm_plane_snap_choose(moving,dense,80,12,12,NULL,&target));
+    near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==80);
+}
+
 int main(void)
 {
     HWMPlaneCamera from={-600,300,.2},to={200,-90,1};
@@ -134,6 +205,7 @@ int main(void)
     test_multi_neighbor_snap();
     test_snap_can_escape_existing_overlap_and_keeps_edge();
     test_snap_has_radial_bound();
+    test_simultaneous_multi_neighbor_snap();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);
     near(camera.x,-900); near(camera.y,640); /* plane has no walls */

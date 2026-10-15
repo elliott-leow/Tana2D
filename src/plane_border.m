@@ -52,7 +52,8 @@ static void hwm_plane_border_tick(struct view *view,double now)
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
     bool redraw=reshape || hwm_plane_border_generation!=hwm_border_generation || !hwm_plane_border_context;
     if(!redraw && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
-    hwm_batch_begin();
+    if(redraw || !hwm_plane_border_visible) hwm_batch_begin();
+    else hwm_batch_begin_plane();
     bool drawable=true;
     if(redraw || !hwm_plane_border_id) {
         CGRect local=CGRectMake(0,0,canvas.width,canvas.height); CFTypeRef region=NULL;
@@ -76,6 +77,12 @@ static void hwm_plane_border_tick(struct view *view,double now)
         if(drawable) SLSSetMouseEventEnableFlags(g_connection,hwm_plane_border_id,false);
         if(region) CFRelease(region);
         if(drawable && hwm_plane_border_context) {
+            /* Composite the transparent clear and gradient together. Drawing
+             * each directly into a resized WindowServer surface forces a
+             * backing-store synchronization for every operation. */
+            CGContextSaveGState(hwm_plane_border_context);
+            CGContextSetBlendMode(hwm_plane_border_context,kCGBlendModeCopy);
+            CGContextBeginTransparencyLayerWithRect(hwm_plane_border_context,local,NULL);
             CGContextClearRect(hwm_plane_border_context,local);
             CGRect outline=CGRectInset(local,pad*.5,pad*.5);
             CGPathRef path=CGPathCreateWithRoundedRect(outline,hwm_border_radius,hwm_border_radius,NULL);
@@ -89,6 +96,8 @@ static void hwm_plane_border_tick(struct view *view,double now)
             CGGradientRef gradient=CGGradientCreateWithColorComponents(space,colors,NULL,2);
             CGContextDrawLinearGradient(hwm_plane_border_context,gradient,CGPointZero,CGPointMake(local.size.width,local.size.height),0);
             CGGradientRelease(gradient); CGColorSpaceRelease(space); CGPathRelease(path);
+            CGContextRestoreGState(hwm_plane_border_context);
+            CGContextEndTransparencyLayer(hwm_plane_border_context);
             CGContextRestoreGState(hwm_plane_border_context); CGContextFlush(hwm_plane_border_context);
         }
         if(drawable) {

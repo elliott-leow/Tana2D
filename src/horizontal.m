@@ -1600,7 +1600,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.5\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.6\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1707,7 +1707,7 @@ static void horizontal_command(FILE *rsp, char *message)
             @"worldX":@(w->strip_world_x),@"worldY":@(w->strip_world_y),@"cachedX":@(w->strip_last_frame.origin.x),@"cachedY":@(w->strip_last_frame.origin.y),
             @"nativeResizePending":@(w->strip_native_resize_pending),@"nativeMovePending":@(w->strip_native_move_pending),@"sizePending":@(w->strip_size_pending),@"resizeBusy":@(hwm_resize_busy(w)),
             @"snapActive":@(hwm_snap_window==w->id && hwm_snap_neighbor!=0),@"snapNeighbor":@(hwm_snap_window==w->id?hwm_snap_neighbor:0),
-            @"snapEdge":@(hwm_snap_axis*2+hwm_snap_side),@"snapX":@(hwm_snap_point.x),@"snapY":@(hwm_snap_point.y),
+            @"snapEdge":@(hwm_snap_axis*2+hwm_snap_side),@"snapX":@(hwm_snap_point.x),@"snapY":@(hwm_snap_point.y),@"snapContacts":@(hwm_snap_contact_count),
             @"snapEngagements":@(hwm_snap_engagements),@"snapCommits":@(hwm_snap_commits),@"hapticsEnabled":@(hwm_haptics),
             @"snapPreviewVisible":@(hwm_preview_visible && hwm_preview_ordered && !hwm_preview_hiding),@"snapPreviewWindow":@(hwm_preview_id),
             @"previewDraws":@(hwm_preview_draws),@"previewMoves":@(hwm_preview_moves),
@@ -1774,7 +1774,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.5\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.6\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {

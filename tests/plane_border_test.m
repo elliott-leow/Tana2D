@@ -37,6 +37,7 @@ static struct window *view_find_window_node(struct view *view,uint32_t id)
 { (void)view; return id==focus.id ? &focus : NULL; }
 
 static void hwm_batch_begin(void) { ++batch_depth; }
+static void hwm_batch_begin_plane(void) { ++batch_depth; }
 static void hwm_batch_end(void)
 {
     assert(batch_depth>0); --batch_depth;
@@ -64,7 +65,7 @@ static CGContextRef SLWindowContextCreate(int connection,uint32_t id,CFDictionar
     (void)connection; (void)id; (void)options;
     if(!context_result) return NULL;
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGContextRef context=CGBitmapContextCreate(NULL,1,1,8,0,space,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGContextRef context=CGBitmapContextCreate(NULL,1000,800,8,0,space,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
     CGColorSpaceRelease(space);
     return context;
 }
@@ -76,6 +77,31 @@ static CGError SLSSetMouseEventEnableFlags(int connection,uint32_t id,bool enabl
 { (void)connection; (void)id; (void)enabled; return kCGErrorSuccess; }
 
 #include "../src/plane_border.m"
+
+/* The old direct clear/gradient renderer is the visual reference. Compare
+ * complete backing pixels after production replaces a previously drawn frame. */
+static void verify_border_pixels(struct view *view)
+{
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGContextRef reference=CGBitmapContextCreate(NULL,1000,800,8,0,space,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    for(int trial=0;trial<20;trial++) {
+        feedback.size=CGSizeMake(400+trial,300);
+        hwm_border_active[0]=.2; hwm_border_active[1]=.5; hwm_border_active[2]=.8; hwm_border_active[3]=.8;
+        hwm_border_active_end[0]=.8; hwm_border_active_end[1]=.4; hwm_border_active_end[2]=.2; hwm_border_active_end[3]=.7;
+        ++hwm_border_generation; hwm_plane_border_tick(view,1);
+        CGRect local=CGRectMake(0,0,hwm_plane_border_canvas.width,hwm_plane_border_canvas.height);
+        CGContextClearRect(reference,local);
+        CGPathRef path=CGPathCreateWithRoundedRect(CGRectInset(local,1,1),12,12,NULL);
+        CGContextSaveGState(reference); CGContextAddPath(reference,path);
+        CGContextSetLineWidth(reference,2); CGContextReplacePathWithStrokedPath(reference); CGContextClip(reference);
+        CGFloat colors[8]; for(int i=0;i<4;i++) { colors[i]=hwm_border_active[i]; colors[i+4]=hwm_border_active_end[i]; }
+        CGGradientRef gradient=CGGradientCreateWithColorComponents(space,colors,NULL,2);
+        CGContextDrawLinearGradient(reference,gradient,CGPointZero,CGPointMake(local.size.width,local.size.height),0);
+        CGGradientRelease(gradient); CGPathRelease(path); CGContextRestoreGState(reference);
+        assert(!memcmp(CGBitmapContextGetData(reference),CGBitmapContextGetData(hwm_plane_border_context),CGBitmapContextGetBytesPerRow(reference)*800));
+    }
+    CGContextRelease(reference); CGColorSpaceRelease(space);
+}
 
 /* This is the production batch-release contract proposed for strip_layout:
  * deferred acknowledgement failures invalidate the border cache after tick. */
@@ -167,6 +193,7 @@ int main(void)
     new_window_result=true;
     hwm_plane_border_tick(&view,1);
     assert(transform_calls==13 && hwm_plane_border_visible && hwm_plane_border_frame.origin.x==498);
+    verify_border_pixels(&view);
     CGContextRelease(hwm_plane_border_context); hwm_plane_border_context=NULL;
     return 0;
 }

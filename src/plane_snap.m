@@ -5,11 +5,12 @@ static size_t hwm_drag_snap_capacity;
 static uint32_t *hwm_drag_snap_ids;
 static uint32_t hwm_snap_window,hwm_snap_neighbor;
 static int hwm_snap_axis,hwm_snap_side;
+static size_t hwm_snap_contact_count;
 static CGPoint hwm_snap_point;
 static uint64_t hwm_snap_engagements,hwm_snap_commits;
-static void hwm_drag_snap_reset(void) { hwm_snap_window=0; hwm_snap_neighbor=0; }
+static void hwm_drag_snap_reset(void) { hwm_snap_window=0; hwm_snap_neighbor=0; hwm_snap_contact_count=0; }
 
-static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoint *point,uint32_t *peer,int *edge)
+static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
 {
     if(!view || !moving || !point || !isfinite(hwm_plane_scale) || hwm_plane_scale<=0) return false;
     size_t needed=0;
@@ -32,7 +33,7 @@ static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoi
                                   w->strip_width*hwm_plane_scale,w->strip_height*hwm_plane_scale);
         if(!CGRectIntersectsRect(visible,screen)) continue;
         if(hwm_snap_window==moving->id && hwm_snap_neighbor==w->id) {
-            preferred=(HWMPlaneSnapTarget){{0,0},count,hwm_snap_axis,hwm_snap_side}; has_preferred=true;
+            preferred=(HWMPlaneSnapTarget){{0,0},count,hwm_snap_axis,hwm_snap_side,0}; has_preferred=true;
         }
         hwm_drag_snap_ids[count]=w->id;
         hwm_drag_snap_neighbors[count++]=(HWMPlaneRect){w->strip_world_x,w->strip_world_y,w->strip_width,w->strip_height};
@@ -52,22 +53,24 @@ static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoi
     *point=CGPointMake(target.x,target.y);
     if(peer) *peer=hwm_drag_snap_ids[choice.neighbor];
     if(edge) *edge=choice.axis*2+choice.side;
+    if(contacts) *contacts=choice.contact_count;
     return true;
 }
 static bool hwm_drag_snap_target(struct view *view,struct window *moving,CGPoint *point)
 {
-    return hwm_drag_snap_proposal(view,moving,point,NULL,NULL);
+    return hwm_drag_snap_proposal(view,moving,point,NULL,NULL,NULL);
 }
 static void hwm_drag_preview_update(struct view *view,struct window *window)
 {
-    CGPoint target; uint32_t peer=0; int edge=0;
-    if(hwm_drag_window!=window->id || !hwm_drag_snap_proposal(view,window,&target,&peer,&edge)) {
+    CGPoint target; uint32_t peer=0; int edge=0; size_t contacts=0;
+    if(hwm_drag_window!=window->id || !hwm_drag_snap_proposal(view,window,&target,&peer,&edge,&contacts)) {
         hwm_drag_snap_reset(); hwm_preview_hide_immediately(); return;
     }
     bool changed=hwm_snap_window!=window->id || hwm_snap_neighbor!=peer ||
                  hwm_snap_axis!=edge/2 || hwm_snap_side!=edge%2;
     hwm_snap_window=window->id; hwm_snap_neighbor=peer;
     hwm_snap_axis=edge/2; hwm_snap_side=edge%2; hwm_snap_point=target;
+    hwm_snap_contact_count=contacts;
     if(changed) { ++hwm_snap_engagements; hwm_haptic(0); }
     CGRect bounds=hwm_bounds(view); double now=hwm_now(),x=hwm_offset(view,now),y=hwm_plane_camera_y(now);
     CGRect shown=CGRectMake(round(bounds.origin.x+(target.x-x)*hwm_plane_scale),

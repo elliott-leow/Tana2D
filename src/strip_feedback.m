@@ -1,6 +1,26 @@
+#if !defined(HWM_FEEDBACK_TAB_HARNESS)
 static void hwm_plane_border_hide(void);
+#endif
 /* Passive, click-through feedback. AppKit is confined to the main queue. */
 #include <libproc.h>
+
+static NSString *hwm_feedback_title(struct window *w,double now);
+/* Constructing the tab targets is deliberately separate from collecting a
+ * column's members so the latter may be linear without changing the snapshot
+ * contract: title request order, member order, and every target field remain
+ * exactly here. */
+static void hwm_feedback_append_tab_targets(NSMutableArray *tabs,NSArray *members,struct window *active,CGRect shown,CGRect screen,double y,double now)
+{
+    double gap=4, width=(shown.size.width-gap*(members.count-1))/fmax(1,members.count), top=shown.origin.y-y;
+    for(NSUInteger i=0;i<members.count;i++) {
+        struct window *member=[members[i] pointerValue];
+        CGRect r=CGRectMake(shown.origin.x-screen.origin.x+i*(width+gap),top-screen.origin.y,width,y-6);
+        [tabs addObject:@{@"id":@(member->id),@"pid":@(member->application->pid),@"column":@(member->strip_column),@"rect":[NSValue valueWithRect:r],
+                         @"title":hwm_feedback_title(member,now),@"active":@(member==active)}];
+    }
+}
+
+#if !defined(HWM_FEEDBACK_TAB_HARNESS)
 
 /* Border settings are written by the config runtime on the event loop and read
  * into each snapshot there; the main queue only ever sees the snapshot. */
@@ -488,18 +508,25 @@ static void hwm_feedback_tick(struct view *view,double now)
     bool expected=false;
     if(!atomic_compare_exchange_strong(&hwm_feedback_pending,&expected,true)) return;
     CGRect screen=hwm_screen(view),bounds=hwm_bounds(view);
-    NSMutableArray *columns=[NSMutableArray array],*tabs=[NSMutableArray array],*others=[NSMutableArray array];
+    NSMutableArray *tabs=[NSMutableArray array],*others=[NSMutableArray array];
     NSMutableArray *dim=[NSMutableArray array],*asking=[NSMutableArray array];
-    NSMutableSet *seen=[NSMutableSet set]; bool borders=hwm_border_mode!=0 && (hwm_border_on() || hwm_plane_fit_active);
+    /* Members are collected once in traversal order.  The old tab pass found
+     * them by walking every tile again for every tabbed column. */
+    NSMutableDictionary *tabMembers=[NSMutableDictionary dictionary];
+    bool borders=hwm_border_mode!=0 && (hwm_border_on() || hwm_plane_fit_active);
     struct window *focus=window_manager_find_window(&g_window_manager,hwm_feedback_focus_id);
-    uint64_t focus_column=focus && view_find_window_node(view,focus->id) ? focus->strip_column : 0;
     double shown_offset=hwm_rendered_offset, viewport=bounds.size.width;
     for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int j=0;j<n->window_count;j++) {
         struct window *w=hwm_tile(n->window_list[j]); if(!w) continue;
-        if(![seen containsObject:@(w->strip_column)]) {
-            // Height 2 marks the focused column for the map.
-            [columns addObject:[NSValue valueWithRect:CGRectMake(w->strip_world_x,0,w->strip_width,focus_column && w->strip_column==focus_column?2:1)]];
-            [seen addObject:@(w->strip_column)];
+        /* hwm_workflow_tab_geometry is true for every member of a tabbed
+         * column, including its inactive (hidden) tabs.  Retaining them here
+         * keeps the later tab-bar order exactly as the full repeated scan. */
+        double tab_y,tab_height;
+        if(hwm_workflow_tab_geometry(view,w,&tab_y,&tab_height)) {
+            NSNumber *column=@(w->strip_column);
+            NSMutableArray *members=tabMembers[column];
+            if(!members) { members=[NSMutableArray array]; tabMembers[column]=members; }
+            [members addObject:[NSValue valueWithPointer:w]];
         }
         CGRect shown=hwm_feedback_plane_frame(view,w);
         bool visible=!hwm_workflow_tab_hidden(w) && !w->strip_pop && !w->strip_close_ghost && !w->strip_close_pending && w->id!=hwm_drag_window &&
@@ -517,31 +544,19 @@ static void hwm_feedback_tick(struct view *view,double now)
         if(!hwm_workflow_tab_geometry(view,w,&y,&height) || hwm_workflow_tab_hidden(w) || CGRectIsNull(w->strip_last_frame)) continue;
         CGRect shown=hwm_feedback_plane_frame(view,w);
         if(!CGRectIntersectsRect(shown,screen)) continue;
-        NSMutableArray *members=[NSMutableArray array];
-        for(struct window_node *m=window_node_find_first_leaf(view->root);m;m=window_node_find_next_leaf(m)) for(int k=0;k<m->window_count;k++) {
-            struct window *other=hwm_tile(m->window_list[k]);
-            if(other && other->strip_column==w->strip_column) [members addObject:[NSValue valueWithPointer:other]];
-        }
-        double gap=4, width=(shown.size.width-gap*(members.count-1))/fmax(1,members.count), top=shown.origin.y-y;
-        for(NSUInteger i=0;i<members.count;i++) {
-            struct window *member=[members[i] pointerValue];
-            CGRect r=CGRectMake(shown.origin.x-screen.origin.x+i*(width+gap),top-screen.origin.y,width,y-6);
-            [tabs addObject:@{@"id":@(member->id),@"pid":@(member->application->pid),@"column":@(member->strip_column),@"rect":[NSValue valueWithRect:r],
-                              @"title":hwm_feedback_title(member,now),@"active":@(member==w)}];
-        }
+        hwm_feedback_append_tab_targets(tabs,tabMembers[@(w->strip_column)],w,shown,screen,y,now);
     }
     // Only what is actually drawn goes into the snapshot. An unchanged
     // snapshot is not sent at all, so a still strip costs the main thread nothing
     // however long the tick keeps running (during a drag it runs every frame).
     bool map=false, wall=false; // An unbounded plane has no strip map or wall flash.
-    double total=fmax(hwm_content_width,view->strip_offset)+bounds.size.width;
     bool shelves=false;
     int shelf_count=hwm_shelf_limit(view)+1;
     // Shown only while it matters; a still strip sends none of it, so the snapshot stays equal.
     NSDictionary *shelf_state=shelves ? @{@"show":@YES,@"count":@(shelf_count),@"camera":@(round(hwm_shelf_camera(now)*200)/200),
                                           @"label":hwm_shelf_label((int)lround(fmax(0,fmin(HWM_SHELVES-1,hwm_shelf_camera(now)))))} : @{@"show":@NO,@"count":@(shelf_count)};
     NSMutableDictionary *state=[NSMutableDictionary dictionaryWithDictionary:@{@"screen":[NSValue valueWithRect:screen],
-        @"columns":map ? columns : @[],@"total":@(map ? total : 1),@"offset":@(map ? view->strip_offset : 0),@"viewport":@(bounds.size.width),
+        @"columns":@[],@"total":@1,@"offset":@0,@"viewport":@(bounds.size.width),
         @"map":@(map),@"wall":@(wall),@"wallRight":@(wall && view->strip_offset>1),@"tabs":tabs,@"others":others,
         @"borderWidth":@(hwm_border_width),@"borderRadius":@(hwm_border_radius),@"active":hwm_rgba(hwm_border_active),
         @"activeEnd":hwm_rgba(hwm_border_active_end),@"inactive":hwm_rgba(hwm_border_inactive),
@@ -576,3 +591,4 @@ static void hwm_feedback_tick(struct view *view,double now)
     NSDictionary *snapshot=[state copy];
     dispatch_async(dispatch_get_main_queue(),^{ hwm_feedback_pending=false; [[TanaFeedback shared] show:snapshot]; [snapshot release]; });
 }
+#endif

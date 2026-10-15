@@ -123,8 +123,10 @@ static int test_layer[4];
 static bool scripting_addition_set_layer(uint32_t id,int layer) { test_layer[id-1]=layer; return true; }
 static int sa_batch_depth, sa_batch_flushes;
 static bool sa_batch_fails;
+static void (*sa_batch_barrier)(void);
+static void scripting_addition_batch_set_barrier(void (*barrier)(void)) { sa_batch_barrier=barrier; }
 static void scripting_addition_batch_begin(void) { ++sa_batch_depth; }
-static bool scripting_addition_batch_flush(void) { ++sa_batch_flushes; return !sa_batch_fails; }
+static bool scripting_addition_batch_flush(void) { if(sa_batch_depth>0 && sa_batch_barrier) sa_batch_barrier(); ++sa_batch_flushes; return !sa_batch_fails; }
 static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return sa_batch_depth>0?true:scripting_addition_batch_flush(); }
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
@@ -159,7 +161,9 @@ static CFArrayRef test_border_list(CGWindowListOption option,CGWindowID wid) {
     CFRelease(bounds); return (CFArrayRef)[list copy];
 }
 #define CGWindowListCopyWindowInfo test_border_list
+#define HWM_VISIBILITY_SCHEDULE(work) (work)()
 #include "../src/strip_visibility.m"
+#undef HWM_VISIBILITY_SCHEDULE
 #undef CGWindowListCopyWindowInfo
 static int undo_captures;
 static void hwm_undo_capture(void) { ++undo_captures; }
@@ -324,7 +328,7 @@ static void test_pan_and_late_notifications(void)
         }
     }
     assert(ax_calls==0 && hwm_resize_operations==0);
-    assert(disable_calls==80 && update_depth==0); // One compositor batch per pan frame.
+    assert(disable_calls==0 && update_depth==0); // Atomic transform-only frames do not freeze global updates.
     // A settled drift correction still works and still does not resize.
     __pending_gesture=false; clock_now+=1;
     actual[0].origin.x+=44;
@@ -430,8 +434,8 @@ static void test_open_pop_and_close_shrink(void)
     assert(hwm_content_width==4*400+3*12);
     // A held batch presents a whole frame at once.
     int before=disable_calls; hwm_batch_hold=true;
-    view.strip_offset+=40; hwm_render(&view,clock_now); assert(update_depth==1);
-    hwm_batch_release(); assert(update_depth==0 && disable_calls==before+1);
+    view.strip_offset+=40; hwm_render(&view,clock_now); assert(update_depth==0 && hwm_batch_open);
+    hwm_batch_release(); assert(update_depth==0 && disable_calls==before);
 }
 static void test_close_converges_both_sides(void)
 {
