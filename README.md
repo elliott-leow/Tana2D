@@ -7,7 +7,7 @@ Experimental: scrolling and dragging are still under repair. See the
 [verification record](docs/VERIFICATION.md) for current failures and tested limits.
 
 Windows occupy positions on a plane. Move the camera horizontally or vertically
-with a three-finger swipe, and pinch to zoom in or out. **Control + Enter** or **Control + Up** zooms out so you can click a window to
+with a three-finger swipe, and pinch to zoom out or return up to 100%. **Control + Enter** or **Control + Up** zooms out so you can click a window to
 center at 100%, preserving its size. Four fingers up opens the overview; four fingers
 down centers the active window at 100%. There are no workspace walls.
 
@@ -39,7 +39,7 @@ require testing on the target Mac.
 | --- | --- |
 | Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Pan in any direction, including diagonals |
-| Pinch | Zoom in or out |
+| Pinch | Zoom out or return up to 100% |
 | Control + Return / Control + Up | Zoom out; click a window to center it at 100%, or drag it to move it |
 | Four-finger swipe down | Center the active window at 100% without resizing it |
 | Four-finger swipe up | Open the same click-to-center mode |
