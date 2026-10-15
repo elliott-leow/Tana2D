@@ -1,5 +1,5 @@
-/* A held window follows the pointer exactly. Only its drop proposal is
- * magnetized; releasing near a neighbor commits that proposal. */
+/* Compute magnets from the unmodified pointer proposal. The displayed
+ * window can engage both axes without feeding that correction into the grab. */
 static HWMPlaneRect *hwm_drag_snap_neighbors;
 static size_t hwm_drag_snap_capacity;
 static uint32_t *hwm_drag_snap_ids;
@@ -10,7 +10,7 @@ static CGPoint hwm_snap_point;
 static uint64_t hwm_snap_engagements,hwm_snap_commits;
 static void hwm_drag_snap_reset(void) { hwm_snap_window=0; hwm_snap_neighbor=0; hwm_snap_contact_count=0; }
 
-static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
+static bool hwm_drag_snap_proposal_at(struct view *view,struct window *moving,CGPoint raw,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
 {
     if(!view || !moving || !point || !isfinite(hwm_plane_scale) || hwm_plane_scale<=0) return false;
     size_t needed=0;
@@ -39,16 +39,16 @@ static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoi
         hwm_drag_snap_neighbors[count++]=(HWMPlaneRect){w->strip_world_x,w->strip_world_y,w->strip_width,w->strip_height};
     }
     HWMPlaneSnapTarget choice;
-    if(!hwm_plane_snap_choose((HWMPlaneRect){moving->strip_world_x,moving->strip_world_y,moving->strip_width,moving->strip_height},
+    if(!hwm_plane_snap_choose((HWMPlaneRect){raw.x,raw.y,moving->strip_width,moving->strip_height},
         hwm_drag_snap_neighbors,count,fmax(0,view->window_gap),12.0/hwm_plane_scale,
         has_preferred?&preferred:NULL,&choice)) return false;
     HWMPlanePoint target=choice.point;
     /* Bound the actual rounded helper submission too, not only world-space
      * arithmetic. Rounding two axes can otherwise exceed a radial limit. */
     double dx=round(bounds.origin.x+(target.x-camera_x)*hwm_plane_scale)-
-              round(bounds.origin.x+(moving->strip_world_x-camera_x)*hwm_plane_scale);
+              round(bounds.origin.x+(raw.x-camera_x)*hwm_plane_scale);
     double dy=round(bounds.origin.y+(target.y-camera_y)*hwm_plane_scale)-
-              round(bounds.origin.y+(moving->strip_world_y-camera_y)*hwm_plane_scale);
+              round(bounds.origin.y+(raw.y-camera_y)*hwm_plane_scale);
     if(hypot(dx,dy)>12) return false;
     *point=CGPointMake(target.x,target.y);
     if(peer) *peer=hwm_drag_snap_ids[choice.neighbor];
@@ -56,14 +56,18 @@ static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoi
     if(contacts) *contacts=choice.contact_count;
     return true;
 }
+static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
+{
+    if(!moving) return false;
+    return hwm_drag_snap_proposal_at(view,moving,CGPointMake(moving->strip_world_x,moving->strip_world_y),point,peer,edge,contacts);
+}
 static bool hwm_drag_snap_target(struct view *view,struct window *moving,CGPoint *point)
 {
     return hwm_drag_snap_proposal(view,moving,point,NULL,NULL,NULL);
 }
-static void hwm_drag_preview_update(struct view *view,struct window *window)
+static void hwm_drag_preview_apply(struct view *view,struct window *window,bool valid,CGPoint target,uint32_t peer,int edge,size_t contacts)
 {
-    CGPoint target; uint32_t peer=0; int edge=0; size_t contacts=0;
-    if(hwm_drag_window!=window->id || !hwm_drag_snap_proposal(view,window,&target,&peer,&edge,&contacts)) {
+    if(hwm_drag_window!=window->id || !valid) {
         hwm_drag_snap_reset(); hwm_preview_hide_immediately(); return;
     }
     bool changed=hwm_snap_window!=window->id || hwm_snap_neighbor!=peer ||
@@ -78,5 +82,15 @@ static void hwm_drag_preview_update(struct view *view,struct window *window)
                             round(window->strip_width*hwm_plane_scale),round(window->strip_height*hwm_plane_scale));
     // The target is anchored to a neighboring edge, with no lagging spring.
     hwm_preview_snap_show(shown,edge);
+}
+static void hwm_drag_preview_update_at(struct view *view,struct window *window,CGPoint raw)
+{
+    CGPoint target=CGPointZero; uint32_t peer=0; int edge=0; size_t contacts=0;
+    bool valid=hwm_drag_snap_proposal_at(view,window,raw,&target,&peer,&edge,&contacts);
+    hwm_drag_preview_apply(view,window,valid,target,peer,edge,contacts);
+}
+static void hwm_drag_preview_update(struct view *view,struct window *window)
+{
+    hwm_drag_preview_update_at(view,window,CGPointMake(window->strip_world_x,window->strip_world_y));
 }
 static void hwm_drag_snap_commit(struct view *view,struct window *window);

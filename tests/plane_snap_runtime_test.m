@@ -49,9 +49,9 @@ static void test_runtime_multi_neighbor_snap(void)
         multi_snap_scene(scale,offset);
         struct window *moving=&windows[0];
         assert(hwm_drag_submit_plane(&view,moving,CGPointMake(raw,raw)));
-        /* Held movement remains exact; the common three-contact point is only
-         * previewed until release. */
-        assert(moving->strip_world_x==raw && moving->strip_world_y==raw);
+        /* Both axes engage while held, without changing the native size. */
+        assert(moving->strip_world_x==200 && moving->strip_world_y==200);
+        assert(moving->strip_width==100 && moving->strip_height==100);
         CGPoint target;
         assert(hwm_drag_snap_target(&view,moving,&target));
         assert(target.x==200 && target.y==200 && test_preview_visible && hwm_snap_contact_count==3);
@@ -69,6 +69,30 @@ static void test_runtime_multi_neighbor_snap(void)
     }
 }
 
+static void test_held_magnet_releases_without_accumulating(void)
+{
+    for(int z=0;z<3;z++) {
+        double scale=(double[]){.5,1,2}[z];
+        multi_snap_scene(scale,4/scale);
+        struct window *moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+4/scale,200+4/scale)));
+        assert(moving->strip_world_x==200 && moving->strip_world_y==200);
+        for(int i=0;i<40;i++) {
+            /* Motion inside the radius holds both axes; no cumulative offset. */
+            double d=(i%3+3)/scale;
+            assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+d,200+d)));
+            assert(moving->strip_world_x==200 && moving->strip_world_y==200);
+        }
+        CGPoint escaped=CGPointMake(200+30/scale,200+30/scale);
+        assert(hwm_drag_submit_plane(&view,moving,escaped));
+        assert(moving->strip_world_x==escaped.x && moving->strip_world_y==escaped.y);
+        assert(!hwm_snap_contact_count && !test_preview_visible);
+        hwm_drag_release(&view,moving);
+        assert(moving->strip_world_x==escaped.x && moving->strip_world_y==escaped.y);
+        assert(moving->strip_width==100 && moving->strip_height==100);
+    }
+}
+
 static void test_held_drag_and_preview_target(void)
 {
     const double scales[]={.5,1,2};
@@ -77,9 +101,8 @@ static void test_held_drag_and_preview_target(void)
         snap_scene(scale,6/scale);
         struct window *moving=&windows[0];
         assert(hwm_drag_submit_plane(&view,moving,CGPointMake(raw,100)));
-        /* The held surface follows the pointer; preview computation cannot move it. */
-        assert(moving->strip_world_x==raw && moving->strip_world_y==100);
-        assert(projected[0].origin.x==round(12+raw*scale));
+        assert(moving->strip_world_x==188 && moving->strip_world_y==100);
+        assert(projected[0].origin.x==round(12+188*scale));
         CGPoint preview;
         assert(hwm_drag_snap_target(&view,moving,&preview));
         assert(preview.x==188 && preview.y==100);
@@ -195,11 +218,11 @@ static void test_native_release_waits_to_snap_and_interrupt_does_not(void)
     projected[0].size=actual[0].size;
     hwm_drag_release(&view,moving);
     assert(hwm_drag_native && hwm_drag_window==moving->id);
-    assert(moving->strip_world_x==raw); /* Release only begins settling. */
+    assert(moving->strip_world_x==188); /* Held snap survives native settling. */
     clock_now+=.06; hwm_drag_native_finish_tick(&view,moving,clock_now);
-    assert(hwm_drag_native && moving->strip_world_x==raw);
+    assert(hwm_drag_native && moving->strip_world_x==188);
     clock_now+=.01; hwm_drag_native_finish_tick(&view,moving,clock_now);
-    assert(hwm_drag_native && moving->strip_world_x==raw);
+    assert(hwm_drag_native && moving->strip_world_x==188);
     clock_now+=.09; hwm_drag_native_finish_tick(&view,moving,clock_now);
     assert(!hwm_drag_native && !hwm_drag_window);
     assert(moving->strip_world_x==188 && moving->strip_world_y==100);
@@ -214,6 +237,7 @@ static void test_native_release_waits_to_snap_and_interrupt_does_not(void)
 int main(void)
 {
     @autoreleasepool {
+        test_held_magnet_releases_without_accumulating();
         test_held_drag_and_preview_target();
         test_runtime_multi_neighbor_snap();
         test_snap_feedback_engages_once_and_clears();

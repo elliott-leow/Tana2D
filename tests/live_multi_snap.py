@@ -22,7 +22,7 @@ try:
    strip('place',right,10724 if contacts==3 else 15000,10412,400,300)
    strip('place',moving,10440,10480,300,300);cmd('window',moving,'--focus');strip('zoom',scale);strip('camera',9800,9900);time.sleep(.8)
    p=presentation(moving);start=(p['displayedX']+100*scale,p['displayedY']+100*scale)
-   proc=subprocess.Popen(['build/plane_pointer_probe',str(start[0]),str(start[1]),str(-23*scale),str(-63*scale),'option'])
+   proc=subprocess.Popen(['build/plane_pointer_probe',str(start[0]),str(start[1]),str(-23*scale),str(-63*scale),'option','180'])
    samples=[]
    while proc.poll() is None:samples.append(presentation(moving));time.sleep(.018)
    time.sleep(.4);p=presentation(moving);rows.append({'scale':scale,'contacts':contacts,'held':samples,'final':p})

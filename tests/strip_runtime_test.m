@@ -226,8 +226,9 @@ static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
 #include "../src/plane_drag.m"
 static void hwm_drag_snap_commit(struct view *v,struct window *w) {
     CGPoint target;
-    if(hwm_drag_snap_target(v,w,&target)) {
-        bool accepted=(target.x==w->strip_world_x && target.y==w->strip_world_y) || hwm_drag_submit_plane(v,w,target);
+    if((hwm_snap_window==w->id && hwm_snap_contact_count && (target=hwm_snap_point,true)) ||
+       hwm_drag_snap_target(v,w,&target)) {
+        bool accepted=(target.x==w->strip_world_x && target.y==w->strip_world_y) || hwm_drag_present_plane(v,w,target,false);
         if(accepted) { ++hwm_snap_commits; hwm_haptic(1); }
     }
 }
@@ -998,6 +999,8 @@ static void test_recorded_cursor_stall(void)
     double scales[]={.25,.5947448417940966,.7,1,2};
     for(size_t z=0;z<5;z++) for(int mode=0;mode<3;mode++) {
         reset(); struct window *w=&windows[0]; hwm_plane_scale=scales[z];
+        /* This replay tests cursor sampling, independently of nearby magnets. */
+        for(int i=1;i<4;i++) windows[i].strip_world_y=10000;
         hwm_render(&view,clock_now); hwm_plane_resize_publish(&view); selection_hit=w;
         CGPoint recorded=CGPointMake([trace[0][@"event"][0] doubleValue],[trace[0][@"event"][1] doubleValue]);
         CGPoint down=mode==2?CGPointMake(CGRectGetMaxX(projected[0]),CGRectGetMaxY(projected[0])):CGPointMake(400,400);

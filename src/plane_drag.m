@@ -8,11 +8,15 @@ static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
                                              hwm_plane_camera_y(hwm_now())-hwm_drag_camera_y);
     return CGPointMake(world.x,world.y);
 }
-/* Pointer-owned movement has no spring, magnet, layout pass, or display-link
- * gate. The helper presents the native surface and existing outline together. */
-static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoint world)
+/* Snap the raw pointer proposal before submitting the surface and outline
+ * together. The grab origin stays raw, so moving away releases the magnet. */
+static bool hwm_drag_present_plane(struct view *view,struct window *window,CGPoint world,bool magnet)
 {
     if(!view || !window || !isfinite(world.x) || !isfinite(world.y)) return false;
+    CGPoint target=CGPointZero; uint32_t peer=0; int edge=0; size_t contacts=0;
+    bool snapped=magnet && hwm_drag_window==window->id &&
+        hwm_drag_snap_proposal_at(view,window,world,&target,&peer,&edge,&contacts);
+    if(snapped) world=target;
     double began=hwm_now();
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()), camera_y=hwm_plane_camera_y(hwm_now()), scale=hwm_plane_scale;
     CGRect base=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
@@ -36,8 +40,13 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
     window->strip_from_x=world.x; window->strip_from_y=world.y;
     window->strip_last_frame=base; window->strip_last_offset=camera_x; window->strip_last_camera_y=camera_y; window->strip_last_shift=0;
     window->strip_start=hwm_now()-hwm_duration;
-    hwm_drag_preview_update(view,window);
+    if(magnet) hwm_drag_preview_apply(view,window,snapped,target,peer,edge,contacts);
     return true;
+}
+
+static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoint world)
+{
+    return hwm_drag_present_plane(view,window,world,true);
 }
 
 /* AppKit retains the complete native input stream. If its native anchor moves
@@ -122,7 +131,16 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
     window->strip_last_plane_scale=hwm_drag_scale; window->strip_plane_scaled=true; window->strip_transform_dirty=false;
     window->strip_start=hwm_now()-hwm_duration;
     hwm_drag_move=world; hwm_drag_move_pending=false;
-    hwm_drag_preview_update(view,window);
+    CGPoint target;
+    if(!hwm_drag_native_finishing && !hwm_drag_native_recovering &&
+       hwm_drag_snap_proposal_at(view,window,world,&target,NULL,NULL,NULL)) {
+        hwm_drag_native_projected=true;
+        return hwm_drag_submit_plane(view,window,world);
+    }
+    /* A projected native release must retain the target computed from the
+     * raw pointer. Re-scoring the magnetized origin can chain a second snap. */
+    if(!hwm_drag_native_projected || !hwm_drag_native_finishing)
+        hwm_drag_preview_update(view,window);
     CGRect visible=presented;
     bool own_batch=!hwm_batch_open; if(own_batch) scripting_addition_batch_begin();
     bool ok=hwm_plane_border_drag(window->id,visible);
@@ -243,6 +261,5 @@ static void hwm_drag_release(struct view *view,struct window *window)
         hwm_wake();
         return;
     }
-    if(view) hwm_drag_submit_plane(view,window,CGPointMake(window->strip_world_x,window->strip_world_y));
     hwm_drag_complete(view,window,true);
 }

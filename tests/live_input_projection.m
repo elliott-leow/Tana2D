@@ -4,6 +4,7 @@
  * Temporarily disable WM focus-follows-mouse for reproducible event delivery. */
 #import <Cocoa/Cocoa.h>
 #include <unistd.h>
+#include <time.h>
 #include "../vendor/yabai/src/misc/plane_transform.h"
 extern int SLSMainConnectionID(void);
 extern CGError SLSGetWindowBounds(int,uint32_t,CGRect*);
@@ -14,27 +15,28 @@ extern void SLSTransactionClearWindowLockedBounds(CFTypeRef,uint32_t);
 extern void SLSTransactionSetWindowTransform(CFTypeRef,uint32_t,int,int,CGAffineTransform);
 extern void SLSTransactionCommit(CFTypeRef,int);
 static NSPanel *panel;
-static CGPoint cursor,last;static int events,stage;static CGRect native;
+static CGPoint cursor,last;static int events,stage,missing;static CGRect native;
 @interface InputProbeView : NSView @end
 @implementation InputProbeView
 - (void)mouseMoved:(NSEvent *)event { (void)event; }
 @end
 static void run(void) {
-    if(stage==5) {CGWarpMouseCursorPosition(cursor);[panel close];exit(0);}
+    if(stage==6) {CGWarpMouseCursorPosition(cursor);[panel close];exit(missing?2:0);}
     int c=SLSMainConnectionID();uint32_t wid=(uint32_t)panel.windowNumber;
-    double scales[]={1,.75,.5,.75,.5};double xs[]={native.origin.x,200,400,200,400};double ys[]={native.origin.y,150,250,150,250};
+    double scales[]={1,1,.75,.5,.75,.5};double xs[]={native.origin.x,200,200,400,200,400};double ys[]={native.origin.y,150,150,250,150,250};
     HwmPlaneTransform target={wid,xs[stage],ys[stage],scales[stage],scales[stage]};
     CFTypeRef tx=SLSTransactionCreate(c);
     if(stage)SLSTransactionSetWindowLockedBounds(tx,wid,CGRectMake(target.x,target.y,native.size.width*target.scale_x,native.size.height*target.scale_y));
-    if(stage>=3)SLSTransactionSetWindowTransform(tx,wid,0,0,hwm_plane_transform_matrix(target));
+    if(stage>=4)SLSTransactionSetWindowTransform(tx,wid,0,0,hwm_plane_transform_matrix(target));
     SLSTransactionCommit(tx,1);CFRelease(tx);
     CGPoint point=CGPointMake(target.x+100*target.scale_x,target.y+(native.size.height-100)*target.scale_y);int before=events;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-        CGEventRef event=CGEventCreateMouseEvent(NULL,kCGEventMouseMoved,point,kCGMouseButtonLeft);CGEventSetFlags(event,0);CGEventPost(kCGHIDEventTap,event);CFRelease(event);
+        CGEventRef event=CGEventCreateMouseEvent(NULL,kCGEventMouseMoved,point,kCGMouseButtonLeft);CGEventSetTimestamp(event,clock_gettime_nsec_np(CLOCK_UPTIME_RAW));CGEventSetFlags(event,0);CGEventPost(kCGHIDEventTap,event);CFRelease(event);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            if(events==before) ++missing;
             NSPoint direct=panel.mouseLocationOutsideOfEventStream,converted=[panel convertPointFromScreen:NSEvent.mouseLocation];
             CGAffineTransform final;SLSGetWindowTransformAtPlacement(c,wid,0x7fffff00,NULL,&final);
-            printf("stage%d baseUpdate%d scale%.2f events%d local %.1f %.1f outside %.1f %.1f convert %.1f %.1f final %.3f %.1f %.1f expected100,100\n",stage,stage>=3,target.scale_x,events-before,last.x,last.y,direct.x,direct.y,converted.x,converted.y,final.a,final.tx,final.ty);fflush(stdout);++stage;run();
+            printf("stage%d baseUpdate%d scale%.2f events%d local %.1f %.1f outside %.1f %.1f convert %.1f %.1f final %.3f %.1f %.1f expected100,100\n",stage,stage>=4,target.scale_x,events-before,last.x,last.y,direct.x,direct.y,converted.x,converted.y,final.a,final.tx,final.ty);fflush(stdout);++stage;run();
         });
     });
 }

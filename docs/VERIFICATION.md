@@ -754,3 +754,58 @@ test, eight packaging tests, and signature verification passed. The installed
 0.5.7 started directly with `ready:true`, `backend:true`, `paused:false`, preserving
 the current camera and window worlds. A physical lock/unlock cycle was not forced
 while the user was working.
+
+### Held multi-edge magnets (0.5.8)
+
+Dragging now applies the compatible snap target to the held window before the
+surface and border transaction. The unsnapped pointer proposal remains separate
+from the presented world position, so leaving the 12-screen-point radius releases
+the magnet without accumulating an offset. Native title-bar drags enter this
+projection path only after observed window movement; body selections still do
+not move or snap a window. Release retains the engaged target and does not score
+a second snap from an already magnetized origin.
+
+`make all test` passed, including sanitized held two/three-neighbor contact tests at
+0.5x, 1x, and 2x, escape/re-entry, native settle interruption, unavailable native
+presentation samples, and the cursor-stall replay with unrelated neighbors moved
+out of range. Twenty-one Python checks also passed.
+
+Installed 0.5.8 passed all four focused live two/three-neighbor cases at 0.5x
+and 1x (`build/held-snap-live.log`). The broader real-CGEvent matrix passed
+28 of 32 cases (`build/multi-snap-matrix.json`). Passing cases include all tested
+1x/0.5x native and Option corner approaches, three-peer fits, the staggered
+reported arrangement, a partly offscreen surface, fast release, and blocked or
+fully offscreen negative cases. It checks the actual held target, final landing,
+unchanged size, measured neighbor gaps, independently queried border/preview
+bounds, and engagement/commit counters. Synthetic event timestamps are explicitly
+nonzero; standard holds dwell 180 ms so the observation loop can see the final
+pressed state. The two fast-release cases separately omit that dwell.
+
+The four failures are ordinary native title-bar corner drags at 2x: WindowServer
+hit testing identifies the intended fixture and input traces contain the drag
+stream, but AppKit does not advance its window. No magnet engages. This remains
+an interaction failure, not a passing snap test. The baseline also exhibited
+this limitation. The report confirms fixture removal, restored camera/focus,
+and unchanged real-window worlds after the matrix.
+
+Application-content hover remains unresolved. The tracked own-panel diagnostic
+receives all six events and shows correct delivered local coordinates but wrong
+independent cursor queries after translation/scaling. Moving native anchors can
+align those queries at selected points; synchronous AX moves clamp negative
+vertical origins and asynchronous moves leave a cache delay. An unshipped unit-
+scale-only anchor experiment was removed rather than presenting it as a general
+solution. A further targeted SkyLight/SDK review found cursor warp/association
+and direct-to-process event APIs, but no usable independent cursor-presentation
+translation. No cursor warp bridge, app injection, app setting change, or
+native-frame workaround is included in 0.5.8. These findings do not establish
+that no other OS mechanism exists, and this release does not satisfy the full
+requested hover behavior across zoom levels.
+
+The final signed app was reinstalled and reported `ready:true`, `backend:true`,
+`paused:false`. Installed and packaged executable SHA-256 both equal
+`d26eaf1264f3f2b15a94f3f9812f62a056817d6b508320579f77cadb3a032dc8`.
+The repeated matrix on that exact executable again passed 28/32 with the same
+four 2x native failures; cleanup restored camera/focus and changed no user-window
+world geometry. `build/held-snap-release-tests.log` records the final passing
+build/test suite; `build/held-snap-release-matrix.log` records the live failures.
+The matrix CLI now exits nonzero on failed cases or failed restoration.

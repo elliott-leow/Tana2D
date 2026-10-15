@@ -67,8 +67,11 @@ static void test_interrupted_native_settle_never_snaps(void)
     assert(!CGPointEqualToPoint(target,unsnapped));
     atomic_store(&hwm_drag_release_pending,true);
     assert(horizontal_drop(first,CGPointZero));
+    CGPoint held=CGPointMake(first->strip_world_x,first->strip_world_y);
+    int commits=test_haptic_commits;
     native_begin(following,CGPointMake(620,230),CGPointMake(820,460));
-    assert(first->strip_world_x==unsnapped.x && first->strip_world_y==unsnapped.y);
+    assert(first->strip_world_x==held.x && first->strip_world_y==held.y);
+    assert(test_haptic_commits==commits);
     hwm_drag_force_finalize(&view,false);
 }
 
@@ -87,13 +90,16 @@ static void test_native_deadline_does_not_snap_without_a_displayed_sample(void)
     assert(!CGPointEqualToPoint(target,unsnapped));
     atomic_store(&hwm_drag_release_pending,true);
     assert(horizontal_drop(w,CGPointZero));
+    CGPoint held=CGPointMake(w->strip_world_x,w->strip_world_y);
+    int commits=test_haptic_commits;
     /* The runtime CG stub now returns an invalid presentation frame, exactly
      * like an unavailable CGWindowList sample. The hard deadline still ends
      * ownership, but cannot turn that absence into a neighbour snap. */
     presentation_unavailable=true;
     clock_now+=.151; hwm_drag_autoscroll(&view,clock_now);
     assert(!hwm_drag_window && !hwm_drag_native);
-    assert(w->strip_world_x==unsnapped.x && w->strip_world_y==unsnapped.y);
+    assert(w->strip_world_x==held.x && w->strip_world_y==held.y);
+    assert(test_haptic_commits==commits);
     assert(w->strip_native_move_pending);
     int before=plane_transform_calls[0];
     projected[0].origin=CGPointMake(900,300);
