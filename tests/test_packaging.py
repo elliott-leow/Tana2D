@@ -81,7 +81,7 @@ class PackagingTests(unittest.TestCase):
             result = subprocess.run([str(INSTALL), "--destination", str(destination), "--no-open"], text=True, capture_output=True, env=env)
             self.assertNotEqual(result.returncode, 0); self.assertTrue((destination / "old").is_dir())
     def test_bundle_metadata_and_distribution_scripts_are_present(self):
-        content = PACKAGE.read_text(); self.assertIn("0.5.6", content); self.assertIn("dev.tana2d.manager", content); self.assertIn("--options runtime --timestamp", content); self.assertIn("LSMinimumSystemVersion</key><string>14.0", content); self.assertIn("THIRD-PARTY-NOTICES.txt", content); self.assertIn("docs/SETUP.html", content)
+        content = PACKAGE.read_text(); self.assertIn("0.5.7", content); self.assertIn("dev.tana2d.manager", content); self.assertIn("--options runtime --timestamp", content); self.assertIn("LSMinimumSystemVersion</key><string>14.0", content); self.assertIn("THIRD-PARTY-NOTICES.txt", content); self.assertIn("docs/SETUP.html", content)
         self.assertIn("--destination PATH", INSTALL.read_text()); release = RELEASE.read_text(); self.assertIn("--format zip|dmg", release); self.assertIn("TANA2D_NOTARY_PROFILE", release); self.assertIn('stapler staple "$app"', release); self.assertNotIn('stapler staple "$artifact"', release)
     def test_release_notarizes_a_temporary_zip_then_archives_stapled_app(self):
         with tempfile.TemporaryDirectory() as raw:

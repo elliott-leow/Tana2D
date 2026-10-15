@@ -27,6 +27,12 @@ static int SLSGetSpaceManagementMode(int c) { (void)c; return 1; }
 int main(void)
 {
     @autoreleasepool {
+        __block unsigned polls=0;
+        /* 1,200 half-second ticks model ten minutes locked: the former
+         * 120-second deadline would leave this launch stuck in setup. */
+        tana_startup_wait_for_unlock(^BOOL { return polls>=1200; },^{ ++polls; });
+        assert(polls==1200);
+        tana_startup_wait_for_unlock(^BOOL { return YES; },^{ assert(!"already-unlocked startup must not wait"); });
         assert(getuid()!=0); // This test never runs privileged installation.
         assert(tana_install_helper("501")==1);
         assert([tana_shell_quote(@"a'b $HOME `pwd`") isEqual:@"'a'\\''b $HOME `pwd`'"]);

@@ -732,3 +732,25 @@ that appeared correct at several positive origins failed the small-scale and
 offscreen cases. None of those cursor/frame workarounds is shipped. A reliable
 solution still needs presentation and application input coordinates to agree;
 the passing border-focus tests above do not prove application-content hover.
+
+### Startup after a long locked session (0.5.7)
+
+The app remained alive overnight in setup, with no manager socket. A process
+sample showed `NSApplication run` and `TanaSetup refresh:`; unified logs showed
+that setup timer still running. On unlock, every setup requirement was ready,
+but the window still required a manual Start click. The cause was the configured
+startup path's 120-second unlock deadline, followed by a setup UI that never
+automatically accepted the now-ready state.
+
+Configured startup now waits responsively until unlock without a deadline,
+then rechecks the existing requirements. Waiting polls only session state;
+per-iteration autorelease pools avoid accumulating objects during a long wait.
+Explicit setup/preview and missing-permission handling remain unchanged. Unified
+logs now identify waiting, unlock, ready startup, and setup fallback.
+
+The setup regression simulates 1,200 half-second polls (ten minutes locked) and
+checks immediate passage when already unlocked. The production build, setup
+test, eight packaging tests, and signature verification passed. The installed
+0.5.7 started directly with `ready:true`, `backend:true`, `paused:false`, preserving
+the current camera and window worlds. A physical lock/unlock cycle was not forced
+while the user was working.

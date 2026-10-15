@@ -99,11 +99,27 @@ done:
     return result;
 }
 
-static NSDictionary *tana_setup_status(void)
+static BOOL tana_session_unlocked(void)
 {
     CFDictionaryRef session=CGSessionCopyCurrentDictionary();
     BOOL unlocked=session && ![((__bridge NSDictionary *)session)[@"CGSSessionScreenIsLocked"] boolValue];
     if(session) CFRelease(session);
+    return unlocked;
+}
+
+/* A configured login item must survive an arbitrarily long locked session.
+ * Waiting is not a setup failure; only evaluate setup after the user returns. */
+static void tana_startup_wait_for_unlock(BOOL (^is_unlocked)(void),void (^wait_tick)(void))
+{
+    if(is_unlocked()) return;
+    NSLog(@"Tana2D startup: waiting for the desktop to unlock");
+    do { @autoreleasepool { wait_tick(); } } while(!is_unlocked());
+    NSLog(@"Tana2D startup: desktop unlocked; continuing startup");
+}
+
+static NSDictionary *tana_setup_status(void)
+{
+    BOOL unlocked=tana_session_unlocked();
     int connection=SLSMainConnectionID();
     BOOL separate=SLSGetSpaceManagementMode(connection)==1;
     CFStringRef display=SLSCopyActiveMenuBarDisplayIdentifier(connection);
@@ -335,17 +351,22 @@ static BOOL tana_prepare_startup(BOOL force,BOOL preview)
     if(!force && AXIsProcessTrusted() && [[NSFileManager defaultManager] isExecutableFileAtPath:TanaHelperPath]) {
         // Login Items can launch before the desktop is unlocked. Keep the app
         // responsive and wait before touching the Dock or presenting setup.
-        NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:120];
-        while(![tana_setup_status()[@"sessionUnlocked"] boolValue] && deadline.timeIntervalSinceNow>0)
+        tana_startup_wait_for_unlock(^BOOL { return tana_session_unlocked(); },^{
             [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.5]];
-        if([tana_setup_status()[@"sessionUnlocked"] boolValue] && tana_security_ready()) {
+        });
+        if(tana_session_unlocked() && tana_security_ready()) {
             for(int attempt=0;attempt<2 && !tana_backend_ready();attempt++) {
                 tana_run(@"/usr/bin/sudo",@[@"-n",TanaHelperPath,@"--load-sa"]);
                 if(!tana_backend_ready()) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1]];
             }
         }
     }
-    if(!force && tana_setup_can_start(tana_setup_status())) return YES;
+    NSDictionary *status=tana_setup_status();
+    if(!force && tana_setup_can_start(status)) {
+        NSLog(@"Tana2D startup: requirements ready; starting window manager");
+        return YES;
+    }
+    NSLog(@"Tana2D startup: opening setup (requested=%d, status=%@)",force,status);
     [[TanaSetup shared] showForStartup:YES preview:preview]; [NSApp run];
     return [TanaSetup shared].accepted;
 }
