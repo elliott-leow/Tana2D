@@ -283,8 +283,68 @@ static void test_native_finish_is_bounded_and_never_edgepans(void)
     assert(!hwm_drag_window && !hwm_drag_native);
 }
 
+static void test_locked_native_surface_tracks_recorded_pointer(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    CGPoint shown=projected[0].origin;
+    native_press_and_motion(w,CGPointMake(shown.x+70,shown.y+14));
+    assert(!hwm_drag_native_moved);
+    /* AppKit moves its anchor, but a presentation lock leaves the public
+     * rectangle unchanged. The native stream must still move the surface. */
+    actual[0].origin.x+=30;
+    int before=plane_transform_calls[0];
+    assert(hwm_drag_native_sync(&view,w));
+    assert(hwm_drag_native_projected && plane_transform_calls[0]>before);
+    assert(fabs(projected[0].origin.x-shown.x-20)<1);
+    assert(fabs(projected[0].origin.y-shown.y-10)<1);
+    hwm_drag_force_finalize(&view,false);
+}
+
+static void test_locked_native_recovery_uses_anchor_delta(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    CGPoint shown=projected[0].origin;
+    native_press_and_motion(w,CGPointMake(shown.x+70,shown.y+14));
+    actual[0].origin.x+=30;
+    assert(hwm_drag_native_sync(&view,w));
+    CGPoint accepted=projected[0].origin;
+    physical_left_button_down=true;
+    assert(hwm_drag_native_tap_disabled_recover(&view));
+    actual[0].origin.x+=40; actual[0].origin.y+=25;
+    assert(hwm_drag_native_tap_disabled_recover(&view));
+    assert(fabs(projected[0].origin.x-accepted.x-40)<1);
+    assert(fabs(projected[0].origin.y-accepted.y-25)<1);
+    physical_left_button_down=false;
+    assert(hwm_drag_native_tap_disabled_recover(&view));
+    clock_now+=.16; hwm_drag_autoscroll(&view,clock_now);
+    assert(!hwm_drag_window && !hwm_drag_native);
+}
+
+static void test_locked_native_without_pointer_uses_anchor_delta(void)
+{
+    reset(); hwm_render(&view,clock_now);
+    struct window *w=&windows[0]; CGPoint shown=projected[0].origin;
+    g_mouse_state.window=w; g_mouse_state.window_frame=actual[0];
+    g_mouse_state.current_action=MOUSE_MODE_NONE;
+    g_mouse_state.down_location=CGPointMake(shown.x+70,shown.y+14);
+    hwm_drag_point=g_mouse_state.down_location; hwm_drag_started(w);
+    assert(!hwm_drag_pointer_generation);
+    for(int i=1;i<=3;i++) {
+        actual[0].origin.x+=40; actual[0].origin.y+=25;
+        assert(hwm_drag_native_sync(&view,w));
+        assert(fabs(projected[0].origin.x-shown.x-i*40)<1);
+        assert(fabs(projected[0].origin.y-shown.y-i*25)<1);
+    }
+    hwm_drag_force_finalize(&view,false);
+}
+
 int main(void)
 {
+    test_locked_native_without_pointer_uses_anchor_delta();
+    test_locked_native_recovery_uses_anchor_delta();
+    test_locked_native_surface_tracks_recorded_pointer();
     @autoreleasepool {
         test_next_native_press_finishes_the_previous_release();
         test_interrupted_native_settle_never_snaps();

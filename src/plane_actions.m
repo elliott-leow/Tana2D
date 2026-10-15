@@ -6,7 +6,8 @@ static void hwm_plane_maximize(struct view *view)
     CGRect bounds=hwm_bounds(view);
     if(!view_find_window_node(view,window->id)) {
         hwm_plane_actual_size(view);
-        hwm_plane_reset_transform(window); hwm_float_to(window,bounds); hwm_wake(); return;
+        if(!hwm_plane_reset_transform(window)) return;
+        hwm_float_to(window,bounds); hwm_wake(); return;
     }
     window->strip_width=bounds.size.width; window->strip_height=bounds.size.height;
     window->strip_full_width=false;

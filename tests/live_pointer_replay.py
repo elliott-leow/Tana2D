@@ -52,9 +52,10 @@ def presentation_snapshot(wid,allow_drag=False):
     if not allow_drag:
         assert not (p['drag'] or p['nativeDrag'] or p['edge'] or p['nativeResizePending'] or p['transformDirty']),p
     public=(m['public_display_x'],m['public_display_y'],m['public_display_width'],m['public_display_height'])
-    sls=(-m['tx']/m['a'],-m['ty']/m['d'],m['w']*p['cameraScale'],m['h']*p['cameraScale'])
-    # CGWindowList is the displayed surface (and screenshot oracle). SLS's
-    # anchor/matrix is recorded separately because it can legitimately differ.
+    sls=(-m['final_tx']/m['final_a'],-m['final_ty']/m['final_d'],m['w']*p['cameraScale'],m['h']*p['cameraScale'])
+    # Verify the final compositor matrix, not merely an accepted base write.
+    close(sls[0],public[0],.75); close(sls[1],public[1],.75)
+    # CGWindowList is the displayed surface (and screenshot oracle).
     # These are separate cross-process CGWindowList samples, so permit one
     # compositor pixel while still catching the historical large SLS mismatch.
     close(p['displayedX'],public[0],.75); close(p['displayedY'],public[1],.75)
@@ -121,7 +122,7 @@ try:
             assert abs(before['x']-10000)<.01 and abs(before['y']-10000)<.01,(before,snap)
             assert abs(native['w']-400)<.01 and abs(native['h']-300)<.01,native
             assert abs(presented['cameraScale']-scale)<.00001,presented
-            assert abs(native['a']-1/scale)<.0001,native
+            assert abs(native['final_a']-1/scale)<.0001,native
             if mode==2: down=(left+shown_w,top+shown_h)
             elif mode==3: down=(left,top)
             else: down=(left+100*scale,top+30*scale)

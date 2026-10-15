@@ -55,22 +55,27 @@ static void hwm_scale_reset_all(void)
 /* Plane zoom is a compositor-only transform. Before a window leaves plane
  * ownership, restore its native transform so floating, pause, unmanage and
  * shutdown never inherit a stale scaled or translated surface. */
-static void hwm_plane_reset_transform(struct window *w)
+static bool hwm_plane_reset_transform(struct window *w)
 {
-    if(!w || !w->strip_plane_scaled) return;
-    CGRect base=w->strip_last_frame;
-    if(CGRectIsNull(base) || base.size.width<=0 || base.size.height<=0) {
-        w->strip_plane_scaled=false;
-        return;
-    }
+    if(!w || !w->strip_plane_scaled) return true;
     hwm_batch_begin();
-    if(scripting_addition_set_plane_transform(w->id,NAN,NAN,1)) w->strip_plane_scaled=false;
+    bool queued=scripting_addition_set_plane_transform(w->id,NAN,NAN,1);
+    /* A queue acceptance is not a reset. Force the current (possibly outer)
+     * batch to acknowledge the clear before an ownership transition can drop
+     * this window from the renderer. */
+    bool accepted=queued && hwm_batch_settle();
     hwm_batch_end();
+    if(!accepted) {
+        w->strip_transform_dirty=true;
+        return false;
+    }
+    w->strip_plane_scaled=false;
+    return true;
 }
 
 static void hwm_plane_reset_all_transforms(void)
 {
-    table_for(struct window *w,g_window_manager.window, { hwm_plane_reset_transform(w); })
+    table_for(struct window *w,g_window_manager.window, { (void)hwm_plane_reset_transform(w); })
 }
 
 static void hwm_float_to(struct window *w,CGRect target)

@@ -63,6 +63,8 @@ extern void SLSShowSpaces(int cid, CFArrayRef space_list);
 extern void SLSHideSpaces(int cid, CFArrayRef space_list);
 extern CFTypeRef SLSTransactionCreate(int cid);
 extern void SLSTransactionCommit(CFTypeRef transaction, int synchronous);
+extern void SLSTransactionSetWindowLockedBounds(CFTypeRef,uint32_t,CGRect);
+extern void SLSTransactionClearWindowLockedBounds(CFTypeRef,uint32_t);
 extern void SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
@@ -637,13 +639,32 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     HwmPlaneTransform transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
     uint16_t count = 0;
     if (!hwm_plane_transform_packet_decode(message, length, transforms, SA_PLANE_TRANSFORM_MAX_RECORDS, &count)) return false;
-    CFTypeRef transaction = SLSTransactionCreate(SLSMainConnectionID());
+    CGRect native[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    CGRect displayed[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    bool reset[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    int cid = SLSMainConnectionID();
+    /* Validate this packet before enqueuing any mutation. The manager decides
+     * whether native input is observed or needs a presentation update. */
+    for (uint16_t index = 0; index < count; ++index) {
+        if (SLSGetWindowBounds(cid, transforms[index].wid, &native[index]) != kCGErrorSuccess ||
+            !hwm_plane_transform_bounds(transforms[index], native[index], &displayed[index], &reset[index])) return false;
+    }
+    CFTypeRef transaction = SLSTransactionCreate(cid);
     if (!transaction) return false;
-    // These transaction functions return void on current macOS. Treating
-    // register contents as CGError falsely rejected successfully queued work.
-    for (uint16_t index = 0; index < count; ++index)
-        SLSTransactionSetWindowTransform(transaction, transforms[index].wid, 0, 0,
-                                        hwm_plane_transform_matrix(transforms[index]));
+    // These transaction functions return void on current macOS.
+    for (uint16_t index = 0; index < count; ++index) {
+        uint32_t wid = transforms[index].wid;
+        if (reset[index]) {
+            SLSTransactionClearWindowLockedBounds(transaction, wid);
+            SLSTransactionSetWindowTransform(transaction, wid, 0, 0,
+                CGAffineTransformMakeTranslation(-native[index].origin.x, -native[index].origin.y));
+        } else {
+            /* A base transform alone loses to AppKit's native-move override.
+             * Explicit presentation bounds remain authoritative after a drag,
+             * while SLSGetWindowBounds still reports the native frame. */
+            SLSTransactionSetWindowLockedBounds(transaction, wid, displayed[index]);
+        }
+    }
     SLSTransactionCommit(transaction, 0);
     CFRelease(transaction);
     return true;

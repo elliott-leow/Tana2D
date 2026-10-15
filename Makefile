@@ -93,5 +93,10 @@ live-tools:
 	$(CC) tests/plane_pointer_probe.m -framework Cocoa -o build/plane_pointer_probe
 
 	$(CC) -fno-objc-arc tests/live_transform_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_transform_transaction
+	$(CC) -Wno-unused-function -fno-objc-arc tests/live_helper_bounds_lock.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_helper_bounds_lock
+
+	$(CC) -Wno-unused-function -fobjc-arc -fblocks tests/live_native_projection.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_native_projection
+
+	$(CC) -Wno-unused-function -fobjc-arc tests/live_helper_batch.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_helper_batch
 
 	$(CC) -Wno-unused-function tests/live_drag_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_drag_transaction

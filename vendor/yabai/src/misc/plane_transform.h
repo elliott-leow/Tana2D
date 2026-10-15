@@ -39,6 +39,24 @@ static inline CGAffineTransform hwm_plane_transform_matrix(HwmPlaneTransform tra
                                  -transform.x * inverse_x, -transform.y * inverse_y);
 }
 
+/* The presentation bounds override AppKit's native-move bounds without
+ * changing the app's native anchor. Returning to the native frame releases
+ * this override so subsequent native drags/resizes remain free to move. */
+static inline bool hwm_plane_transform_bounds(HwmPlaneTransform target, CGRect native,
+                                               CGRect *displayed, bool *reset)
+{
+    if (!hwm_plane_transform_valid(target) || !displayed || !reset ||
+        !isfinite(native.origin.x) || !isfinite(native.origin.y) ||
+        !isfinite(native.size.width) || !isfinite(native.size.height) ||
+        native.size.width <= 0 || native.size.height <= 0) return false;
+    *displayed = CGRectMake(target.x, target.y, native.size.width * target.scale_x,
+                            native.size.height * target.scale_y);
+    *reset = target.scale_x == 1 && target.scale_y == 1 &&
+             target.x == native.origin.x && target.y == native.origin.y;
+    return isfinite(displayed->size.width) && displayed->size.width > 0 &&
+           isfinite(displayed->size.height) && displayed->size.height > 0;
+}
+
 /* Encode the helper message excluding its int16 stream-length prefix. */
 static inline bool hwm_plane_transform_packet_encode(unsigned char *out, size_t capacity,
                                                       const HwmPlaneTransform *items, uint16_t count,

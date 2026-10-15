@@ -8,7 +8,7 @@
 extern int SLSMainConnectionID(void);
 extern CGError SLSDisableUpdate(int);
 extern CGError SLSReenableUpdate(int);
-extern CGError SLSGetWindowTransform(int,uint32_t,CGAffineTransform *);
+extern CGError SLSGetWindowTransformAtPlacement(int,uint32_t,int,int*,CGAffineTransform *);
 static double now(void) { return CFAbsoluteTimeGetCurrent()*1000; }
 static int compare(const void *a,const void *b) { double x=*(double *)a,y=*(double *)b; return (x>y)-(x<y); }
 int main(void) { @autoreleasepool {
@@ -25,7 +25,7 @@ int main(void) { @autoreleasepool {
    unsigned char ack=0;bool ok=hwm_sa_send_all(fd,bytes,len+2,deadline)&&hwm_sa_receive_byte(fd,&ack,deadline)&&ack==1;close(fd);
    if(mode==0)SLSReenableUpdate(cid);
    assert(ok);durations[i]=now()-start;total+=durations[i];
-   CGAffineTransform a;assert(SLSGetWindowTransform(cid,wid,&a)==0 && fabs(a.tx-t.x*-1)<.001);
+   CGAffineTransform a;assert(SLSGetWindowTransformAtPlacement(cid,wid,0x7fffff00,NULL,&a)==0 && fabs(a.tx-t.x*-1)<.001);
    usleep(8000);
   }
   qsort(durations,180,sizeof(double),compare);

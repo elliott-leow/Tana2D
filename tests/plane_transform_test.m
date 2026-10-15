@@ -2,6 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #include <assert.h>
 #include <math.h>
+#include <float.h>
 #include <stdio.h>
 #include "../vendor/yabai/src/misc/plane_transform.h"
 
@@ -39,6 +40,19 @@ int main(void)
         verify_transform(decoded[index]);
     }
     assert(CGAffineTransformEqualToTransform(hwm_plane_transform_matrix(decoded[0]), hwm_plane_transform_matrix(decoded[1])));
+
+    for (uint16_t index = 0; index < count; ++index) {
+        CGRect native = CGRectMake(180, 51, 400, 300), displayed; bool reset;
+        assert(hwm_plane_transform_bounds(values[index], native, &displayed, &reset));
+        near(displayed.origin.x, values[index].x); near(displayed.origin.y, values[index].y);
+        near(displayed.size.width, 400 * values[index].scale_x);
+        near(displayed.size.height, 300 * values[index].scale_y);
+        HwmPlaneTransform restore = {values[index].wid, 180, 51, 1, 1};
+        assert(hwm_plane_transform_bounds(restore, native, &displayed, &reset) && reset);
+        assert(!hwm_plane_transform_bounds(restore, CGRectNull, &displayed, &reset));
+        HwmPlaneTransform overflow = {1, 0, 0, DBL_MAX, 1};
+        assert(!hwm_plane_transform_bounds(overflow, native, &displayed, &reset));
+    }
 
     uint16_t zero = 0;
     assert(!hwm_plane_transform_packet_decode((const unsigned char *) &zero, sizeof(zero), decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count));

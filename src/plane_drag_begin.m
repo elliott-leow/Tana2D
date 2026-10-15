@@ -4,6 +4,7 @@
  * button happened most recently at the event tap. */
 static uint64_t hwm_drag_pointer_generation;
 static bool hwm_drag_native_recovered;
+static bool hwm_drag_native_projected;
 static bool hwm_drag_committed;
 static int hwm_drag_restore_layer;
 static CGRect hwm_drag_native_displayed;
@@ -42,6 +43,7 @@ static void hwm_drag_started(struct window *window)
     hwm_drag_restore_layer=window->layer==LAYER_AUTO ? LAYER_BELOW : window->layer;
     hwm_drag_native_moved=false;
     hwm_drag_native_recovered=false;
+    hwm_drag_native_projected=false;
     /* Assigned by the controller that owns a concrete queued drag event.
      * Other entry points leave this at zero rather than consulting the newest
      * global press, which could belong to a later physical click. */

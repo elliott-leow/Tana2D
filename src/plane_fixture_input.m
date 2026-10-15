@@ -48,9 +48,15 @@ static void hwm_fixture_pointer(FILE *rsp,char *message)
                 hwm_mouse_pointer_generation=hwm_pointer_sample_generation_for_event_ref(event);
                 hwm_drag_point=point;
                 hwm_drag_started(w);
-                if(hwm_drag_window==w->id) hwm_drag_pointer_generation=hwm_mouse_pointer_generation;
+                /* Mode 4 moves NSWindow programmatically. It has no physical
+                 * pointer owner; a fabricated stationary drag sample must not
+                 * compete with the native anchor being tested. */
+                if(hwm_drag_window==w->id) hwm_drag_pointer_generation=0;
             }
-        } else if(phase==1) horizontal_drag(event);
+        } else if(phase==1) {
+            if(mode==4) hwm_drag_native_sync(view,w);
+            else horizontal_drag(event);
+        }
         else { horizontal_drop(w,point); g_mouse_state.window=NULL; g_mouse_state.current_action=MOUSE_MODE_NONE; }
     }
     CFRelease(event); hwm_wake(); fprintf(rsp,"{}\n");

@@ -745,8 +745,19 @@ static void test_plane_transform_cleanup(void)
     clock_now+=.02; hwm_render(&view,clock_now);
     assert(w->strip_plane_scaled && scale_calls>0);
     int before=scale_calls;
-    hwm_plane_reset_transform(w);
+    assert(hwm_plane_reset_transform(w));
     assert(!w->strip_plane_scaled && scale_calls==before+1);
+
+    /* The reset request must remain owned until the helper acknowledges it.
+     * A failed outer batch used to clear this flag before its queued locked-
+     * bounds reset had reached the helper, letting a float/unmanage path
+     * orphan the presentation override. */
+    w->strip_plane_scaled=true; w->strip_transform_dirty=false;
+    sa_batch_fails=true;
+    before=scale_calls;
+    assert(!hwm_plane_reset_transform(w));
+    assert(w->strip_plane_scaled && w->strip_transform_dirty && scale_calls==before+1);
+    sa_batch_fails=false;
 
     w->strip_plane_scaled=true; windows[1].strip_plane_scaled=true;
     windows[1].strip_last_frame=CGRectMake(92,72,400,600);

@@ -40,9 +40,10 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
     return true;
 }
 
-/* A title-bar drag already belongs to AppKit. Do not intercept its drag
- * events or transform its surface while its native tracking loop is active.
- * Observe the frame that AppKit moved, then move only our outline to it. */
+/* AppKit retains the complete native input stream. If its native anchor moves
+ * beneath our presentation bounds, keep the surface attached to the pointer
+ * through the same projection path as a plane drag. A stationary native
+ * anchor alone is not evidence of a drag: body selections remain untouched. */
 static bool hwm_drag_native_finishing;
 static bool hwm_drag_native_recovering;
 static double hwm_drag_native_finish_began,hwm_drag_native_finish_deadline;
@@ -71,8 +72,40 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
      * after obtaining a real presentation sample. */
     if(!hwm_drag_native_moved && CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin) &&
        CGPointEqualToPoint(displayed,window->strip_last_frame.origin)) return true;
+    bool observed_native_move=hwm_drag_native_moved;
     hwm_drag_commit_interaction(window);
     hwm_drag_native_moved=true;
+    bool native_anchor_moved=!CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin);
+    if(!hwm_drag_native_finishing &&
+       (hwm_drag_native_projected || (!observed_native_move && native_anchor_moved &&
+        CGPointEqualToPoint(displayed,window->strip_last_frame.origin)))) {
+        CGPoint point,world;
+        bool pointer=!hwm_drag_native_recovering && hwm_drag_pointer_generation &&
+            !hwm_pointer_sample_generation_is_aborted(hwm_drag_pointer_generation) &&
+            hwm_pointer_sample_drag_for_generation(hwm_drag_pointer_generation,0,&point,NULL);
+        if(pointer) {
+            hwm_drag_point=point;
+            world=hwm_drag_world_at(view,point);
+        } else {
+            /* No usable tap sample (programmatic move or tap recovery): the
+             * native anchor still records AppKit's movement under the lock.
+             * Continue from the last accepted anchor, never a stale cursor. */
+            CGPoint anchor=hwm_drag_native_projected ? window->frame.origin : g_mouse_state.window_frame.origin;
+            CGPoint origin=hwm_drag_native_projected ? CGPointMake(window->strip_world_x,window->strip_world_y) : hwm_drag_world_origin;
+            world=CGPointMake(origin.x+(frame.origin.x-anchor.x)/hwm_drag_scale,
+                              origin.y+(frame.origin.y-anchor.y)/hwm_drag_scale);
+        }
+        hwm_drag_native_projected=true;
+        window->frame=frame;
+        window->strip_width=window->strip_from_width=frame.size.width;
+        window->strip_height=window->strip_from_height=frame.size.height;
+        if(window->strip_transform_dirty || world.x!=window->strip_world_x || world.y!=window->strip_world_y ||
+           !CGSizeEqualToSize(frame.size,window->strip_last_frame.size)) {
+            hwm_drag_move=world;
+            return hwm_drag_submit_plane(view,window,world);
+        }
+        return true;
+    }
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()),camera_y=hwm_plane_camera_y(hwm_now());
     // Native bounds retain an independent anchor when the camera transformed
     // the window. Persist the compositor origin, not that native anchor.

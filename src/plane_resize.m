@@ -89,6 +89,14 @@ static bool hwm_plane_center_click(CGEventRef event)
 static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
 {
     bool captured=atomic_load(&hwm_resize_captured);
+    /* A new physical left press terminates a predecessor whose up never
+     * arrived.  Drop only tap capture here: the queued replacement down owns
+     * serialized teardown of the old model session.  If it is not another
+     * eligible edge press, its native stream must remain whole. */
+    if(captured && type==kCGEventLeftMouseDown) {
+        atomic_store(&hwm_resize_captured,false);
+        captured=false;
+    }
     if(captured && type!=kCGEventLeftMouseDragged && type!=kCGEventLeftMouseUp) return false;
     if(!captured && (type!=kCGEventLeftMouseDown || hwm_paused || hwm_plane_selecting || hwm_overview_active || hwm_suspended ||
        (CGEventGetFlags(event)&(kCGEventFlagMaskAlternate|kCGEventFlagMaskControl|kCGEventFlagMaskCommand|kCGEventFlagMaskShift)))) return false;
@@ -132,7 +140,10 @@ static void hwm_plane_resize_input(HWMPlaneResizeInput *input)
          * press must not tear down the session that superseded it. */
         if(hwm_resize_owned && input->generation && hwm_resize_pointer_generation &&
            input->generation<hwm_resize_pointer_generation) { free(input); return; }
-        if(hwm_resize_owned) hwm_plane_resize_abort_interaction(NULL,false);
+        /* This queued down already claimed the replacement physical press at
+         * the tap. Retiring its missing-up predecessor must not clear that new
+         * press's capture before its drag and up arrive. */
+        if(hwm_resize_owned) hwm_plane_resize_abort_interaction(NULL,true);
         struct window *w=window_manager_find_window(&g_window_manager,input->id);
         if(w && view_find_window_node(view,w->id) && !hwm_paused && !hwm_suspended) {
             (void)hwm_ax_cancel_resize(w->id);

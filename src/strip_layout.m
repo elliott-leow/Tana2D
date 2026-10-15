@@ -52,9 +52,13 @@ static void hwm_batch_release(void)
 }
 /* WindowServer is about to be asked where a window is: anything this batch
  * has queued for the helper must have been applied first. */
-static void hwm_batch_settle(void)
+static bool hwm_batch_settle(void)
 {
-    if(hwm_batch_open && !scripting_addition_batch_flush()) hwm_batch_failed();
+    if(hwm_batch_open && !scripting_addition_batch_flush()) {
+        hwm_batch_failed();
+        return false;
+    }
+    return true;
 }
 /* A column about to leave the strip. Once layout has closed the hole the camera
  * follows by hstrip_close_shift, so the neighbours on both sides converge

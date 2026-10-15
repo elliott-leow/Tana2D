@@ -3,6 +3,45 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
+## Native presentation override repair — October 14, 2026
+
+Earlier fixture results did not establish native-drag correctness. Terminal and
+Firefox accepted base-transform changes while their final compositor transform
+and public displayed bounds remained at the native frame. A real CGEvent
+native title-bar drag reproduced this even with the manager stopped.
+
+Payload 0.5.2 cleared standard bounds locks. It passed an artificial lock test
+but still failed the real native-drag test. It is not a complete repair.
+Payload 0.5.3 sets explicit presentation bounds in a WindowServer transaction.
+Returning to the native origin and scale clears those bounds and restores the
+native base transform, allowing the next native drag or resize to proceed.
+Native frame anchors remain unchanged during projection. Provisional transform
+placement workarounds were rejected by the never-dragged-window regression.
+
+`make all test live-tools` passes. `live_transform_transaction` verifies the
+accepted-base/final-transform discrepancy and twelve corrected projections.
+`live_native_projection` verifies scaled presentation before any native drag,
+two actual CGEvent title-bar drags, twelve pan/nonuniform zoom targets after each,
+and native resets between drags. The local mode passes; the old installed
+0.5.2 helper fails the native test. The 0.5.3 app is signed and installed, with
+administrator authentication pending for the helper. Foreign-window and full
+manager acceptance are pending that replacement.
+
+The border now hides after rejected batches and retries failed creation,
+shaping, context acquisition, and ordering. Resize capture now retires a
+missing-up predecessor without swallowing the next physical press. Focused
+regressions and the full automated suite pass. Live acceptance reads the final
+compositor matrix and public bounds, rather than treating a base write as proof.
+
+Atomicity is per helper packet (up to 113 transform records); larger render
+batches use multiple packets. This does not establish frame-wide atomicity for
+more than 113 simultaneously dirty surfaces. Physical trackpad feel, reboot,
+and multi-display behavior are not established by synthetic event tests.
+
+Evidence: `build/terminal-cgevent-before-fix.json`,
+`build/presentation-bounds-build-tests.log`, and
+`build/presentation-bounds-install.log`.
+
 ## Terminal drag and palette crash repair — October 14, 2026
 
 This repair supersedes the installed-build hash and native-drag conclusions in
@@ -451,3 +490,77 @@ camera/geometry differences that were still under investigation. Firefox respond
 dragging did not move either Firefox or the disposable fixture, including with
 Tana paused. Native input behavior remained unverified; Tana was
 paused temporarily to isolate the user's Firefox movement report.
+
+
+### Presentation bounds and native drag repair (2026-10-14, version 0.5.3)
+
+The preceding native-drag checkpoint is superseded by this repair. A successful
+base-transform write did not necessarily change the displayed window after an
+AppKit move. The helper now sets explicit presentation bounds in a WindowServer
+transaction. Verification compares public displayed bounds with the final
+compositor transform, rather than treating the requested base matrix as proof.
+Reset clears the presentation bounds before returning a window to native control.
+
+AppKit retains the complete native input stream. If its anchor starts moving
+while the displayed surface remains locked, the manager projects the surface and
+border from the captured drag coordinates. With no valid captured sample,
+including event-tap recovery, native anchor deltas advance the last accepted
+position. Body selections with stationary native anchors do not become drags.
+The accepted window position, rather than a previous interaction's drag cache,
+determines whether another projection is required.
+
+Five challenge reviews covered foreign-window authority, border failures,
+replacement presses after a missing mouse-up, packet atomicity, and reset
+acknowledgements. Fixes ensure failed border creation/shape/order/transform work
+retries, hide a rejected outline, preserve replacement resize capture, and retain
+transform ownership until a reset is acknowledged. A live helper test passed with
+ordered-out and minimized peers and rejected a stale ID without changing the
+other target. Atomicity applies to each packet (at most 113 records), not an
+arbitrarily large frame split into multiple packets.
+
+The full `make all test` suite passed after the recovery fix
+(`build/presentation-recovery-tests.log`). Live test results below distinguish
+controller replay, generated global input, and physical-device acceptance.
+
+
+Final automated coverage comprises 27 native test executables (including the
+production-controller sanitizer regressions) and 20 Python tests. The installed
+build passed 16 pointer-replay cases with 27 motion samples each, four
+programmatic native-movement cases, and six release-snap cases. Each checks
+post-release stability and relevant world, camera, displayed-surface, and border
+geometry. Evidence: `build/current-pointer-replay.log`,
+`build/current-native-replay.log`, and `build/current-snap-release.log`.
+The programmatic fixture mode has no pointer owner: it drives native anchor
+observation directly rather than injecting a stationary pointer that competes
+with the AppKit move.
+
+With the user's explicit CGEvent authorization, Terminal and Firefox passed
+actual global-input native-titlebar drags, release, subsequent pan, zoom, and
+public-bounds/final-matrix/border agreement. Terminal also passed a vertical-only
+drag with its full-height window. The test records the global input stream and
+requires native controller ownership during the move. The repeatable opt-in
+entry point is `tests/live_native_app_check.py`; callers supply the target IDs
+and known draggable titlebar offsets. Evidence:
+`build/native-app-horizontal-check.json` and `build/native-app-check.json`.
+
+These checks establish the measured geometry and generated-input behavior on
+this Mac. They do not establish physical trackpad feel, hardware input-to-photon
+latency, reboot/login persistence, multi-display behavior, or pixel-level border
+appearance. The final build remains installed and enabled.
+
+
+The final installed-app acceptance run passed all 14 checks with zero additional
+movement failures (`build/plane-check.json`, `build/current-plane-check.log`).
+Coverage includes signed placement, unbounded camera travel, final transforms,
+Option and unmodified overview drags, pinch, fit-all, maximize, and four
+AppKit-originated resizes with border checks. Raw contacts now own three-finger
+panning; the legacy Dock companion stream is checked for suppression, not used
+as a substitute for physical contact input. A prior run passed the geometry
+checks but recorded one recovered backend failure; the final run after restart
+passed with per-stage failure counters unchanged. No universal latency or
+failure-free-under-all-loads claim follows from these measurements.
+
+A software-update authentication dialog obscured the original centered test
+coordinates. It was left untouched; the generated-pointer fixture now uses a
+clear upper-left area. Final package signature verification and installed/package
+binary comparison passed. Test windows were closed and camera/focus restored.

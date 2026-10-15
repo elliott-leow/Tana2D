@@ -181,6 +181,47 @@ static void test_old_queued_up_cannot_release_new_resize_press(void)
     assert(hwm_resize_owned && !hwm_resize_releasing && hwm_edge_window==second->id);
 }
 
+/* A missing terminal up must not let the old captured edge resize swallow the
+ * next physical press. An eligible replacement installs its own resize only
+ * after the serialized handler has retired the old owner. */
+static void test_replacement_edge_press_replaces_captured_missing_up(void)
+{
+    reset(); struct window *first=&windows[0],*second=&windows[1];
+    hwm_plane_resize_publish(&view);
+    CGPoint first_down=CGPointMake(CGRectGetMaxX(first->strip_last_frame),CGRectGetMidY(first->strip_last_frame));
+    test_hit_id=first->id;
+    assert(resize_event(kCGEventLeftMouseDown,first_down,0));
+    uint64_t first_generation=hwm_resize_pointer_generation;
+    assert(hwm_resize_owned && atomic_load(&hwm_resize_captured));
+
+    CGPoint second_down=CGPointMake(CGRectGetMaxX(second->strip_last_frame),CGRectGetMidY(second->strip_last_frame));
+    test_hit_id=second->id;
+    /* resize_event samples the replacement down first, exactly as the tap does. */
+    assert(resize_event(kCGEventLeftMouseDown,second_down,0));
+    assert(hwm_resize_owned && hwm_edge_window==second->id);
+    assert(hwm_resize_pointer_generation!=first_generation);
+    assert(atomic_load(&hwm_resize_captured));
+}
+
+/* If a missing-up successor begins in a window body, do not consume its down
+ * and then capture its drag/up under the predecessor's generation. */
+static void test_replacement_body_press_passes_through_after_missing_up(void)
+{
+    reset(); struct window *first=&windows[0],*second=&windows[1];
+    hwm_plane_resize_publish(&view);
+    CGPoint first_down=CGPointMake(CGRectGetMaxX(first->strip_last_frame),CGRectGetMidY(first->strip_last_frame));
+    test_hit_id=first->id;
+    assert(resize_event(kCGEventLeftMouseDown,first_down,0));
+    assert(hwm_resize_owned && atomic_load(&hwm_resize_captured));
+
+    test_hit_id=second->id;
+    CGPoint body=CGPointMake(CGRectGetMidX(second->strip_last_frame),CGRectGetMidY(second->strip_last_frame));
+    assert(!resize_event(kCGEventLeftMouseDown,body,0));
+    assert(!atomic_load(&hwm_resize_captured));
+    assert(!resize_event(kCGEventLeftMouseDragged,CGPointMake(body.x+40,body.y),0));
+    assert(!resize_event(kCGEventLeftMouseUp,CGPointMake(body.x+40,body.y),0));
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -194,6 +235,8 @@ int main(void)
         test_right_button_cannot_resize_left_owned_session();
         test_terminal_up_point_commits_before_queued_up();
         test_old_queued_up_cannot_release_new_resize_press();
+        test_replacement_edge_press_replaces_captured_missing_up();
+        test_replacement_body_press_passes_through_after_missing_up();
         puts("plane resize session tests passed");
     }
     return 0;

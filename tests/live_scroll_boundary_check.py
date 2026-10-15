@@ -58,7 +58,7 @@ try:
             # Reserve enough space for native shadows and attached borders.
             assert w['x'] + w['w'] <= display['x'] - 100, w
             assert (w['w'], w['h']) == sizes[w['id']], w
-            assert abs(w['a'] - 1) < .00001 and abs(w['d'] - 1) < .00001, w
+            assert abs(w['final_a'] - 1) < .00001 and abs(w['final_d'] - 1) < .00001, w
         command('strip', 'scroll', 1000000)
         time.sleep(.4)
         repeated = status()

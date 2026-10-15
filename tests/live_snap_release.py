@@ -53,17 +53,14 @@ try:
                 time.sleep(.05)
             strip('fixture-pointer',moving,mode,1,*last)
             held=world(moving);near(held['x'],10000+8/scale,1/scale);near(held['y'],10000+3/scale,1/scale)
-            if scale==.5 and mode==0:subprocess.check_call(['screencapture','-x',str(ROOT/'build/snap-held.png')])
             strip('fixture-pointer',moving,mode,2,*last);active=False
             released=settled(moving);w=world(moving)
             near(w['x'],10000,.01);near(w['y'],10000,.01)
             near(world(peer)['x']-(w['x']+w['width']),12,.01)
-            if scale==.5 and mode==0:subprocess.check_call(['screencapture','-x',str(ROOT/'build/snap-released.png')])
             strip('pan',80,40);panned=settled(moving)
             near(panned['displayedX'],released['displayedX']-80*scale)
             near(panned['displayedY'],released['displayedY']-40*scale)
             assert world(moving)==w
-            if scale==.5 and mode==0:subprocess.check_call(['screencapture','-x',str(ROOT/'build/snap-panned.png')])
             checks.append({'scale':scale,'mode':mode,'held_unsnapped':True,'release_gap':12,'pan_independent':True})
             print(json.dumps(checks[-1]),flush=True)
 finally:

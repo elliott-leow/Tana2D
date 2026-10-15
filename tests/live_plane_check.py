@@ -48,9 +48,14 @@ initial = status()
 assert initial['ready'] and initial['backend'] and not initial['paused'] and initial['plane'], initial
 assert not json.loads(strip('input-status'))['suspended']
 focused = next((w['id'] for w in json.loads(command('query', '--windows')) if w.get('has-focus')), None)
-checks = []
+stage_failures = []
+class Checks(list):
+    def append(self, item):
+        super().append(item)
+        stage_failures.append({'check':item,'move_failures':status()['move_failures']})
+checks = Checks()
 ids = []
-report = {'checks': checks, 'result': 'incomplete'}
+report = {'checks': checks, 'result': 'incomplete','initial_move_failures':initial['move_failures'],'stage_failures':stage_failures}
 try:
     if not args.fixture_running:
         subprocess.run(['open', str(FIXTURE)], check=True)
@@ -85,8 +90,8 @@ try:
     strip('pan', 60, 40)
     settle()
     after = metrics([ids[0]])[ids[0]]
-    close(-after['tx']/after['a']+before['tx']/before['a'], -60)
-    close(-after['ty']/after['d']+before['ty']/before['d'], -40)
+    close(-after['final_tx']/after['final_a']+before['final_tx']/before['final_a'], -60)
+    close(-after['final_ty']/after['final_d']+before['final_ty']/before['final_d'], -40)
     close(after['x'], before['x'], .001)
     close(after['y'], before['y'], .001)
     checks.append('two-axis camera movement translates the compositor and leaves native anchors fixed')
@@ -101,19 +106,19 @@ try:
         settle()
         close(status()['camera']['scale'], scale, .0001)
         m = metrics([ids[0]])[ids[0]]
-        close(m['w']/m['a'], m['w']*scale, 1.1)
-        close(m['h']/m['d'], m['h']*scale, 1.5)
+        close(m['w']/m['final_a'], m['w']*scale, 1.1)
+        close(m['h']/m['final_d'], m['h']*scale, 1.5)
     checks.append('zoom out and in change native window transforms; actual size restores unit scale')
     strip('zoom', .5); settle()
     before = metrics([ids[0]])[ids[0]]
     strip('pan', 80, 60); settle()
     after = metrics([ids[0]])[ids[0]]
-    close(-after['tx']/after['a']+before['tx']/before['a'], -40)
-    close(-after['ty']/after['d']+before['ty']/before['d'], -30)
+    close(-after['final_tx']/after['final_a']+before['final_tx']/before['final_a'], -40)
+    close(-after['final_ty']/after['final_d']+before['final_ty']/before['final_d'], -30)
     close(after['x'], before['x'], .001)
     close(after['y'], before['y'], .001)
-    close(after['a'], before['a'], .00001)
-    close(after['d'], before['d'], .00001)
+    close(after['final_a'], before['final_a'], .00001)
+    close(after['final_d'], before['final_d'], .00001)
     checks.append('panning at half zoom preserves scale and native anchors')
     strip('actual-size'); settle()
 
@@ -130,26 +135,38 @@ try:
     checks.append('directional placement and undo preserve plane coordinates')
 
     if args.generated_input:
+        # Keep global pointer targets clear of the user's real windows. The
+        # earlier signed-coordinate cases can overlap their saved world frames.
+        for wid in ids:
+            r=next(w['world'] for w in status()['windows'] if w['id']==wid)
+            strip('place',wid,r['x']+20000,r['y']+20000,r['width'],r['height'])
         strip('zoom', .5)
         settle()
         for mode in ('option', 'native'):
             state = status()
             r = next(w['world'] for w in state['windows'] if w['id'] == ids[0])
             viewport = state['viewport']
-            strip('camera', r['x']+r['width']/2-viewport['width'], r['y']+r['height']/2-viewport['height'])
+            # Use the upper-left test area, clear of centered system dialogs.
+            strip('camera', r['x']+r['width']/2-(300-viewport['x'])/.5,
+                            r['y']+r['height']/2-(250-viewport['y'])/.5)
             settle()
             state = status(); camera = state['camera']; scale = camera['scale']
             x = viewport['x']+(r['x']-camera['x']+r['width']/2)*scale
-            y = viewport['y']+(r['y']-camera['y'])*scale+(r['height']*scale/2 if mode=='option' else 5)
+            # At half zoom an unmodified drag uses overview selection. Keep
+            # it clear of the top resize band; native AppKit ownership is
+            # exercised separately by live_native_app_check.py at unit scale.
+            y = viewport['y']+(r['y']-camera['y'])*scale+r['height']*scale/2
+            strip('input-trace-start')
             subprocess.run([str(ROOT/'build/plane_pointer_probe'), str(x), str(y), '60', '40', mode], check=True)
             settle()
             new = next(w['world'] for w in status()['windows'] if w['id'] == ids[0])
-            close(new['x']-r['x'], 60/scale, 3)
+            (ROOT/'build/plane-generated-drag.json').write_text(json.dumps({'mode':mode,'point':[x,y],'trace':json.loads(strip('input-trace')),'presentation':json.loads(strip('presentation-status',ids[0]))},indent=2))
+            assert abs(new['x']-r['x']-60/scale)<=3, (mode,r,new,state)
             close(new['y']-r['y'], 40/scale, 3)
             close(new['width'], r['width'])
             close(new['height'], r['height'])
         worlds = {w['id']: w['world'] for w in status()['windows'] if w['id'] in ids}
-        checks.append('Option and native title-bar drags preserve world sizes and divide screen movement by zoom')
+        checks.append('Option and unmodified overview drags preserve world sizes and divide screen movement by zoom')
 
         probe = ROOT / 'build/plane_gesture_probe'
         strip('actual-size')
@@ -159,10 +176,12 @@ try:
             subprocess.run([str(probe), direction, str(amount)], check=True)
             settle()
             after_camera = status()['camera']
-            axis = 'x' if direction == 'horizontal' else 'y'
-            assert abs(after_camera[axis]-before_camera[axis]) > 5, (direction, before_camera, after_camera)
+            # Raw multitouch contacts now own panning. Dock's companion
+            # stream must be swallowed without applying the motion twice.
+            for axis in ('x','y','scale'):
+                close(after_camera[axis],before_camera[axis],.01)
             assert not json.loads(strip('input-status'))['overview']
-        checks.append('native three-finger event streams pan in all four directions without opening overview')
+        checks.append('companion Dock swipe streams do not duplicate raw-contact panning or open overview')
         for amount in [-.25, .35]:
             before_scale = status()['camera']['scale']
             subprocess.run([str(probe), 'pinch', str(amount)], check=True)
@@ -189,15 +208,15 @@ try:
             assert w['world'] == worlds[w['id']], (w, worlds[w['id']])
     for m in metrics(ids).values():
         assert m['alpha'] > 0, m
-        close(m['a'], 1/camera['scale'], .01)
-        close(m['d'], 1/camera['scale'], .03)
+        close(m['final_a'], 1/camera['scale'], .01)
+        close(m['final_d'], 1/camera['scale'], .03)
         r = next(w['world'] for w in state['windows'] if w['id']==m['id'])
         close(m['w'], r['width'])
         close(m['h'], r['height'])
-        close(-m['tx']/m['a'], viewport['x']+(r['x']-camera['x'])*camera['scale'], 2)
-        close(-m['ty']/m['d'], viewport['y']+(r['y']-camera['y'])*camera['scale'], 2)
-        close(m['w']/m['a'], r['width']*camera['scale'], 2)
-        close(m['h']/m['d'], r['height']*camera['scale'], 2)
+        close(-m['final_tx']/m['final_a'], viewport['x']+(r['x']-camera['x'])*camera['scale'], 2)
+        close(-m['final_ty']/m['final_d'], viewport['y']+(r['y']-camera['y'])*camera['scale'], 2)
+        close(m['w']/m['final_a'], r['width']*camera['scale'], 2)
+        close(m['h']/m['final_d'], r['height']*camera['scale'], 2)
     checks.append('Fit all contains every plane window without changing world geometry')
     key_camera = camera.copy()
     strip('actual-size')
@@ -210,8 +229,8 @@ try:
     strip('actual-size')
     settle()
     for m in metrics(ids).values():
-        close(m['a'], 1, .001)
-        close(m['d'], 1, .001)
+        close(m['final_a'], 1, .001)
+        close(m['final_d'], 1, .001)
     checks.append('actual size restores unit scale while retaining canvas translation')
     command('window', ids[0], '--focus'); settle()
     strip('zoom', .5); settle()
@@ -221,9 +240,9 @@ try:
     w = next(w['world'] for w in full['windows'] if w['id']==ids[0])
     m = metrics([ids[0]])[ids[0]]
     close(w['width'], viewport['width']); close(w['height'], viewport['height'])
-    close(-m['tx']/m['a'], viewport['x']); close(-m['ty']/m['d'], viewport['y'])
+    close(-m['final_tx']/m['final_a'], viewport['x']); close(-m['final_ty']/m['final_d'], viewport['y'])
     close(m['w'], viewport['width']); close(m['h'], viewport['height'])
-    close(m['a'], 1, .001); close(m['d'], 1, .001)
+    close(m['final_a'], 1, .001); close(m['final_d'], 1, .001)
     checks.append('maximize resets zoom to 100 percent and fills the usable screen with the active window')
     # Resizes originate in AppKit, including updates while the camera is moving.
     # The fixture's last-created window is the only target of this test command.
@@ -243,16 +262,16 @@ try:
         m=measured[target]; border=measured[profile['border_window']]
         close(m['w'],width); close(m['h'],height)
         close(r['width'],width); close(r['height'],height)
-        close(m['a'],1/scale,.001); close(m['d'],1/scale,.001)
+        close(m['final_a'],1/scale,.001); close(m['final_d'],1/scale,.001)
         camera=status()['camera']
-        close(-m['tx']/m['a'],viewport['x']+(r['x']-camera['x'])*scale)
-        close(-m['ty']/m['d'],viewport['y']+(r['y']-camera['y'])*scale)
+        close(-m['final_tx']/m['final_a'],viewport['x']+(r['x']-camera['x'])*scale)
+        close(-m['final_ty']/m['final_d'],viewport['y']+(r['y']-camera['y'])*scale)
         # The outline surrounds the current native surface, not its stale size.
-        pad_x=(-m['tx']/m['a'])-(-border['tx']/border['a'])
-        pad_y=(-m['ty']/m['d'])-(-border['ty']/border['d'])
+        pad_x=(-m['final_tx']/m['final_a'])-(-border['final_tx']/border['final_a'])
+        pad_y=(-m['final_ty']/m['final_d'])-(-border['final_ty']/border['final_d'])
         assert 1 <= pad_x <= 6 and 1 <= pad_y <= 6, (pad_x,pad_y)
-        close(border['w']/border['a'],m['w']/m['a']+2*pad_x,2)
-        close(border['h']/border['d'],m['h']/m['d']+2*pad_y,2)
+        close(border['w']/border['final_a'],m['w']/m['final_a']+2*pad_x,2)
+        close(border['h']/border['final_d'],m['h']/m['final_d']+2*pad_y,2)
     checks.append('four app-originated resizes at full and half zoom update world size, projection, and border bounds')
     assert status()['move_failures'] == initial['move_failures']
     assert json.loads(strip('input-status'))['tap_enabled']

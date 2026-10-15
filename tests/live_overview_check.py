@@ -30,7 +30,7 @@ def restored(before):
     for a, b in zip(before, after):
         for key in ('x', 'y', 'w', 'h', 'tx', 'ty'):
             assert abs(a[key]-b[key]) <= 1, (key,a,b)
-        assert abs(b['a']-1)<.00001 and abs(b['d']-1)<.00001, b
+        assert abs(b['final_a']-1)<.00001 and abs(b['final_d']-1)<.00001, b
 
 assert not state()['overview'], 'close the overview before running this check'
 assert state()['overview_renderer'] == 'native'
@@ -45,13 +45,13 @@ try:
     command('overview-progress', '.25')
     time.sleep(.2)
     quarter = metrics(ids)
-    assert any(abs(w['a']-1)>.01 for w in quarter), 'native transforms did not change'
+    assert any(abs(w['final_a']-1)>.01 for w in quarter), 'native transforms did not change'
     command('overview-progress', '1')
     time.sleep(.2)
     full = metrics(ids)
-    assert all(w['a']>1 and w['d']>1 for w in full), 'grid did not shrink actual windows'
-    assert any(abs(a['tx']-b['tx'])>2 for a,b in zip(quarter,full)), 'gesture progress did not move windows'
-    rects = [(-w['tx']/w['a'],-w['ty']/w['d'],w['w']/w['a'],w['h']/w['d']) for w in full]
+    assert all(w['final_a']>1 and w['final_d']>1 for w in full), 'grid did not shrink actual windows'
+    assert any(abs(a['final_tx']-b['final_tx'])>2 for a,b in zip(quarter,full)), 'gesture progress did not move windows'
+    rects = [(-w['final_tx']/w['final_a'],-w['final_ty']/w['final_d'],w['w']/w['final_a'],w['h']/w['final_d']) for w in full]
     for i,(x,y,w,h) in enumerate(rects):
         for xx,yy,ww,hh in rects[i+1:]:
             assert min(x+w,xx+ww)-max(x,xx)<=1 or min(y+h,yy+hh)-max(y,yy)<=1, 'grid overlap'

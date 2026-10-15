@@ -9,11 +9,14 @@ static CGRect hwm_plane_border_frame;
 static CGSize hwm_plane_border_canvas;
 static unsigned hwm_plane_border_generation;
 static bool hwm_plane_border_visible;
+static void hwm_plane_border_hide(void);
 /* The outer frame batch can reject a transform after this file has returned.
  * strip_layout calls this hook at that acknowledgement boundary. */
 static void hwm_plane_border_batch_failed(void)
 {
+    hwm_plane_border_hide();
     hwm_plane_border_frame=CGRectNull;
+    hwm_plane_border_focus=0;
 }
 static void hwm_plane_border_hide(void)
 {
@@ -47,25 +50,32 @@ static void hwm_plane_border_tick(struct view *view,double now)
     CGSize canvas=CGSizeMake(ceil(fmax(1,frame.size.width/hwm_plane_scale)),ceil(fmax(1,frame.size.height/hwm_plane_scale)));
     if(!view_find_window_node(view,focus->id)) canvas=frame.size;
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
-    bool redraw=reshape || hwm_plane_border_generation!=hwm_border_generation;
+    bool redraw=reshape || hwm_plane_border_generation!=hwm_border_generation || !hwm_plane_border_context;
     if(!redraw && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
     hwm_batch_begin();
+    bool drawable=true;
     if(redraw || !hwm_plane_border_id) {
         CGRect local=CGRectMake(0,0,canvas.width,canvas.height); CFTypeRef region=NULL;
-        CGSNewRegionWithRect(&local,&region);
+        if(CGSNewRegionWithRect(&local,&region)!=kCGErrorSuccess || !region) drawable=false;
         if(!hwm_plane_border_id) {
             uint64_t tags=(1ULL<<1)|(1ULL<<9); CFTypeRef empty=CGRegionCreateEmptyRegion();
-            SLSNewWindowWithOpaqueShapeAndContext(g_connection,2,region,empty,13,&tags,frame.origin.x,frame.origin.y,64,&hwm_plane_border_id,NULL);
-            CFRelease(empty);
-            sls_window_disable_shadow(hwm_plane_border_id);
-            SLSSetWindowOpacity(g_connection,hwm_plane_border_id,0);
-            SLSSetWindowLevel(g_connection,hwm_plane_border_id,3);
-            hwm_plane_border_context=SLWindowContextCreate(g_connection,hwm_plane_border_id,0);
+            if(!empty || !drawable || SLSNewWindowWithOpaqueShapeAndContext(g_connection,2,region,empty,13,&tags,frame.origin.x,frame.origin.y,64,&hwm_plane_border_id,NULL)!=kCGErrorSuccess || !hwm_plane_border_id) {
+                hwm_plane_border_id=0;
+                drawable=false;
+            } else {
+                sls_window_disable_shadow(hwm_plane_border_id);
+                SLSSetWindowOpacity(g_connection,hwm_plane_border_id,0);
+                SLSSetWindowLevel(g_connection,hwm_plane_border_id,3);
+                hwm_plane_border_context=SLWindowContextCreate(g_connection,hwm_plane_border_id,0);
+            }
+            if(empty) CFRelease(empty);
         }
-        SLSSetWindowShape(g_connection,hwm_plane_border_id,0,0,region);
-        SLSSetMouseEventEnableFlags(g_connection,hwm_plane_border_id,false);
-        CFRelease(region);
-        if(hwm_plane_border_context) {
+        if(drawable && !hwm_plane_border_context) hwm_plane_border_context=SLWindowContextCreate(g_connection,hwm_plane_border_id,0);
+        if(!hwm_plane_border_context) drawable=false;
+        if(drawable && SLSSetWindowShape(g_connection,hwm_plane_border_id,0,0,region)!=kCGErrorSuccess) drawable=false;
+        if(drawable) SLSSetMouseEventEnableFlags(g_connection,hwm_plane_border_id,false);
+        if(region) CFRelease(region);
+        if(drawable && hwm_plane_border_context) {
             CGContextClearRect(hwm_plane_border_context,local);
             CGRect outline=CGRectInset(local,pad*.5,pad*.5);
             CGPathRef path=CGPathCreateWithRoundedRect(outline,hwm_border_radius,hwm_border_radius,NULL);
@@ -81,20 +91,24 @@ static void hwm_plane_border_tick(struct view *view,double now)
             CGGradientRelease(gradient); CGColorSpaceRelease(space); CGPathRelease(path);
             CGContextRestoreGState(hwm_plane_border_context); CGContextFlush(hwm_plane_border_context);
         }
-        hwm_plane_border_canvas=canvas;
-        hwm_plane_border_generation=hwm_border_generation;
+        if(drawable) {
+            hwm_plane_border_canvas=canvas;
+            hwm_plane_border_generation=hwm_border_generation;
+        }
     }
     bool transformed=false;
-    if(hwm_plane_border_id) {
+    bool ordered=hwm_plane_border_visible;
+    if(drawable && hwm_plane_border_id) {
         transformed=scripting_addition_set_plane_transform_xy(hwm_plane_border_id,frame.origin.x,frame.origin.y,
                                                                frame.size.width/canvas.width,frame.size.height/canvas.height);
-        if(transformed && !hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,1,0);
+        if(transformed && !hwm_plane_border_visible)
+            ordered=SLSOrderWindow(g_connection,hwm_plane_border_id,1,0)==kCGErrorSuccess;
     }
     hwm_batch_end();
     // A queued helper command is not a displayed outline until the batch is
     // acknowledged. Do not cache a requested frame on either failure path:
     // otherwise the equality fast path suppresses every later retry.
-    if(!transformed || !hwm_backend_ok) { hwm_plane_border_batch_failed(); return; }
+    if(!transformed || !ordered || !hwm_backend_ok) { hwm_plane_border_batch_failed(); return; }
     hwm_plane_border_visible=true; hwm_plane_border_frame=frame; hwm_plane_border_focus=focus->id;
 }
 
