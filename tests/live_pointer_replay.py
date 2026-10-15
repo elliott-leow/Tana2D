@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser()
-parser.add_argument('--scales',nargs='+',type=float,default=[.5,.7,1,2])
+parser.add_argument('--scales',nargs='+',type=float,default=[.25,.5,.7,1])
 parser.add_argument('--modes',nargs='+',type=int,choices=range(5),default=list(range(5)))
 args=parser.parse_args()
 WM=ROOT/'build/tana2d'
@@ -29,7 +29,7 @@ def assert_interaction_guards(wid):
     before=presentation(wid); initial_world=world(wid)
     assert before['drag'] or before['edge'],before
     commands=[('camera',before['cameraX']+101,before['cameraY']+77),('pan',81,63),
-              ('zoom',1 if before['cameraScale']!=1 else 2),('right',),('move-right',),
+              ('zoom',1 if before['cameraScale']!=1 else .5),('right',),('move-right',),
               ('fit-all',),('fit-focused',),('actual-size',)]
     for parts in commands:
         subprocess.run([str(WM),'-m','strip',*map(str,parts)],capture_output=True,text=True,check=False)

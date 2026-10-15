@@ -57,7 +57,7 @@ try:
             r=w['world']; assert r['x']+r['width']<8000 or r['x']>12000 or r['y']+r['height']<8000 or r['y']>12000
     command('window',moving,'--focus')
     targets=[(9688,10000),(10412,10000),(10000,9788),(10000,10312)]
-    for scale in (.5,1,2):
+    for scale in (.25,.5,1):
         for edge,(x,y) in enumerate(targets):
             strip('place',obstacle,-50000,-50000,400,300)
             strip('place',peer,10000,10000,400,300)

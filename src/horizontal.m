@@ -384,7 +384,7 @@ static void hwm_plane_camera_sample(struct view *view,double now)
     double elapsed=fmax(0,now-hwm_camera_start);
     double progress=duration<=0 || elapsed>=duration ? 1 : hstrip_spring_progress(elapsed,duration);
     HWMPlaneCamera camera=hwm_plane_camera_mix(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height,progress);
-    view->strip_offset=camera.x; hwm_plane_y=camera.y; hwm_plane_scale=camera.scale;
+    view->strip_offset=camera.x; hwm_plane_y=camera.y; hwm_plane_scale=hwm_plane_zoom_clamp(camera.scale);
     hwm_plane_fit_active=fabs(camera.scale-1)>.001;
     if(progress>=1) hwm_camera_animating=false;
 }
@@ -462,6 +462,7 @@ static void hwm_plane_set_camera(struct view *view,double x,double y,bool animat
 static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate)
 {
     if(!view || hwm_plane_pointer_owned() || !isfinite(x) || !isfinite(y) || !isfinite(scale) || scale<=0) return;
+    scale=hwm_plane_zoom_clamp(scale);
     double now=hwm_clock();
     double current_x=hwm_offset(view,now),current_y=hwm_plane_camera_y(now);
     hwm_camera_from=(HWMPlaneCamera){current_x,current_y,hwm_plane_scale};
@@ -502,11 +503,6 @@ static void hwm_plane_fit(struct view *view,bool focused)
     CGRect bounds=hwm_bounds(view); HWMPlaneRect world=hwm_plane_bounds(view,focused);
     if(world.width<=0 || world.height<=0) return;
     HWMPlaneCamera camera=hwm_plane_camera_fit(world,(HWMPlaneRect){0,0,bounds.size.width,bounds.size.height},36);
-    if(focused) {
-        camera.scale=fmin((bounds.size.width-72)/world.width,(bounds.size.height-72)/world.height);
-        camera.x=world.x+world.width*.5-bounds.size.width/(2*camera.scale);
-        camera.y=world.y+world.height*.5-bounds.size.height/(2*camera.scale);
-    }
     hwm_plane_transition_to(view,camera.x,camera.y,camera.scale,true);
 }
 static void hwm_plane_fit_all(struct view *view) { hwm_plane_fit(view,false); }
@@ -525,6 +521,8 @@ static void hwm_plane_actual_size(struct view *view)
 static void hwm_plane_zoom_at_pointer(struct view *view,double scale)
 {
     if(!view || hwm_plane_pointer_owned() || !isfinite(scale)) return;
+    scale=hwm_plane_zoom_clamp(fmax(HWM_PLANE_MIN_SCALE,scale));
+    if(scale==hwm_plane_scale) return;
     hwm_plane_camera_stop(view,hwm_now());
     CGRect bounds=hwm_bounds(view); CGPoint point=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
     CGPoint cursor;
@@ -532,7 +530,7 @@ static void hwm_plane_zoom_at_pointer(struct view *view,double scale)
     double old=hwm_plane_scale;
     double wx=view->strip_target_offset+(point.x-bounds.origin.x)/old;
     double wy=hwm_plane_y_target+(point.y-bounds.origin.y)/old;
-    hwm_plane_scale=fmax(.001,fmin(4,scale)); hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001;
+    hwm_plane_scale=scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001;
     hwm_plane_set_camera(view,wx-(point.x-bounds.origin.x)/hwm_plane_scale,wy-(point.y-bounds.origin.y)/hwm_plane_scale,false);
 }
 
@@ -1626,7 +1624,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.9\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.10\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1671,7 +1669,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if(token_equals(command,"zoom")) {
         if(hwm_plane_pointer_owned()) { daemon_fail(rsp,"finish the active pointer interaction before zooming\n"); return; }
-        double scale; if(!hwm_number(get_token(&message),&scale) || scale<.001 || scale>4) { daemon_fail(rsp,"zoom must be between 0.001 and 4\n"); return; }
+        double scale; if(!hwm_number(get_token(&message),&scale) || scale<HWM_PLANE_MIN_SCALE || scale>HWM_PLANE_MAX_SCALE) { daemon_fail(rsp,"zoom must be between 0.001 and 1 (100%%)\n"); return; }
         struct view *view=hwm_view(); if(!view) return;
         /* Finish sampling the previous zoom before assigning the new scale.
          * Otherwise hwm_scroll's camera stop restores the old animated scale. */
@@ -1818,7 +1816,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.9\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.5.10\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {
@@ -2089,7 +2087,7 @@ static void hwm_load_state(void)
     double x=[camera[@"x"] isKindOfClass:[NSNumber class]] ? [camera[@"x"] doubleValue] : 0;
     double y=[camera[@"y"] isKindOfClass:[NSNumber class]] ? [camera[@"y"] doubleValue] : 0;
     double scale=[camera[@"scale"] isKindOfClass:[NSNumber class]] ? [camera[@"scale"] doubleValue] : 1;
-    if(isfinite(scale) && scale>0) { hwm_plane_scale=scale; hwm_plane_fit_active=fabs(scale-1)>.001; }
+    if(isfinite(scale) && scale>0) { hwm_plane_scale=hwm_plane_zoom_clamp(scale); hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001; }
     hwm_plane_set_camera(view,isfinite(x)?x:0,isfinite(y)?y:0,false);
 }
 static void hwm_signal_stop(int signal_number) { (void)signal_number; hwm_stop_requested = 1; }

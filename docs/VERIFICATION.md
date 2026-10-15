@@ -844,3 +844,34 @@ executable SHA-256 was
 This verifies menu focus protection. The application-content hover coordinate
 bridge remains an unshipped prototype pending independent cross-window tracking
 checks; the remaining 2x native-titlebar cases are not declared fixed here.
+
+
+### Camera maximum zoom (0.5.10)
+
+The user-facing camera is now capped at 100%. Pinch gestures and named camera
+actions clamp at actual size, IPC rejects zoom values above 1, and old saved
+state or undo snapshots cannot restore a larger scale. Existing zoom-out and
+automatic-fit ranges remain available. Fitting a small focused window keeps
+it at actual size and centers it.
+
+The full build/test suite passed, followed by sanitizer-backed geometry and
+production undo tests after the final clamp adjustment. The signed installed
+0.5.10 reported ready, backend available, and unpaused. Live commands for
+1.001, 2, and 4 were rejected without moving the camera.
+`tests/live_zoom_cap.py` passed four generated-input checks: a large positive
+pinch stopped at 100%, further positive pinches kept the camera fixed, a
+negative pinch zoomed out, and focused-window fit stayed at 100% with correct
+centering. `build/zoom-cap-live.json` records the samples and restored user
+geometry/camera.
+
+The prior four 2x native-titlebar cases are outside the supported zoom range
+after this explicit user-requested cap. They are replaced with 25% cases in
+the current matrix; this does not claim their former behavior was repaired.
+
+The updated installed-app snap matrix passed all 32 supported cases, including
+held and released two-/three-neighbor contacts, native/Option drags, all four
+25% native corners, fast release, blocked landing, partial-screen placement,
+and offscreen-peer rejection. Each case checked unchanged dimensions and
+independent presentation bounds; cleanup removed fixtures, restored focus and
+camera, and changed no user-window world geometry. The report is
+`build/multi-snap-matrix.json` (version 0.5.10).

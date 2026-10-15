@@ -36,7 +36,7 @@ try:
         if other['id'] in [w['id'] for w in fixtures]: continue
         w=other['world'];assert w['x']+w['width']<8000 or w['x']>12500 or w['y']+w['height']<8000 or w['y']>12500,other
     cmd('window',moving,'--focus')
-    for scale in (.5,1,2):
+    for scale in (.25,.5,1):
         for mode in (0,4):
             for i,w in enumerate(fixtures): strip('place',w['id'],-50000-i*5000,-50000-i*5000,400,300)
             strip('place',peer,10412,10000,400,300)

@@ -91,6 +91,10 @@ static void test_plane_undo(void)
     assert(hwm_undo_restore());
     assert(windows[0].strip_world_x==-300 && windows[0].strip_world_y==800 && windows[0].strip_height==350);
     assert(view.strip_target_offset==-500 && hwm_plane_y_target==600 && hwm_plane_scale==.5);
+    /* An undo snapshot from the older, uncapped camera cannot re-enable zoom in. */
+    hwm_plane_scale=2; hwm_undo_capture(); hwm_plane_scale=.25;
+    assert(hwm_undo_restore());
+    assert(hwm_plane_scale==1 && !hwm_plane_fit_active);
 }
 static void test_arrangement_undo_and_fit(void)
 {

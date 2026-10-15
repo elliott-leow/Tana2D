@@ -101,7 +101,7 @@ try:
     strip('camera', first['x']+first['width']/2-viewport['width']/2,
           first['y']+first['height']/2-viewport['height']/2)
     settle()
-    for scale in [.5, 2, 1]:
+    for scale in [.25, .5, 1]:
         strip('zoom', scale)
         settle()
         close(status()['camera']['scale'], scale, .0001)

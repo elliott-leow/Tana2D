@@ -14,6 +14,15 @@ typedef struct { double x, y, width, height; } HWMPlaneRect;
 typedef struct { double x, y, scale; } HWMPlaneCamera;
 typedef struct { double x, y; } HWMPlanePoint;
 
+#define HWM_PLANE_MIN_SCALE 0.001
+#define HWM_PLANE_MAX_SCALE 1.0
+
+/* The camera may zoom out, but never enlarge windows beyond actual size. */
+static inline double hwm_plane_zoom_clamp(double scale)
+{
+    return isfinite(scale) && scale>0 ? fmin(HWM_PLANE_MAX_SCALE,scale) : 1;
+}
+
 static inline bool hwm_plane_camera_valid(HWMPlaneCamera camera)
 {
     return isfinite(camera.x) && isfinite(camera.y) && isfinite(camera.scale) && camera.scale>0;

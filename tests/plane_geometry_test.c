@@ -187,6 +187,12 @@ static void test_simultaneous_multi_neighbor_snap(void)
 
 int main(void)
 {
+    const double requested_zooms[]={.000001,.001,.1,.25,.5,1,1.001,2,4,DBL_MAX};
+    for(size_t i=0;i<sizeof(requested_zooms)/sizeof(requested_zooms[0]);i++)
+        near(hwm_plane_zoom_clamp(requested_zooms[i]),fmin(1,requested_zooms[i]));
+    near(hwm_plane_zoom_clamp(0),1);
+    near(hwm_plane_zoom_clamp(NAN),1);
+    near(hwm_plane_zoom_clamp(INFINITY),1);
     HWMPlaneCamera from={-600,300,.2},to={200,-90,1};
     HWMPlaneCamera middle=hwm_plane_camera_mix(from,to,1200,900,.5);
     near(middle.scale,sqrt(.2));
@@ -218,6 +224,11 @@ int main(void)
     HWMPlaneRect shown=hwm_plane_project(world,camera,viewport);
     assert(shown.x>=39.999 && shown.y>=39.999);
     assert(shown.x+shown.width<=960.001 && shown.y+shown.height<=660.001);
+    HWMPlaneRect small={100,200,160,100};
+    HWMPlaneCamera fitted=hwm_plane_camera_fit(small,viewport,36);
+    near(fitted.scale,1);
+    near(fitted.x+viewport.width/2,small.x+small.width/2);
+    near(fitted.y+viewport.height/2,small.y+small.height/2);
     HWMPlaneCamera revealed={0,0,1}, next;
     assert(hwm_plane_reveal(revealed,(HWMPlaneRect){1300,-400,400,300},viewport,&next));
     near(next.x,700); near(next.y,-400);

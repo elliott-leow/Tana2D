@@ -6,6 +6,7 @@ check fast releases. Run after make live-tools with a ready manager.
 """
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -20,6 +21,8 @@ PROBE=ROOT/'build/plane_pointer_probe'
 HIT_PROBE=ROOT/'build/plane_hit_probe'
 METRICS=ROOT/'build/window_metrics'
 REPORT=ROOT/'build/multi-snap-matrix.json'
+FIXTURE_EVENT_TRACE=Path('/tmp/tana2d_fixture_native_events.log')
+POINTER_FIELD_TRACE=Path('/tmp/tana2d_native_pointer_fields.log')
 
 def command(*args): return subprocess.check_output([str(WM),'-m',*map(str,args)],text=True)
 def strip(*args): return command('strip',*args)
@@ -29,6 +32,26 @@ def present(wid): return json.loads(strip('presentation-status',wid))
 def metrics(wid): return json.loads(subprocess.check_output([str(METRICS),str(wid)],text=True))[0]
 def fixture_ids(): return [w['id'] for w in windows() if w['app']=='Tana2DFixture']
 def near(a,b,tol=1.25): return abs(a-b)<=tol
+
+def fixture_events():
+    if not FIXTURE_EVENT_TRACE.exists(): return []
+    rows=[]
+    for line in FIXTURE_EVENT_TRACE.read_text().splitlines():
+        try: rows.append(json.loads(line))
+        except json.JSONDecodeError: rows.append({'parseError':line})
+    return rows
+
+def pointer_fields():
+    if not POINTER_FIELD_TRACE.exists(): return []
+    rows=[]
+    for line in POINTER_FIELD_TRACE.read_text().splitlines():
+        try: rows.append(json.loads(line))
+        except json.JSONDecodeError: rows.append({'parseError':line})
+    return rows
+
+def reset_fixture_events():
+    subprocess.run([str(FIXTURE_CTL),'trace-reset'],check=True)
+    time.sleep(.03)
 
 def settle(wid,deadline=4):
     previous=None
@@ -73,7 +96,8 @@ def trace_timestamps_ok(trace):
 def sample_drag(moving,start,delta,mode,hold_ms=180):
     args=[str(PROBE),f'{start[0]:.4f}',f'{start[1]:.4f}',f'{delta[0]:.4f}',f'{delta[1]:.4f}',mode]
     if hold_ms: args.append(str(hold_ms))
-    proc=subprocess.Popen(args)
+    env=os.environ.copy(); env['HWM_POINTER_FIELD_TRACE']=str(POINTER_FIELD_TRACE)
+    proc=subprocess.Popen(args,env=env)
     samples=[]
     try:
         while proc.poll() is None:
@@ -106,7 +130,17 @@ def configure(moving,peers,target,scale,source_sign=(1,1),partial_camera=False):
     else:
         camera=(target[0]-843/scale,target[1]-524.5/scale)
     strip('camera',*camera); time.sleep(.18)
-    return settle(moving)
+    # zoom and camera commands animate.  A stable frame at a preceding scale
+    # is not a valid sample for this case, even if no drag is active yet.
+    deadline=time.monotonic()+4
+    while time.monotonic()<deadline:
+        p=present(moving)
+        if (near(p.get('cameraScale',float('nan')),scale,.002) and
+            near(p.get('cameraX',float('nan')),camera[0],.35) and
+            near(p.get('cameraY',float('nan')),camera[1],.35)):
+            return settle(moving)
+        time.sleep(.025)
+    raise AssertionError(f'camera did not reach requested scale/camera: scale={scale} camera={camera} last={p}')
 
 def positive_case(label,peers,target,scale,mode,source_sign=(1,1),contacts=2,partial_camera=False,hold_ms=180,require_held=True):
     moving=FIXTURES[-1]
@@ -114,12 +148,13 @@ def positive_case(label,peers,target,scale,mode,source_sign=(1,1),contacts=2,par
     raw=(target[0]+source_sign[0]*6/scale,target[1]+source_sign[1]*6/scale)
     start,hit=pointer_start(before,scale,mode,moving)
     delta=((raw[0]-before['worldX'])*scale,(raw[1]-before['worldY'])*scale)
-    strip('input-trace-start')
+    reset_fixture_events(); strip('input-trace-start')
     rc,samples=sample_drag(moving,start,delta,mode,hold_ms)
     final=settle(moving)
     preview=[p for p in samples if p.get('snapPreviewVisible')]
     max_contacts=max((p.get('snapContacts',0) for p in preview),default=0)
     trace=json.loads(strip('input-trace'))
+    delivered=fixture_events(); fields=pointer_fields()
     held=[p for p in samples if p.get('drag') or p.get('nativeDrag')]
     held_error=None if not held else math.hypot(held[-1]['worldX']-raw[0],held[-1]['worldY']-raw[1])
     held_target=any(p.get('snapContacts',0)>=contacts and near(p['worldX'],target[0],.35) and near(p['worldY'],target[1],.35)
@@ -152,7 +187,7 @@ def positive_case(label,peers,target,scale,mode,source_sign=(1,1),contacts=2,par
     return {'label':label,'kind':'positive','scale':scale,'mode':mode,'expectedContacts':contacts,'target':target,'raw':raw,
             'checks':checks,'pass':all(checks.values()),'maxPreviewContacts':max_contacts,'haptics':haptics,
             'holdMs':hold_ms,'heldTargetRequired':require_held,'heldPointerErrorDiagnostic':held_error,'heldTargetWhilePreviewActive':held_target,'before':before,'final':final,'traceCount':len(trace),
-            'start':start,'windowServerHit':hit,'previewPublic':preview_public,'borderPublic':border,'surfacePublic':surface,'trace':trace,'samples':samples[-8:]}
+            'start':start,'windowServerHit':hit,'previewPublic':preview_public,'borderPublic':border,'surfacePublic':surface,'trace':trace,'fixtureDeliveredEvents':delivered,'annotatedPointerFields':fields,'samples':samples[-8:]}
 
 def negative_case(label,peers,target,scale,source_sign,kind):
     moving=FIXTURES[-1]
@@ -160,7 +195,7 @@ def negative_case(label,peers,target,scale,source_sign,kind):
     raw=(target[0]+source_sign[0]*6/scale,target[1]+source_sign[1]*6/scale)
     start,hit=pointer_start(before,scale,'native',moving)
     delta=((raw[0]-before['worldX'])*scale,(raw[1]-before['worldY'])*scale)
-    strip('input-trace-start')
+    reset_fixture_events(); strip('input-trace-start')
     rc,samples=sample_drag(moving,start,delta,'native'); final=settle(moving)
     trace=json.loads(strip('input-trace'))
     preview=any(p.get('snapPreviewVisible') for p in samples)
@@ -168,7 +203,7 @@ def negative_case(label,peers,target,scale,source_sign,kind):
     checks={'process':rc==0,'input_trace':len(trace)>=20,'input_trace_timestamps':trace_timestamps_ok(trace),
             'no_preview':not preview,'no_commit':commits==0,'size':near(final['worldWidth'],300,.01) and near(final['worldHeight'],300,.01)}
     return {'label':label,'kind':kind,'scale':scale,'target':target,'raw':raw,'checks':checks,'pass':all(checks.values()),
-            'start':start,'windowServerHit':hit,'before':before,'final':final,'trace':trace,'samples':samples[-8:]}
+            'start':start,'windowServerHit':hit,'before':before,'final':final,'trace':trace,'fixtureDeliveredEvents':fixture_events(),'annotatedPointerFields':pointer_fields(),'samples':samples[-8:]}
 
 def safe_case(label,fn,*args):
     try: return fn(label,*args)
@@ -197,9 +232,9 @@ try:
     target=(10412,10412); left=(10000,10412,400,300); right=(10724,10412,400,300); above=(10412,10000,300,400); below=(10412,10724,300,400)
     corner_defs=[('corner-left-above',[left,above],(1,1)),('corner-left-below',[left,below],(1,-1)),
                  ('corner-right-above',[right,above],(-1,1)),('corner-right-below',[right,below],(-1,-1))]
-    # All quadrants at normal and Option drags at 1x/.5x, then native 2x.
+    # All quadrants at normal and Option drags at 1x/.5x, then native .25x.
     for label,rects,sign in corner_defs:
-        for scale,mode in ((1,'native'),(1,'option'),(.5,'native'),(.5,'option'),(2,'native')):
+        for scale,mode in ((1,'native'),(1,'option'),(.5,'native'),(.5,'option'),(.25,'native')):
             peers=[(FIXTURES[i],*rect) for i,rect in enumerate(rects)]
             report['cases'].append(safe_case(label,positive_case,peers,target,scale,mode,sign,2))
     # Same-size three-neighbor fits with opposite vertical constraints.

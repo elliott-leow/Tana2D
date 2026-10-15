@@ -3,6 +3,7 @@
  * ownership model for yabai window nodes. */
 #include "strip_workflow.h"
 #include "strip_workflow_model.h"
+#include "plane_geometry.h"
 
 #ifndef HWM_TAB_BAR
 #define HWM_TAB_BAR 30.0
@@ -361,7 +362,7 @@ static bool hwm_undo_restore(void)
         if (active && hwm_workflow_in_view(view, active) && hwm_workflow_column(active) == tab.column)
             (void)hwm_workflow_set_tab(tab.column, tab.active);
     }
-    if (restored) { hwm_plane_scale=hwm_workflow_undo.scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001; hwm_layout(view, true); hwm_plane_set_camera(view, hwm_workflow_undo.offset, hwm_workflow_undo.camera_y, true); }
+    if (restored) { hwm_plane_scale=hwm_plane_zoom_clamp(hwm_workflow_undo.scale); hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001; hwm_layout(view, true); hwm_plane_set_camera(view, hwm_workflow_undo.offset, hwm_workflow_undo.camera_y, true); }
     hwm_workflow_restoring = false;
     return restored;
 }
