@@ -5,7 +5,7 @@
 #define SA_SOCKET_BUFF_LEN 0x1000
 
 // Tana2D owns this payload and socket independently of installed yabai helpers.
-#define OSAX_VERSION                "0.5.4"
+#define OSAX_VERSION                "0.5.5"
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02
