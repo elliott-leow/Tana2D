@@ -4,6 +4,16 @@ static bool hwm_view_in_motion(struct view *view,double now);
 static double hwm_rendered_offset; // Camera position of the frame last drawn.
 static bool hwm_render(struct view *view, double now)
 {
+#ifdef HWM_NATIVE_ZOOM
+    if(hwm_plane_scale==1 && !hwm_camera_animating && !view->strip_scrolling && !hwm_plane_y_scrolling && !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED)) {
+        hwm_zoom_workspace=false;
+        hwm_zoom_rest_focus(view);
+        return hwm_zoom_render_native(view,now);
+    }
+    // Zoomed-out windows stay interactive: no input cover, no card chooser.
+    // Any motion re-arms focus of the window left under the pointer.
+    if(hwm_plane_scale==1 || hwm_view_in_motion(view,now) || now-hwm_zoom_pinch_time<.15) hwm_zoom_rest_focus_armed=true;
+#endif
     CGRect bounds = hwm_bounds(view);
     double offset = hwm_offset(view, now);
     double camera_y=hwm_plane_camera_y(now), plane_scale=hwm_plane_scale;
@@ -86,12 +96,18 @@ static bool hwm_render(struct view *view, double now)
              * transform projects it onto the plane, so AppKit cannot clamp a
              * pan back onto the menu-bar edge. strip_last_frame stores displayed
              * origin and unscaled size; it is never a native bounds cache. */
-            double own_offset=offset, shift=0;
+            double own_offset=offset, shift=0, own_y=camera_y;
+            /* At 100%, round world and camera separately so every window
+             * shifts by the same whole number of points each frame. Rounding
+             * each projected origin let the gaps between windows wobble by a
+             * point during a pan. hwm_zoom_render_native uses the same rule,
+             * so the native handoff cannot jump either. */
+            if(plane_scale==1) { x=round(x); y=round(y); own_offset=round(own_offset); own_y=round(own_y); }
             CGRect base=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
-                                   round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,plane_scale)),
+                                   round(hwm_plane_project_physical(y,own_y,bounds.origin.y,plane_scale)),
                                    round(hwm_plane_physical_size(width)),round(hwm_plane_physical_size(height)));
             CGRect frame=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
-                                    round(hwm_plane_project_physical(y,camera_y,bounds.origin.y,plane_scale)),
+                                    round(hwm_plane_project_physical(y,own_y,bounds.origin.y,plane_scale)),
                                     round(hwm_plane_physical_size(width*plane_scale)),round(hwm_plane_physical_size(height*plane_scale)));
             CGRect last = window->strip_last_frame;
             bool hidden=!CGRectIntersectsRect(frame,screen);
@@ -133,7 +149,7 @@ static bool hwm_render(struct view *view, double now)
                 window->strip_plane_scaled=true; window->strip_transform_dirty=false;
                 window->strip_last_frame=base;
                 window->strip_last_offset=own_offset;
-                window->strip_last_camera_y=camera_y;
+                window->strip_last_camera_y=own_y;
                 window->strip_last_shift=shift;
             }
             window->strip_last_plane_scale=plane_scale;
@@ -189,6 +205,15 @@ static bool hwm_render(struct view *view, double now)
         }
     }
     if(batched) hwm_batch_end();
+#ifdef HWM_NATIVE_ZOOM
+    // The final camera sample can end motion inside this render. Run once
+    // more to align native frames, even with a stationary pointer.
+    if(hwm_plane_scale==1) active=true;
+    else if(hwm_zoom_rest_focus_armed) {
+        if(hwm_view_in_motion(view,now) || now-hwm_zoom_pinch_time<.15) active=true;
+        else hwm_zoom_rest_focus(view);
+    }
+#endif
     return active;
 }
 
@@ -202,6 +227,12 @@ static bool horizontal_window_changed(struct window *window, struct view *view, 
 {
     if (!hwm_ready || !view || view->layout != VIEW_STRIP) return false;
     if (hwm_paused || hwm_overview_active) return true;
+#ifdef HWM_NATIVE_ZOOM
+    if(hwm_zoom_size_restoring(window->id) || hwm_zoom_native_busy(window->id)) { hwm_wake(); return true; }
+    // Workspace preparation owns native position; late AX notifications must
+    // not reinterpret that hidden anchor as a user change to the world layout.
+    if(hwm_zoom_workspace && !resized) { hwm_wake(); return true; }
+#endif
     if(hwm_workflow_tab_hidden(window)) { hwm_wake(); return true; }
     if (hwm_edge_update(window,view)) return true;
     if (hwm_drag_window==window->id) return true;

@@ -10,6 +10,10 @@ static os_unfair_lock hwm_resize_hit_lock=OS_UNFAIR_LOCK_INIT;
 static HWMPlaneResizeHit hwm_resize_hits[512];
 static size_t hwm_resize_hit_count;
 static double hwm_published_scale=1;
+/* Below this zoom a click on a window opens it at 100% instead of reaching
+ * the app; at or above it the app receives the click. 0 disables. */
+static double hwm_zoom_click_threshold=.5;
+
 static _Atomic bool hwm_resize_captured;
 static bool hwm_resize_releasing;
 static CGPoint hwm_resize_pointer_origin,hwm_resize_pointer;
@@ -66,12 +70,15 @@ static void hwm_plane_resize_publish(struct view *view)
     memcpy(hwm_resize_hits,hits,count*sizeof(*hits)); hwm_resize_hit_count=count; hwm_published_scale=hwm_plane_scale;
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
 }
-/* The event tap reads a published snapshot, never mutable window objects. */
+/* A click on a far zoomed-out window is a request to open it: the press is
+ * captured, a click focuses it and zooms to it at 100%, and a drag moves it.
+ * Closer than the threshold, the application receives its own clicks.
+ * The event tap reads a published snapshot, never mutable window objects. */
 static bool hwm_plane_center_click(CGEventRef event)
 {
     if(hwm_suspended || hwm_overview_active || atomic_load(&hwm_resize_captured)) return false;
     os_unfair_lock_lock(&hwm_resize_hit_lock);
-    bool low=hwm_published_scale<.70;
+    bool low=hwm_published_scale<hwm_zoom_click_threshold;
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
     if(!low) return false;
     CGPoint point=CGEventGetLocation(event),local; uint32_t id=0; int owner=0;
@@ -119,10 +126,11 @@ static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
             break;
         }
         os_unfair_lock_unlock(&hwm_resize_hit_lock);
-        /* At normal scale AppKit owns the title bar, including its top band.
-         * Capturing that press as resize steals the native drag's mouse-down.
-         * Side/bottom edges and zoomed-out corner handles remain available. */
-        if(camera_scale>=.70 && (direction&HANDLE_TOP)) return false;
+        /* AppKit owns the title bar, including its top band. Capturing that
+         * press as resize steals the native drag's mouse-down; a zoomed-out
+         * title bar is only a few points tall. Side/bottom edges and
+         * zoomed-out top corners remain available. */
+        if((direction&HANDLE_TOP) && (camera_scale>=.70 || direction==HANDLE_TOP)) return false;
         if(!direction) return false;
     }
     HWMPlaneResizeInput *input=malloc(sizeof(*input));

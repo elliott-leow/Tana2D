@@ -346,8 +346,27 @@ static void test_locked_native_without_pointer_uses_anchor_delta(void)
     hwm_drag_force_finalize(&view,false);
 }
 
+static void test_unscaled_native_drag_ignores_camera_paint_lag(void)
+{
+    reset();hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    w->strip_plane_scaled=false;projected[0]=actual[0];
+    CGPoint original=CGPointMake(w->strip_world_x,w->strip_world_y);
+    g_mouse_state.window=w;g_mouse_state.window_frame=actual[0];
+    g_mouse_state.current_action=MOUSE_MODE_NONE;
+    g_mouse_state.down_location=CGPointMake(actual[0].origin.x+70,actual[0].origin.y+14);
+    hwm_drag_point=g_mouse_state.down_location;hwm_drag_started(w);
+    assert(hwm_drag_native_unscaled);
+    actual[0].origin.x+=60;actual[0].origin.y+=30;
+    projected[0].origin.x+=50;projected[0].origin.y+=25;
+    assert(hwm_drag_native_sync(&view,w));
+    assert(w->strip_world_x==original.x+60&&w->strip_world_y==original.y+30);
+    hwm_drag_force_finalize(&view,false);
+}
+
 int main(void)
 {
+    test_unscaled_native_drag_ignores_camera_paint_lag();
     test_locked_native_without_pointer_uses_anchor_delta();
     test_locked_native_recovery_uses_anchor_delta();
     test_locked_native_surface_tracks_recorded_pointer();

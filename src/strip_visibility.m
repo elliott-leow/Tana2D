@@ -35,6 +35,8 @@ static void hwm_visibility_record(struct window *w,uint32_t wid,pid_t pid,CGRect
           @"alpha":@(alpha),@"hidden":@NO,@"dx":@(frame.origin.x-parent.origin.x),@"dy":@(frame.origin.y-parent.origin.y)}];
 }
 
+/* Each border's alpha is read here too, off the render thread: asking
+ * WindowServer about every border window each half second cost frames. */
 static NSArray *hwm_visibility_discover_borders(void)
 {
     CFArrayRef list=CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID);
@@ -42,7 +44,9 @@ static NSArray *hwm_visibility_discover_borders(void)
     for(NSDictionary *entry in (NSArray *)list) {
         if(![entry[(id)kCGWindowOwnerName] isEqualToString:@"borders"]) continue;
         NSNumber *wid=entry[(id)kCGWindowNumber],*pid=entry[(id)kCGWindowOwnerPID];
-        if(wid && pid) [snapshot addObject:@{@"id":wid,@"pid":pid}];
+        if(!wid || !pid || !hwm_visibility_owned(wid.unsignedIntValue,pid.intValue)) continue;
+        float alpha=0; if(SLSGetWindowAlpha(g_connection,wid.unsignedIntValue,&alpha)!=kCGErrorSuccess) continue;
+        [snapshot addObject:@{@"id":wid,@"pid":pid,@"alpha":@(alpha)}];
     }
     if(list) CFRelease(list);
     return [snapshot copy];
@@ -103,17 +107,21 @@ static void hwm_visibility_prepare(struct view *view,double now)
     }
     if(!hwm_borders_external) return;
     if(due) hwm_visibility_discover_async();
+    // Each snapshot is acted on once; a stale one would re-hide what is hidden.
+    if(!published) return;
     NSArray *snapshot=hwm_visibility_copy_borders();
     if(!snapshot) return;
     if(!hwm_external_border_surfaces) hwm_external_border_surfaces=[NSMutableDictionary new];
     for(NSDictionary *entry in snapshot) {
         NSNumber *key=entry[@"id"]; uint32_t wid=key.unsignedIntValue;
         pid_t pid=[entry[@"pid"] intValue];
-        if(!hwm_visibility_owned(wid,pid)) continue;
-        float alpha=0; if(SLSGetWindowAlpha(g_connection,wid,&alpha)!=kCGErrorSuccess) continue;
+        float alpha=[entry[@"alpha"] floatValue];
         NSDictionary *saved=hwm_external_border_surfaces[key];
-        if(!saved || [saved[@"pid"] intValue]!=pid)
-            hwm_external_border_surfaces[key]=@{@"pid":@(pid),@"alpha":@(alpha)};
+        bool record=!saved || [saved[@"pid"] intValue]!=pid;
+        if(!record && alpha<=0) continue;
+        // Recheck the identity just before touching another process's surface.
+        if(!hwm_visibility_owned(wid,pid)) continue;
+        if(record) hwm_external_border_surfaces[key]=@{@"pid":@(pid),@"alpha":@(alpha)};
         if(alpha>0) scripting_addition_set_opacity(wid,0,0);
     }
     [snapshot release];

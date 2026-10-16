@@ -84,7 +84,10 @@ static MOUSE_HANDLER(mouse_handler)
     case kCGEventMouseMoved: {
         uint8_t mod = mouse_mod_from_cgflags(CGEventGetFlags(event));
         if (mod == mouse_state->modifier) return event;
-
+        pthread_mutex_lock(&horizontal_hover_sample_lock);
+        horizontal_hover_point=CGEventGetLocation(event);
+        horizontal_hover_timestamp=CGEventGetTimestamp(event);
+        pthread_mutex_unlock(&horizontal_hover_sample_lock);
         if (!atomic_exchange(&horizontal_moved_queued, true))
             event_loop_post(&g_event_loop, MOUSE_MOVED, (void *) CFRetain(event), mod);
     } break;

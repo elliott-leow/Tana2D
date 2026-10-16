@@ -7,12 +7,31 @@ static uint32_t hwm_snap_window,hwm_snap_neighbor;
 static int hwm_snap_axis,hwm_snap_side;
 static size_t hwm_snap_contact_count;
 static CGPoint hwm_snap_point;
+/* Axes the engaged target actually moved; only these resist release. */
+static bool hwm_snap_lock_x,hwm_snap_lock_y;
+/* Command held while dragging places the window freely. */
+static bool hwm_snap_free;
 static uint64_t hwm_snap_engagements,hwm_snap_commits;
-static void hwm_drag_snap_reset(void) { hwm_snap_window=0; hwm_snap_neighbor=0; hwm_snap_contact_count=0; }
-
-static bool hwm_drag_snap_proposal_at(struct view *view,struct window *moving,CGPoint raw,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
+/* Engage within 12 screen points; once engaged, hold until 20. */
+static const double HWMSnapEngage=12,HWMSnapRelease=20;
+static void hwm_drag_snap_reset(void)
 {
-    if(!view || !moving || !point || !isfinite(hwm_plane_scale) || hwm_plane_scale<=0) return false;
+    hwm_snap_window=0; hwm_snap_neighbor=0; hwm_snap_contact_count=0;
+    hwm_snap_lock_x=hwm_snap_lock_y=false;
+}
+
+typedef struct {
+    CGPoint point;
+    uint32_t peer;
+    int edge;
+    size_t contacts;
+    HWMPlaneSnapSeam seams[HWM_PLANE_SNAP_SEAMS];
+    size_t seam_count;
+} HWMDragSnap;
+
+static bool hwm_drag_snap_proposal_at(struct view *view,struct window *moving,CGPoint raw,HWMDragSnap *out)
+{
+    if(!view || !moving || !out || hwm_snap_free || !isfinite(hwm_plane_scale) || hwm_plane_scale<=0) return false;
     size_t needed=0;
     for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) needed+=n->window_count;
     if(needed>hwm_drag_snap_capacity) {
@@ -33,61 +52,73 @@ static bool hwm_drag_snap_proposal_at(struct view *view,struct window *moving,CG
                                   w->strip_width*hwm_plane_scale,w->strip_height*hwm_plane_scale);
         if(!CGRectIntersectsRect(visible,screen)) continue;
         if(hwm_snap_window==moving->id && hwm_snap_neighbor==w->id) {
-            preferred=(HWMPlaneSnapTarget){{0,0},count,hwm_snap_axis,hwm_snap_side,0}; has_preferred=true;
+            preferred=(HWMPlaneSnapTarget){{hwm_snap_point.x,hwm_snap_point.y},count,hwm_snap_axis,hwm_snap_side,0}; has_preferred=true;
         }
         hwm_drag_snap_ids[count]=w->id;
         hwm_drag_snap_neighbors[count++]=(HWMPlaneRect){w->strip_world_x,w->strip_world_y,w->strip_width,w->strip_height};
     }
-    HWMPlaneSnapTarget choice;
-    if(!hwm_plane_snap_choose((HWMPlaneRect){raw.x,raw.y,moving->strip_width,moving->strip_height},
-        hwm_drag_snap_neighbors,count,fmax(0,view->window_gap),12.0/hwm_plane_scale,
-        has_preferred?&preferred:NULL,&choice)) return false;
+    HWMPlaneRect rect={raw.x,raw.y,moving->strip_width,moving->strip_height};
+    double gap=fmax(0,view->window_gap),range=HWMSnapEngage/hwm_plane_scale,release=HWMSnapRelease/hwm_plane_scale;
+    HWMPlaneSnapTarget choice; bool kept=false;
+    if(!hwm_plane_snap_choose_held(rect,hwm_drag_snap_neighbors,count,gap,range,release,
+        has_preferred?&preferred:NULL,hwm_snap_lock_x,hwm_snap_lock_y,&choice,&kept)) return false;
     HWMPlanePoint target=choice.point;
-    /* Bound the actual rounded helper submission too, not only world-space
-     * arithmetic. Rounding two axes can otherwise exceed a radial limit. */
+    /* Bound the actual rounded helper submission per axis too, not only
+     * world-space arithmetic, so rounding cannot exceed the screen limit. */
     double dx=round(bounds.origin.x+(target.x-camera_x)*hwm_plane_scale)-
               round(bounds.origin.x+(raw.x-camera_x)*hwm_plane_scale);
     double dy=round(bounds.origin.y+(target.y-camera_y)*hwm_plane_scale)-
               round(bounds.origin.y+(raw.y-camera_y)*hwm_plane_scale);
-    if(hypot(dx,dy)>12) return false;
-    *point=CGPointMake(target.x,target.y);
-    if(peer) *peer=hwm_drag_snap_ids[choice.neighbor];
-    if(edge) *edge=choice.axis*2+choice.side;
-    if(contacts) *contacts=choice.contact_count;
+    if(fmax(fabs(dx),fabs(dy))>(kept?HWMSnapRelease:HWMSnapEngage)) return false;
+    out->point=CGPointMake(target.x,target.y);
+    out->peer=hwm_drag_snap_ids[choice.neighbor];
+    out->edge=choice.axis*2+choice.side;
+    out->contacts=choice.contact_count;
+    out->seam_count=hwm_plane_snap_seams(rect,hwm_drag_snap_neighbors,count,gap,kept?release:range,target,
+                                         out->seams,HWM_PLANE_SNAP_SEAMS);
     return true;
-}
-static bool hwm_drag_snap_proposal(struct view *view,struct window *moving,CGPoint *point,uint32_t *peer,int *edge,size_t *contacts)
-{
-    if(!moving) return false;
-    return hwm_drag_snap_proposal_at(view,moving,CGPointMake(moving->strip_world_x,moving->strip_world_y),point,peer,edge,contacts);
 }
 static bool hwm_drag_snap_target(struct view *view,struct window *moving,CGPoint *point)
 {
-    return hwm_drag_snap_proposal(view,moving,point,NULL,NULL,NULL);
+    HWMDragSnap snap;
+    if(!moving || !hwm_drag_snap_proposal_at(view,moving,CGPointMake(moving->strip_world_x,moving->strip_world_y),&snap)) return false;
+    if(point) *point=snap.point;
+    return true;
 }
-static void hwm_drag_preview_apply(struct view *view,struct window *window,bool valid,CGPoint target,uint32_t peer,int edge,size_t contacts)
+static void hwm_drag_preview_apply(struct view *view,struct window *window,CGPoint raw,const HWMDragSnap *snap)
 {
-    if(hwm_drag_window!=window->id || !valid) {
+    if(hwm_drag_window!=window->id || !snap) {
         hwm_drag_snap_reset(); hwm_preview_hide_immediately(); return;
     }
-    bool changed=hwm_snap_window!=window->id || hwm_snap_neighbor!=peer ||
-                 hwm_snap_axis!=edge/2 || hwm_snap_side!=edge%2;
-    hwm_snap_window=window->id; hwm_snap_neighbor=peer;
-    hwm_snap_axis=edge/2; hwm_snap_side=edge%2; hwm_snap_point=target;
-    hwm_snap_contact_count=contacts;
+    int edge=snap->edge;
+    bool engaged=hwm_snap_window==window->id && hwm_snap_neighbor;
+    /* Tick once per new attachment: a new primary edge, or an extra contact
+     * gained while sliding into a corner. Holding and sliding stay silent. */
+    bool changed=!engaged || hwm_snap_neighbor!=snap->peer ||
+                 hwm_snap_axis!=edge/2 || hwm_snap_side!=edge%2 || snap->contacts>hwm_snap_contact_count;
+    /* An axis stays locked while it keeps its landing coordinate, even if the
+     * raw pointer momentarily lands exactly on it. */
+    hwm_snap_lock_x=snap->point.x!=raw.x || (engaged && hwm_snap_lock_x && snap->point.x==hwm_snap_point.x);
+    hwm_snap_lock_y=snap->point.y!=raw.y || (engaged && hwm_snap_lock_y && snap->point.y==hwm_snap_point.y);
+    hwm_snap_window=window->id; hwm_snap_neighbor=snap->peer;
+    hwm_snap_axis=edge/2; hwm_snap_side=edge%2; hwm_snap_point=snap->point;
+    hwm_snap_contact_count=snap->contacts;
     if(changed) { ++hwm_snap_engagements; hwm_haptic(0); }
     CGRect bounds=hwm_bounds(view); double now=hwm_now(),x=hwm_offset(view,now),y=hwm_plane_camera_y(now);
-    CGRect shown=CGRectMake(round(bounds.origin.x+(target.x-x)*hwm_plane_scale),
-                            round(bounds.origin.y+(target.y-y)*hwm_plane_scale),
+    CGRect shown=CGRectMake(round(bounds.origin.x+(snap->point.x-x)*hwm_plane_scale),
+                            round(bounds.origin.y+(snap->point.y-y)*hwm_plane_scale),
                             round(window->strip_width*hwm_plane_scale),round(window->strip_height*hwm_plane_scale));
-    // The target is anchored to a neighboring edge, with no lagging spring.
-    hwm_preview_snap_show(shown,edge);
+    HWMPlaneSnapSeam seams[HWM_PLANE_SNAP_SEAMS];
+    for(size_t i=0;i<snap->seam_count;i++)
+        seams[i]=(HWMPlaneSnapSeam){snap->seams[i].edge,round(snap->seams[i].from*hwm_plane_scale),round(snap->seams[i].to*hwm_plane_scale)};
+    // Every docked edge is marked at once, anchored without a lagging spring.
+    hwm_preview_snap_show(shown,seams,snap->seam_count,fmax(0,view->window_gap)*hwm_plane_scale);
 }
 static void hwm_drag_preview_update_at(struct view *view,struct window *window,CGPoint raw)
 {
-    CGPoint target=CGPointZero; uint32_t peer=0; int edge=0; size_t contacts=0;
-    bool valid=hwm_drag_snap_proposal_at(view,window,raw,&target,&peer,&edge,&contacts);
-    hwm_drag_preview_apply(view,window,valid,target,peer,edge,contacts);
+    HWMDragSnap snap;
+    bool valid=hwm_drag_snap_proposal_at(view,window,raw,&snap);
+    hwm_drag_preview_apply(view,window,raw,valid?&snap:NULL);
 }
 static void hwm_drag_preview_update(struct view *view,struct window *window)
 {

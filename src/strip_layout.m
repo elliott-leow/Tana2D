@@ -49,13 +49,17 @@ static void hwm_batch_failed(void)
         if(w->strip_initialized) w->strip_transform_dirty=true;
     })
 }
-static void hwm_batch_present(void)
+/* deferred: a frame of transforms alone is handed to the helper without
+ * waiting for its reply; the next event collects it (horizontal_event_settle). */
+static void hwm_batch_present_as(bool deferred)
 {
-    if(!scripting_addition_batch_end()) hwm_batch_failed();
+    bool ok=deferred && !hwm_batch_updates ? scripting_addition_batch_end_deferred() : scripting_addition_batch_end();
+    if(!ok) hwm_batch_failed();
     if(hwm_batch_updates) SLSReenableUpdate(g_connection);
     hwm_batch_updates=false; hwm_batch_open=false;
     scripting_addition_batch_set_barrier(NULL);
 }
+static void hwm_batch_present(void) { hwm_batch_present_as(false); }
 static void hwm_batch_end(void)
 {
     if(hwm_batch_depth>0) --hwm_batch_depth;
@@ -64,7 +68,7 @@ static void hwm_batch_end(void)
 static void hwm_batch_release(void)
 {
     hwm_batch_hold=false;
-    if(!hwm_batch_depth && hwm_batch_open) hwm_batch_present();
+    if(!hwm_batch_depth && hwm_batch_open) hwm_batch_present_as(true);
 }
 /* WindowServer is about to be asked where a window is: anything this batch
  * has queued for the helper must have been applied first. */

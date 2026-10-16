@@ -1,6 +1,7 @@
 #include "sa.h"
 #include "../../../src/sa_transport.h"
 #include "misc/plane_transform.h"
+#include "misc/input_shape.h"
 extern int csr_get_active_config(uint32_t *config);
 #define CSR_ALLOW_UNRESTRICTED_FS 0x02
 #define CSR_ALLOW_TASK_FOR_PID    0x04
@@ -234,10 +235,17 @@ cleanup:
     return 2;
 }
 
+/* Dock serves the socket on one thread and can pause it for tens of
+ * milliseconds while WindowServer is busy. Allow for that rather than
+ * report a slow reply as a lost helper. */
+#define HWM_SA_TIMEOUT_MS 250
+static bool hwm_sa_plane_settle(void);
+
 static bool scripting_addition_request_handshake(char *version, size_t capacity, uint32_t *attrib)
 {
     const char bytes[] = { 0x01, 0x00, SA_OPCODE_HANDSHAKE };
-    bool result = hwm_sa_handshake(g_sa_socket_file, bytes, sizeof(bytes), version, capacity, attrib, 50);
+    (void) hwm_sa_plane_settle();
+    bool result = hwm_sa_handshake(g_sa_socket_file, bytes, sizeof(bytes), version, capacity, attrib, HWM_SA_TIMEOUT_MS);
     hwm_sa_capabilities_known = result;
     hwm_sa_capabilities = result ? *attrib : 0;
     return result;
@@ -402,7 +410,31 @@ static __thread int hwm_sa_batch_depth;
 static __thread void (*hwm_sa_batch_barrier)(void);
 static __thread HwmPlaneTransform hwm_sa_plane_transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
 static __thread uint16_t hwm_sa_plane_transform_count;
+/* A plane-only frame does not wait for its acknowledgement: the helper's one
+ * transaction is atomic, so the frame is already whole. The reply is read
+ * before anything else talks to the helper, at most one packet behind. */
+static __thread int hwm_sa_plane_pending_fd = -1;
+static __thread long long hwm_sa_plane_pending_deadline;
+static __thread bool hwm_sa_plane_defer;
 static bool hwm_sa_plane_flush(void);
+
+
+static bool hwm_sa_plane_settle(void)
+{
+    int fd = hwm_sa_plane_pending_fd;
+    if (fd < 0) return true;
+    hwm_sa_plane_pending_fd = -1;
+    unsigned char acknowledgement = 0;
+    bool success = hwm_sa_receive_byte(fd, &acknowledgement, hwm_sa_plane_pending_deadline) && acknowledgement == 1;
+    close(fd);
+    return success;
+}
+
+// Wait for a frame submitted with scripting_addition_batch_end_deferred.
+bool scripting_addition_settle(void)
+{
+    return hwm_sa_plane_settle();
+}
 
 void scripting_addition_batch_begin(void)
 {
@@ -418,7 +450,8 @@ void scripting_addition_batch_set_barrier(void (*barrier)(void))
 bool scripting_addition_batch_flush(void)
 {
     if(hwm_sa_batch_depth>0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
-    return hwm_sa_plane_flush() && hwm_sa_pipeline_flush(&hwm_sa_pipeline);
+    bool settled = hwm_sa_plane_settle();
+    return hwm_sa_plane_flush() && hwm_sa_pipeline_flush(&hwm_sa_pipeline) && settled;
 }
 
 bool scripting_addition_batch_end(void)
@@ -427,32 +460,63 @@ bool scripting_addition_batch_end(void)
     return hwm_sa_batch_depth > 0 ? true : scripting_addition_batch_flush();
 }
 
+/* As batch_end, but a closing batch of transforms alone is handed over without
+ * waiting for its reply. The result covers the previous deferred packet and
+ * the hand-over of this one; scripting_addition_settle collects the rest. */
+bool scripting_addition_batch_end_deferred(void)
+{
+    if (hwm_sa_batch_depth > 1) { --hwm_sa_batch_depth; return true; }
+    if (hwm_sa_batch_depth > 0) --hwm_sa_batch_depth;
+    bool settled = hwm_sa_plane_settle();
+    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline)) { hwm_sa_plane_transform_count = 0; return false; }
+    hwm_sa_plane_defer = true;
+    bool sent = hwm_sa_plane_flush();
+    hwm_sa_plane_defer = false;
+    return sent && settled;
+}
+
 static bool scripting_addition_send_bytes(char *bytes, int length)
 {
     if (length <= 0) return false;
     if(hwm_sa_batch_depth>0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
     /* An ordinary command following transforms must not overtake their
      * absolute transaction on the helper socket. */
-    if (!hwm_sa_plane_flush()) return false;
-    if (hwm_sa_batch_depth > 0) return hwm_sa_pipeline_send(&hwm_sa_pipeline, g_sa_socket_file, bytes, (size_t) length, 50);
-    return hwm_sa_send(g_sa_socket_file, bytes, (size_t) length, 50);
+    if (!hwm_sa_plane_settle() || !hwm_sa_plane_flush()) return false;
+    if (hwm_sa_batch_depth > 0) return hwm_sa_pipeline_send(&hwm_sa_pipeline, g_sa_socket_file, bytes, (size_t) length, HWM_SA_TIMEOUT_MS);
+    return hwm_sa_send(g_sa_socket_file, bytes, (size_t) length, HWM_SA_TIMEOUT_MS);
 }
 
 /* The plane payload replies with one byte: 1 after its single absolute
  * transform transaction is submitted, 0 for malformed input or failure to
  * create the transaction. Unlike legacy commands, this makes backend failure observable. */
-static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length)
+static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool defer)
 {
+    if (!hwm_sa_plane_settle()) return false;
     long long start = hwm_sa_monotonic_ms();
-    if (!bytes || !length || start < 0 || start > LLONG_MAX - 50) return false;
-    long long deadline = start + 50;
+    if (!bytes || !length || start < 0 || start > LLONG_MAX - HWM_SA_TIMEOUT_MS) return false;
+    long long deadline = start + HWM_SA_TIMEOUT_MS;
     int fd = hwm_sa_connect(g_sa_socket_file, deadline);
     if (fd < 0) return false;
     bool success = hwm_sa_send_all(fd, bytes, length, deadline);
+    if (success && defer) {
+        hwm_sa_plane_pending_fd = fd;
+        hwm_sa_plane_pending_deadline = deadline;
+        return true;
+    }
     unsigned char acknowledgement = 0;
     if (success) success = hwm_sa_receive_byte(fd, &acknowledgement, deadline) && acknowledgement == 1;
     close(fd);
     return success;
+}
+
+/* Input-shape packets are intentionally unbatched: each is a 500ms lease and
+ * needs its ACK before the caller can rely on the native hit target. */
+static bool hwm_sa_input_shape_send(const unsigned char *bytes, size_t length)
+{
+    if (!bytes || !length || length > INT16_MAX) return false;
+    unsigned char wire[SA_SOCKET_BUFF_LEN];
+    if (!hwm_input_shape_wire_encode(wire, sizeof(wire), bytes, length)) return false;
+    return hwm_sa_plane_send(wire, length + sizeof(int16_t), false);
 }
 
 static bool hwm_sa_plane_flush(void)
@@ -476,7 +540,7 @@ static bool hwm_sa_plane_flush(void)
         }
         int16_t wire_length = (int16_t) payload_length;
         memcpy(bytes, &wire_length, sizeof(wire_length));
-        if (!hwm_sa_plane_send(bytes, payload_length + sizeof(wire_length))) {
+        if (!hwm_sa_plane_send(bytes, payload_length + sizeof(wire_length), hwm_sa_plane_defer)) {
             hwm_sa_plane_transform_count = 0;
             return false;
         }
@@ -488,6 +552,34 @@ static bool hwm_sa_plane_flush(void)
 bool scripting_addition_plane_supported(void)
 {
     return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_TRANSFORM);
+}
+
+bool scripting_addition_input_shape_supported(void)
+{
+    return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_INPUT_SHAPE);
+}
+
+bool scripting_addition_set_input_shape(uint32_t wid, CGRect local_rect)
+{
+    unsigned char bytes[HWM_INPUT_SHAPE_PACKET_SET_BYTES];
+    HwmInputShapeRequest request = { wid, local_rect };
+    if (!scripting_addition_input_shape_supported() || !hwm_input_shape_packet_encode(bytes, sizeof(bytes), &request)) return false;
+    /* Unknown/old helpers leave the capability clear and return false here;
+     * callers retain their existing no-input-shape fallback. */
+    if (hwm_sa_batch_depth > 0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
+    /* Drain ordinary commands and queued transforms before this unbatched
+     * lease command opens a separate ACK socket. */
+    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline) || !hwm_sa_plane_flush()) return false;
+    return hwm_sa_input_shape_send(bytes, sizeof(bytes));
+}
+
+bool scripting_addition_clear_input_shape(void)
+{
+    unsigned char bytes[HWM_INPUT_SHAPE_PACKET_CLEAR_BYTES];
+    if (!scripting_addition_input_shape_supported() || !hwm_input_shape_packet_encode_clear(bytes, sizeof(bytes))) return false;
+    if (hwm_sa_batch_depth > 0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
+    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline) || !hwm_sa_plane_flush()) return false;
+    return hwm_sa_input_shape_send(bytes, sizeof(bytes));
 }
 
 bool scripting_addition_set_plane_transform_xy(uint32_t wid, double x, double y, double scale_x, double scale_y)

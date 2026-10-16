@@ -24,6 +24,35 @@ static void test_palette_toggle_filters_commands(void)
     [palette release];
 }
 
+static void test_palette_match_highlight_and_recent(void)
+{
+    NSMutableIndexSet *matched=[NSMutableIndexSet indexSet];
+    assert(hwm_fuzzy_match(@"mvl",@"Move left",matched)>0);
+    assert(matched.count==3U && [matched containsIndex:0] && [matched containsIndex:2] && [matched containsIndex:5]);
+    assert(hwm_fuzzy_match(@"zz",@"Move left",matched)<0 && matched.count==0U);
+
+    TanaPalette *palette=[TanaPalette new];
+    NSArray *commands=@[@[@"fit-all",@"Fit all windows",@"Control Return"],
+                        @[@"focus-left",@"Focus left",@"Left Arrow"],
+                        @[@"overview",@"Window overview",@"Space"]];
+    __block NSString *ran=nil;
+    [palette toggleWithCommands:commands run:^(NSString *name) { ran=name; }];
+    [palette activate:2];
+    assert([ran isEqual:@"overview"]);
+    assert(!palette.panel.visible); // Closed before the command ran.
+    [palette toggleWithCommands:commands run:^(NSString *name) { (void)name; }];
+    assert(palette.panel.visible);
+    assert([palette.list.rows[0][0] isEqual:@"overview"]);
+    assert([palette.list.rows[1][0] isEqual:@"fit-all"]);
+    assert(!palette.highlight.hidden);
+    /* Typing still ranks by match, not by recency. */
+    palette.field.stringValue=@"focus";
+    [palette controlTextDidChange:[NSNotification notificationWithName:@"test" object:palette.field]];
+    assert([palette.list.rows[0][0] isEqual:@"focus-left"]);
+    [palette close];
+    [palette release];
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -53,6 +82,7 @@ int main(void)
         assert([palette.list accessibilityChildren].count==1U);
         [ran release];
         test_palette_toggle_filters_commands();
+        test_palette_match_highlight_and_recent();
         puts("accessibility tests passed");
     }
     return 0;

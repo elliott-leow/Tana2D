@@ -129,6 +129,9 @@ static void scripting_addition_batch_set_barrier(void (*barrier)(void)) { sa_bat
 static void scripting_addition_batch_begin(void) { ++sa_batch_depth; }
 static bool scripting_addition_batch_flush(void) { if(sa_batch_depth>0 && sa_batch_barrier) sa_batch_barrier(); ++sa_batch_flushes; return !sa_batch_fails; }
 static bool scripting_addition_batch_end(void) { assert(sa_batch_depth>0); --sa_batch_depth; return sa_batch_depth>0?true:scripting_addition_batch_flush(); }
+// The fake helper applies everything at once, so a deferred reply is already in.
+static bool scripting_addition_batch_end_deferred(void) { return scripting_addition_batch_end(); }
+static bool scripting_addition_settle(void) { return true; }
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++moves; if(move_fails) return false; actual[id-1].origin=CGPointMake(x,y); return true; }
 static void window_manager_set_window_frame(struct window *w,double x,double y,double width,double height) { ++ax_calls; actual[w->id-1]=CGRectMake(x,y,width,height); }
 static void window_manager_resize_window(struct window *w,double width,double height) {
@@ -179,7 +182,9 @@ static uint32_t hwm_plane_pick_window;
 static CGPoint hwm_plane_pick_origin;
 static void scripting_addition_set_shadow(uint32_t id,bool shadow) { (void)id; (void)shadow; }
 static bool hwm_drag_camera_owned;
-static bool hwm_plane_selecting,hwm_nav_pending,hwm_nav_automatic,hwm_settle_pending,hwm_magnetic_centering=true;
+static bool hwm_plane_selecting,hwm_nav_pending,hwm_nav_automatic,hwm_settle_pending,hwm_magnetic_centering=true,hwm_auto_center=true;
+static double hwm_auto_center_radius=120,hwm_scroll_omega=22,hwm_scroll_current_velocity,hwm_plane_y_current_velocity;
+static bool hwm_pan_momentum=true;
 static uint32_t hwm_nav_window;
 static double hwm_nav_time;
 static double hwm_drag_tick_time;
@@ -217,7 +222,14 @@ static bool test_preview_visible;
 static CGRect test_preview_frame;
 static int test_preview_edge,test_haptic_engages,test_haptic_commits;
 static void hwm_haptic(int kind) { if(kind) ++test_haptic_commits; else ++test_haptic_engages; }
-static void hwm_preview_snap_show(CGRect frame,int edge) { test_preview_frame=frame; test_preview_edge=edge; test_preview_visible=true; }
+static HWMPlaneSnapSeam test_preview_seams[HWM_PLANE_SNAP_SEAMS];
+static size_t test_preview_seam_count;
+static double test_preview_gutter;
+static void hwm_preview_snap_show(CGRect frame,const HWMPlaneSnapSeam *seams,size_t count,double gutter) {
+    test_preview_frame=frame; test_preview_edge=count?seams[0].edge:-1; test_preview_visible=true;
+    test_preview_seam_count=count; test_preview_gutter=gutter;
+    for(size_t i=0;i<count;i++) test_preview_seams[i]=seams[i];
+}
 static void hwm_preview_hide(void) { test_preview_visible=false; }
 static void hwm_preview_hide_immediately(void) { test_preview_visible=false; }
 static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
@@ -227,6 +239,7 @@ static void hwm_preview_show(CGRect outer,CGRect inner,bool animate) {
 #include "../src/plane_drag.m"
 static void hwm_drag_snap_commit(struct view *v,struct window *w) {
     CGPoint target;
+    if(hwm_snap_free) return;
     if((hwm_snap_window==w->id && hwm_snap_contact_count && (target=hwm_snap_point,true)) ||
        hwm_drag_snap_target(v,w,&target)) {
         bool accepted=(target.x==w->strip_world_x && target.y==w->strip_world_y) || hwm_drag_present_plane(v,w,target,false);
@@ -252,7 +265,12 @@ static void hwm_plane_camera_stop(struct view *v,double now) { (void)v; (void)no
 #include "../src/plane_pointer.m"
 #define hwm_plane_y test_camera_y
 static void window_manager_resize_window_relative_internal(struct window *w,CGRect frame,int direction,double dx,double dy,bool animate) { (void)w; (void)frame; (void)direction; (void)dx; (void)dy; (void)animate; assert(!"unexpected native modifier resize in pointer regression"); }
+/* The renderer polls the physical Command key; tests own that state. */
+static CGEventFlags test_modifier_flags;
+static CGEventFlags test_flags_state(CGEventSourceStateID state) { (void)state; return test_modifier_flags; }
+#define CGEventSourceFlagsState test_flags_state
 #include "../src/plane_motion.m"
+#undef CGEventSourceFlagsState
 static uint32_t hwm_plane_border_id,test_hit_id=1;
 static int test_hit_owner=1,g_event_loop;
 enum { HORIZONTAL_INPUT, HWM_PLANE_RESIZE, HWM_PLANE_PICK };
@@ -282,7 +300,7 @@ static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
 
 static void reset(void)
 {
-    resize_cancellations=0; hwm_drag_snap_reset(); test_haptic_engages=test_haptic_commits=0;
+    resize_cancellations=0; hwm_drag_snap_reset(); hwm_snap_free=false; test_haptic_engages=test_haptic_commits=0; test_preview_seam_count=0;
     test_preview_visible=false; test_preview_frame=CGRectNull; presentation_unavailable=false; sa_batch_fails=false;
     hwm_drag_native=false;
     hwm_pointer_sample_reset(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
@@ -407,6 +425,24 @@ static void test_floating_reversal_and_close_refusal(void)
     hwm_close_animated(w); clock_now+=.07; hwm_render_closing(clock_now);
     hwm_cancel_closing();
     assert(!w->strip_close_pending && fabs(alphas[0]-.85)<1e-6 && close_calls==1);
+}
+/* Frames walk the window table for transitions only while one can be live. */
+static void test_transition_walks_skip_when_idle(void)
+{
+    reset(); struct window *w=&windows[1]; alphas[1]=1; scale_calls=0;
+    hwm_transitions_live=false;
+    assert(!hwm_render_transitions(clock_now));
+    hwm_scale_reset_all(); assert(scale_calls==0);
+    hwm_pop_open(w); assert(hwm_transitions_live);
+    resize_busy=false; clock_now+=.05; assert(hwm_render_transitions(clock_now));
+    assert(w->strip_pop==2 && hwm_transitions_live);
+    clock_now+=1; assert(!hwm_render_transitions(clock_now));
+    assert(!w->strip_pop && !w->strip_pop_scaled && !hwm_transitions_live);
+    hwm_close_animated(w); assert(hwm_transitions_live);
+    clock_now+=.07; assert(hwm_render_transitions(clock_now));
+    clock_now+=.1; hwm_render_transitions(clock_now);
+    assert(!w->strip_close_pending && !w->strip_close_scaled);
+    assert(!hwm_render_transitions(clock_now) && !hwm_transitions_live);
 }
 static void test_open_pop_and_close_shrink(void)
 {
@@ -889,6 +925,47 @@ static void test_plane_click_to_center(void)
     hwm_plane_selecting=false; selection_hit=NULL;
 }
 
+static void test_pan_release_auto_center(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=1; hwm_plane_fit_active=false; hwm_plane_selecting=false; selection_hit=NULL;
+    w->strip_world_x=-740; w->strip_world_y=420; w->strip_width=400; w->strip_height=300; w->strip_offscreen=false;
+    for(int i=1;i<4;i++) windows[i].strip_offscreen=true;
+    HWMPlanePoint still={0,0};
+    // A pan that ends near a window's centered view finishes centering it.
+    view.strip_offset=-1100; test_camera_y=150;
+    assert(hwm_plane_pan_release(&view,(HWMPlaneCamera){-1400,120,1},still));
+    assert(view.strip_offset==-1140 && test_camera_y==120 && hwm_plane_scale==1);
+    assert(!hwm_nav_pending && ax_calls==0 && moves==0); // Camera only: no focus, move or resize.
+    // Panning away from a centered window is left alone.
+    view.strip_offset=-1100; test_camera_y=120;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){-1140,120,1},still));
+    assert(view.strip_offset==-1100);
+    // Too far from center, at rest: the camera stays where the pan left it.
+    view.strip_offset=-1300;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){-1600,120,1},still));
+    assert(view.strip_offset==-1300);
+    // The same release with velocity glides into range and centers.
+    assert(hwm_plane_pan_release(&view,(HWMPlaneCamera){-1600,120,1},(HWMPlanePoint){2200,0}));
+    assert(view.strip_offset==-1140 && test_camera_y==120 && hwm_scroll_current_velocity==2200);
+    // Empty canvas: a moving release glides v/omega and keeps its velocity.
+    view.strip_offset=5000; test_camera_y=0;
+    assert(hwm_plane_pan_release(&view,(HWMPlaneCamera){4000,0,1},(HWMPlanePoint){2200,-440}));
+    assert(view.strip_offset==5100 && test_camera_y==-20 && hwm_plane_y_current_velocity==-440);
+    // A slow release does not glide; disabled settings do nothing.
+    view.strip_offset=5000; test_camera_y=0;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){4000,0,1},(HWMPlanePoint){100,0}));
+    hwm_pan_momentum=false; hwm_auto_center=false;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){4000,0,1},(HWMPlanePoint){2200,0}));
+    view.strip_offset=-1100; test_camera_y=150;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){-1400,120,1},still));
+    hwm_pan_momentum=true; hwm_auto_center=true;
+    // Zoomed out, a pan never auto-centers.
+    hwm_plane_scale=.5;
+    assert(!hwm_plane_pan_release(&view,(HWMPlaneCamera){-1400,120,.5},still));
+    hwm_plane_scale=1; hwm_scroll_current_velocity=hwm_plane_y_current_velocity=0;
+}
+
 static void test_overview_pointer(void)
 {
     reset(); struct window *w=&windows[0];
@@ -929,13 +1006,15 @@ static bool pick_event(CGEventType type,CGPoint point)
     }
     return consumed;
 }
+/* Below the threshold a press opens or moves the window; at or above it the
+ * application receives the click. */
 static void test_low_zoom_click_ownership(void)
 {
-    double scales[]={.25,.69999,.70,.70001,1};
+    double scales[]={.25,.49999,.50,.50001,1};
     for(size_t i=0;i<5;i++) {
         reset(); hwm_plane_scale=scales[i]; selection_hit=&windows[0];
         hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
-        bool low=scales[i]<.70;
+        bool low=scales[i]<hwm_zoom_click_threshold;
         assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200))==low);
         assert(hwm_plane_pick_automatic==low && !hwm_plane_selecting);
         assert(pick_event(kCGEventLeftMouseUp,CGPointMake(200,200))==low);
@@ -944,13 +1023,13 @@ static void test_low_zoom_click_ownership(void)
         else assert(hwm_plane_scale==scales[i]);
         assert(ax_calls==0 && moves==0);
     }
-    reset(); hwm_plane_scale=.5; selection_hit=&windows[0];
+    reset(); hwm_plane_scale=.4; selection_hit=&windows[0];
     hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
     test_hit_id=999; assert(!pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
     test_hit_id=1; test_hit_owner=g_connection; // Native manager panels remain interactive.
     assert(!pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
     test_hit_owner=1;
-    // The automatic capture remains owned even if zoom crosses 70% mid-press.
+    // The automatic capture remains owned even if zoom crosses the threshold mid-press.
     assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
     assert(pick_event(kCGEventLeftMouseDragged,CGPointMake(250,220)));
     assert(hwm_drag_window==windows[0].id && !hwm_plane_selecting);
@@ -962,14 +1041,20 @@ static void test_low_zoom_click_ownership(void)
     assert(pick_event(kCGEventLeftMouseUp,CGPointMake(900,900)));
     assert(windows[0].strip_world_x==x && windows[0].strip_world_y==y && hwm_plane_scale==.8);
     assert(!hwm_drag_window && !hwm_plane_pick_automatic && !hwm_plane_select_click);
-    reset(); hwm_plane_scale=.5; selection_hit=&windows[0]; hwm_plane_resize_publish(&view);
+    reset(); hwm_plane_scale=.4; selection_hit=&windows[0]; hwm_plane_resize_publish(&view);
     assert(pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
     atomic_store(&hwm_drag_release_pending,true);
     assert(pick_event(kCGEventLeftMouseDragged,CGPointMake(250,220)));
     assert(!hwm_drag_window);
     assert(pick_event(kCGEventLeftMouseUp,CGPointMake(200,200))); // Even returning to origin was a drag.
-    assert(hwm_plane_scale==.5 && !hwm_plane_pick_automatic);
-    selection_hit=NULL;
+    assert(hwm_plane_scale==.4 && !hwm_plane_pick_automatic);
+    /* 0 disables click-to-open: every press reaches the application. */
+    reset(); hwm_zoom_click_threshold=0; hwm_plane_scale=.25; selection_hit=&windows[0];
+    hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+    assert(!pick_event(kCGEventLeftMouseDown,CGPointMake(200,200)));
+    assert(!pick_event(kCGEventLeftMouseUp,CGPointMake(200,200)));
+    assert(hwm_plane_scale==.25 && !hwm_plane_pick_automatic);
+    hwm_zoom_click_threshold=.5; selection_hit=NULL;
 }
 static void test_release_never_repositions(void)
 {
@@ -1172,10 +1257,12 @@ static void test_owned_edge_resize(void)
         hwm_plane_resize_publish(&view);
         assert(!resize_event(kCGEventLeftMouseDown,down,kCGEventFlagMaskCommand));
         assert(!resize_event(kCGEventLeftMouseDown,CGPointMake(CGRectGetMidX(before),CGRectGetMidY(before)),0));
-        if(scales[z]>=.70 && (direction&HANDLE_TOP)) {
+        if((direction&HANDLE_TOP) && (scales[z]>=.70 || direction==HANDLE_TOP)) {
             assert(!resize_event(kCGEventLeftMouseDown,down,0));
             assert(!hwm_resize_owned && !atomic_load(&hwm_resize_captured));
-            continue; // Native AppKit owns the normal-scale top/titlebar band.
+            // Native AppKit owns the title-bar band; zoomed out it is only a
+            // few points tall, so only its corners remain resize handles.
+            continue;
         }
         assert(resize_event(kCGEventLeftMouseDown,down,0));
         assert(hwm_resize_owned && hwm_edge_direction==direction && atomic_load(&hwm_resize_captured));
@@ -1239,6 +1326,7 @@ int main(void)
     test_drag_start_clears_pending_scroll_settle();
     test_resize_notification_after_release();
     test_plane_click_to_center();
+    test_pan_release_auto_center();
     test_native_anchor_is_independent_of_projection();
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
@@ -1250,6 +1338,7 @@ int main(void)
     test_plane_native_resize();
     test_plane_native_initial_sizes();
     test_zoomed_edge_hit();
+    test_transition_walks_skip_when_idle();
     puts("plane runtime tests passed");
     }
     return 0;

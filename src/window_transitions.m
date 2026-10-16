@@ -3,6 +3,10 @@ static double hwm_pop_duration=.22;
 static bool hwm_open_animation=true, hwm_close_shrink=true, hwm_close_fade=true;
 static int hwm_open_style;  /* 0 grows in, 1 rises into place, 2 only fades */
 static int hwm_close_style; /* 1 sinks as it fades */
+/* Set wherever a float glide, opening or closing starts. While it is clear no
+ * window can need those renderers, so a frame skips walking every window for
+ * them; hwm_render_transitions clears it once a walk finds nothing left. */
+static bool hwm_transitions_live;
 
 static CGRect hwm_mix_frame(CGRect from,CGRect to,double p)
 {
@@ -46,6 +50,7 @@ static void hwm_scale_center(uint32_t wid,bool *scaled,double scale)
  * would otherwise show it at a stale position for a frame. */
 static void hwm_scale_reset_all(void)
 {
+    if(!hwm_transitions_live) return; // Only openings and closings scale.
     table_for(struct window *w,g_window_manager.window, {
         if(w->strip_pop_scaled) hwm_scale_center(w->id,&w->strip_pop_scaled,1);
         if(w->strip_close_scaled) hwm_scale_center(w->id,&w->strip_close_scaled,1);
@@ -73,6 +78,22 @@ static bool hwm_plane_reset_transform(struct window *w)
     return true;
 }
 
+/* Restore several native transforms in one compositor transaction and one
+ * acknowledgement, so windows that are ready together hand over together. */
+static void hwm_plane_reset_transforms(struct window **list,int count)
+{
+    if(count<=0) return;
+    hwm_batch_begin();
+    bool queued=true;
+    for(int i=0;i<count;i++) if(list[i]->strip_plane_scaled) queued&=scripting_addition_set_plane_transform(list[i]->id,NAN,NAN,1);
+    bool accepted=queued && hwm_batch_settle();
+    hwm_batch_end();
+    for(int i=0;i<count;i++) {
+        if(accepted) list[i]->strip_plane_scaled=false;
+        else list[i]->strip_transform_dirty=true;
+    }
+}
+
 static void hwm_plane_reset_all_transforms(void)
 {
     table_for(struct window *w,g_window_manager.window, { (void)hwm_plane_reset_transform(w); })
@@ -84,7 +105,7 @@ static void hwm_float_to(struct window *w,CGRect target)
     if(CGRectIsNull(source) && SLSGetWindowBounds(g_connection,w->id,&source)!=kCGErrorSuccess) source=w->frame;
     w->strip_float_from=source; w->strip_float_last=source;
     w->strip_float_target=target; w->strip_float_start=hwm_now();
-    w->strip_float_animating=true; hwm_wake();
+    w->strip_float_animating=true; hwm_transitions_live=true; hwm_wake();
 }
 
 static bool hwm_render_floating(double now)
@@ -124,7 +145,7 @@ static bool hwm_render_floating(double now)
 static void hwm_pop_open(struct window *w)
 {
     if(!hwm_open_animation || hwm_duration<=.01 || w->strip_pop || w->strip_close_pending) return;
-    w->strip_pop=1; w->strip_pop_start=hwm_now();
+    w->strip_pop=1; w->strip_pop_start=hwm_now(); hwm_transitions_live=true;
     scripting_addition_set_opacity(w->id,0,0);
     hwm_wake();
 }
@@ -162,7 +183,9 @@ static bool hwm_render_pops(double now)
         // Plane windows already have an absolute projection transform. Their
         // opening animation uses the fade (or rise) above; the legacy helper's
         // toggle-scale effect must never overwrite that projection.
+#ifndef HWM_NATIVE_ZOOM
         if(hwm_open_style==0 && !w->strip_plane_scaled) hwm_scale_center(w->id,&w->strip_pop_scaled,.9+.1*hstrip_spring_progress(elapsed,hwm_pop_duration));
+#endif
         active=true;
     })
     return active;
@@ -181,7 +204,7 @@ static void hwm_close_animated(struct window *w)
     float alpha=1;
     if(SLSGetWindowAlpha(g_connection,w->id,&alpha)!=kCGErrorSuccess) alpha=1;
     w->strip_close_alpha=alpha; w->strip_close_start=hwm_now();
-    w->strip_close_pending=true;
+    w->strip_close_pending=true; hwm_transitions_live=true;
     // One request: the helper fades on its own clock, so the fade stays even
     // whatever else this frame is doing.
     scripting_addition_set_opacity(w->id,0,hwm_duration>.01 && hwm_close_fade ? HWMCloseDuration : 0);
@@ -204,7 +227,9 @@ static bool hwm_render_closing(double now)
         if(!w->strip_close_pending) continue;
         double t=(now-w->strip_close_start)/HWMCloseDuration;
         if(t<1) {
+#ifndef HWM_NATIVE_ZOOM
             if(hwm_close_shrink && hwm_duration>.01 && !w->strip_plane_scaled) hwm_scale_center(w->id,&w->strip_close_scaled,1-.08*horizontal_ease(t));
+#endif
             active=true;
         } else {
             w->strip_close_pending=false;
@@ -216,6 +241,16 @@ static bool hwm_render_closing(double now)
             scripting_addition_set_opacity(w->id,w->strip_close_alpha,.14);
         }
     })
+    return active;
+}
+
+static bool hwm_render_transitions(double now)
+{
+    if(!hwm_transitions_live) return false;
+    bool active=hwm_render_floating(now);
+    active|=hwm_render_closing(now);
+    active|=hwm_render_pops(now);
+    if(!active) hwm_transitions_live=false;
     return active;
 }
 

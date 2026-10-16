@@ -13,10 +13,10 @@ static CGPoint hwm_drag_world_at(struct view *view,CGPoint point)
 static bool hwm_drag_present_plane(struct view *view,struct window *window,CGPoint world,bool magnet)
 {
     if(!view || !window || !isfinite(world.x) || !isfinite(world.y)) return false;
-    CGPoint target=CGPointZero; uint32_t peer=0; int edge=0; size_t contacts=0;
+    HWMDragSnap snap; CGPoint raw=world;
     bool snapped=magnet && hwm_drag_window==window->id &&
-        hwm_drag_snap_proposal_at(view,window,world,&target,&peer,&edge,&contacts);
-    if(snapped) world=target;
+        hwm_drag_snap_proposal_at(view,window,world,&snap);
+    if(snapped) world=snap.point;
     double began=hwm_now();
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()), camera_y=hwm_plane_camera_y(hwm_now()), scale=hwm_plane_scale;
     CGRect base=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
@@ -29,7 +29,8 @@ static bool hwm_drag_present_plane(struct view *view,struct window *window,CGPoi
     if(own_batch) scripting_addition_batch_begin();
     bool ok=scripting_addition_set_plane_transform(window->id,projected.origin.x,projected.origin.y,scale);
     if(ok) ok=hwm_plane_border_drag(window->id,projected);
-    if(own_batch) ok=scripting_addition_batch_end() && ok;
+    // Pointer samples arrive faster than frames; do not wait for each reply.
+    if(own_batch) ok=scripting_addition_batch_end_deferred() && ok;
     double ms=(hwm_now()-began)*1000;
     ++hwm_drag_present_count; hwm_drag_present_total_ms+=ms;
     if(ms>hwm_drag_present_max_ms) hwm_drag_present_max_ms=ms;
@@ -40,7 +41,7 @@ static bool hwm_drag_present_plane(struct view *view,struct window *window,CGPoi
     window->strip_from_x=world.x; window->strip_from_y=world.y;
     window->strip_last_frame=base; window->strip_last_offset=camera_x; window->strip_last_camera_y=camera_y; window->strip_last_shift=0;
     window->strip_start=hwm_now()-hwm_duration;
-    if(magnet) hwm_drag_preview_apply(view,window,snapped,target,peer,edge,contacts);
+    if(magnet) hwm_drag_preview_apply(view,window,raw,snapped?&snap:NULL);
     return true;
 }
 
@@ -80,7 +81,7 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
      * Native anchors and displayed origins are independent; test both only
      * after obtaining a real presentation sample. */
     if(!hwm_drag_native_moved && CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin) &&
-       CGPointEqualToPoint(displayed,window->strip_last_frame.origin)) return true;
+       (hwm_drag_native_unscaled || CGPointEqualToPoint(displayed,window->strip_last_frame.origin))) return true;
     bool observed_native_move=hwm_drag_native_moved;
     hwm_drag_commit_interaction(window);
     hwm_drag_native_moved=true;
@@ -120,6 +121,13 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
     // the window. Persist the compositor origin, not that native anchor.
     CGPoint world=CGPointMake((displayed.x-bounds.origin.x)/hwm_plane_scale+camera_x,
                               (displayed.y-bounds.origin.y)/hwm_plane_scale+camera_y);
+    if(hwm_drag_native_unscaled && !hwm_drag_native_projected) {
+        // During native camera motion, AppKit's frame and the painted frame
+        // can be one refresh apart. The user's movement is the native delta
+        // from the press, not that transient paint lag plus camera travel.
+        world=CGPointMake(hwm_drag_world_origin.x+frame.origin.x-g_mouse_state.window_frame.origin.x,
+                          hwm_drag_world_origin.y+frame.origin.y-g_mouse_state.window_frame.origin.y);
+    }
     window->frame=frame;
     window->strip_world_x=window->strip_from_x=world.x;
     window->strip_world_y=window->strip_from_y=world.y;
@@ -131,9 +139,9 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
     window->strip_last_plane_scale=hwm_drag_scale; window->strip_plane_scaled=true; window->strip_transform_dirty=false;
     window->strip_start=hwm_now()-hwm_duration;
     hwm_drag_move=world; hwm_drag_move_pending=false;
-    CGPoint target;
+    HWMDragSnap snap;
     if(!hwm_drag_native_finishing && !hwm_drag_native_recovering &&
-       hwm_drag_snap_proposal_at(view,window,world,&target,NULL,NULL,NULL)) {
+       hwm_drag_snap_proposal_at(view,window,world,&snap)) {
         hwm_drag_native_projected=true;
         return hwm_drag_submit_plane(view,window,world);
     }

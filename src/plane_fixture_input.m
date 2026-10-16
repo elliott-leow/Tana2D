@@ -44,6 +44,8 @@ static void hwm_fixture_pointer(FILE *rsp,char *message)
             g_mouse_state.window=w; g_mouse_state.down_location=point; g_mouse_state.window_frame=w->frame;
             g_mouse_state.current_action=mode==4?MOUSE_MODE_NONE:MOUSE_MODE_MOVE; hwm_drag_cancelled=false;
             if(mode==4) {
+                SLSGetWindowBounds(g_connection,w->id,&g_mouse_state.window_frame);
+                horizontal_mouse_down(w,point);
                 hwm_mouse_pointer_button=kCGMouseButtonLeft;
                 hwm_mouse_pointer_generation=hwm_pointer_sample_generation_for_event_ref(event);
                 hwm_drag_point=point;
@@ -61,3 +63,26 @@ static void hwm_fixture_pointer(FILE *rsp,char *message)
     }
     CFRelease(event); hwm_wake(); fprintf(rsp,"{}\n");
 }
+#if defined(HWM_TEST_FIXTURE_ONLY) || defined(HWM_TEST_INPUT_REPLAY)
+/* Replays a three-finger swipe through the production touch-frame path at the
+ * trackpad's frame rate. Normalized deltas; nothing reaches the OS input stream. */
+static void hwm_fixture_swipe(FILE *rsp,char *message)
+{
+    double dx,dy,ms;
+    if(!hwm_number(get_token(&message),&dx) || !hwm_number(get_token(&message),&dy) || !hwm_number(get_token(&message),&ms) ||
+       fabs(dx)>1 || fabs(dy)>1 || ms<16 || ms>3000) { daemon_fail(rsp,"expected normalized dx dy and duration ms\n"); return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{
+        int frames=(int)(ms/8);
+        for(int f=0;f<=frames+1;f++) {
+            HWMPlaneTouchFrame *sample=calloc(1,sizeof(*sample));
+            if(!sample) return;
+            double p=f>frames ? 1 : (double)f/frames;
+            *sample=(HWMPlaneTouchFrame){.device=0xF1C5,.time=hwm_now(),.aspect=.625,.count=f>frames?0:3};
+            for(int i=0;i<sample->count;i++) sample->contacts[i]=(HWMPlaneContact){i+1,.35+.15*i+dx*p,.5+dy*p};
+            event_loop_post(&g_event_loop,HORIZONTAL_INPUT,sample,HWM_TOUCH_FRAME);
+            usleep(8000);
+        }
+    });
+    fprintf(rsp,"{}\n");
+}
+#endif

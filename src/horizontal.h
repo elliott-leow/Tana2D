@@ -24,6 +24,7 @@ void horizontal_plane_action(const char *name);
 #endif
 
 static bool horizontal_hover_allowed(CGPoint point);
+static bool horizontal_native_hover(CGPoint point, uint64_t timestamp);
 static void horizontal_activated(struct application *application);
 static void horizontal_unmanaging(struct window *window);
 static void horizontal_removing(struct window *window, bool whole_app);
@@ -43,6 +44,7 @@ static void horizontal_focus_transition(struct window *previous,struct window *n
 static void horizontal_overview_select(uint32_t wid, pid_t pid);
 static void horizontal_overview_done(void);
 static void horizontal_event_timed(int type,double ms);
+static void horizontal_event_settle(void);
 static uint32_t horizontal_expected_focus(struct application *application);
 
 static void horizontal_mouse_down(struct window *window, CGPoint point);
@@ -50,6 +52,9 @@ static bool horizontal_resize_event(struct window *window);
 /* Set while a pointer event of that kind is queued; coalesce each mouse
  * button independently so an in-flight right drag never drops a left drag. */
 static _Atomic bool horizontal_moved_queued, horizontal_dragged_queued[2];
+static pthread_mutex_t horizontal_hover_sample_lock=PTHREAD_MUTEX_INITIALIZER;
+static CGPoint horizontal_hover_point;
+static uint64_t horizontal_hover_timestamp;
 static _Atomic bool hwm_drag_release_pending;
 /* Read by the event loop before horizontal.m's implementation is included. */
 static _Atomic bool hwm_drag_native;

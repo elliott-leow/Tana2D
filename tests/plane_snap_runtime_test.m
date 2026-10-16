@@ -57,7 +57,7 @@ static void test_runtime_multi_neighbor_snap(void)
         assert(target.x==200 && target.y==200 && test_preview_visible && hwm_snap_contact_count==3);
         double sx=round(12+target.x*scale)-round(12+raw*scale);
         double sy=round(51+target.y*scale)-round(51+raw*scale);
-        assert(hypot(sx,sy)<=12);
+        assert(fabs(sx)<=12 && fabs(sy)<=12);
         hwm_drag_release(&view,moving);
         assert(moving->strip_world_x==200 && moving->strip_world_y==200);
         assert(hwm_snap_contact_count==0);
@@ -199,7 +199,7 @@ static void test_snap_ignores_offscreen_neighbors_and_bounds_rounding(void)
             if(hwm_drag_snap_target(&view,moving,&target)) {
                 double sx=round(12+target.x*scale)-round(12+moving->strip_world_x*scale);
                 double sy=round(51+target.y*scale)-round(51+moving->strip_world_y*scale);
-                assert(hypot(sx,sy)<=12);
+                assert(fabs(sx)<=12 && fabs(sy)<=12);
             }
         }
     }
@@ -234,6 +234,98 @@ static void test_native_release_waits_to_snap_and_interrupt_does_not(void)
     assert(moving->strip_world_x==raw && moving->strip_world_y==100);
 }
 
+static void test_release_hysteresis_holds_then_lets_go(void)
+{
+    const double scales[]={.5,1,2};
+    for(size_t z=0;z<sizeof(scales)/sizeof(scales[0]);z++) {
+        double s=scales[z];
+        snap_scene(s,6/s);
+        struct window *moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(188+6/s,100)));
+        assert(moving->strip_world_x==188 && test_haptic_engages==1);
+        /* Beyond the 12-point engage radius but inside the 20-point hold. */
+        for(int i=0;i<20;i++) {
+            assert(hwm_drag_submit_plane(&view,moving,CGPointMake(188+(13+i%7)/s,100+i%5)));
+            assert(moving->strip_world_x==188 && test_preview_visible);
+            double sx=round(12+188*s)-round(12+(188+(13+i%7)/s)*s);
+            assert(fabs(sx)<=20);
+        }
+        assert(test_haptic_engages==1);
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(188+21/s,100)));
+        assert(moving->strip_world_x==188+21/s && !test_preview_visible && !hwm_snap_neighbor);
+        /* Coming back, the wider hold no longer applies: re-engage at 12. */
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(188+16/s,100)));
+        assert(moving->strip_world_x==188+16/s && !test_preview_visible);
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(188+11/s,100)));
+        assert(moving->strip_world_x==188 && test_haptic_engages==2);
+        hwm_drag_release(&view,moving);
+        assert(moving->strip_world_x==188 && test_haptic_commits==1);
+    }
+}
+
+static bool seam_present(int edge,double from,double to)
+{
+    for(size_t i=0;i<test_preview_seam_count;i++)
+        if(test_preview_seams[i].edge==edge && test_preview_seams[i].from==from && test_preview_seams[i].to==to) return true;
+    return false;
+}
+
+static void test_every_contact_gets_a_seam(void)
+{
+    const double scales[]={.5,1,2};
+    for(size_t z=0;z<sizeof(scales)/sizeof(scales[0]);z++) {
+        double s=scales[z];
+        multi_snap_scene(s,4/s);
+        struct window *moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+4/s,200+4/s)));
+        /* Left, right and bottom contacts are all marked at once. */
+        assert(test_preview_seam_count==3 && test_preview_gutter==12*s);
+        assert(seam_present(1,0,round(100*s)) && seam_present(0,0,round(100*s)) && seam_present(2,0,round(100*s)));
+        /* A corner shows a vertical and a horizontal bar simultaneously. */
+        multi_snap_scene(s,4/s);
+        windows[2].strip_world_x=20000; moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+4/s,200+4/s)));
+        assert(moving->strip_world_x==200 && moving->strip_world_y==200);
+        assert(test_preview_seam_count==2 && seam_present(1,0,round(100*s)) && seam_present(2,0,round(100*s)));
+        /* 9 points off on both axes is 12.7 diagonally: still both bars. */
+        multi_snap_scene(s,9/s); windows[2].strip_world_x=20000; moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+9/s,200+9/s)));
+        assert(moving->strip_world_x==200 && moving->strip_world_y==200 && hwm_snap_contact_count==2);
+        assert(test_preview_seam_count==2 && seam_present(1,0,round(100*s)) && seam_present(2,0,round(100*s)));
+        hwm_drag_release(&view,moving);
+        /* Sliding into the corner from one contact ticks again for the second. */
+        multi_snap_scene(s,0); windows[2].strip_world_x=20000; moving=&windows[0];
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+4/s,200-40/s)));
+        assert(test_preview_seam_count==1 && test_haptic_engages==1);
+        assert(hwm_drag_submit_plane(&view,moving,CGPointMake(200+4/s,200+4/s)));
+        assert(test_preview_seam_count==2 && test_haptic_engages==2);
+        hwm_drag_release(&view,moving);
+    }
+    /* A shorter neighbor marks only the span the two windows share. */
+    snap_scene(1,6);
+    windows[1].strip_world_y=140; windows[1].strip_height=200;
+    assert(hwm_drag_submit_plane(&view,&windows[0],CGPointMake(194,100)));
+    assert(test_preview_seam_count==1 && seam_present(0,40,100));
+}
+
+static void test_command_places_freely(void)
+{
+    snap_scene(1,6);
+    struct window *moving=&windows[0];
+    hwm_snap_free=true;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
+    assert(moving->strip_world_x==194 && !test_preview_visible && !test_haptic_engages);
+    hwm_snap_free=false;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
+    assert(moving->strip_world_x==188 && test_preview_visible);
+    hwm_snap_free=true;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(194,100)));
+    assert(moving->strip_world_x==194 && !test_preview_visible);
+    hwm_drag_release(&view,moving);
+    assert(moving->strip_world_x==194 && test_haptic_commits==0);
+    hwm_snap_free=false;
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -246,6 +338,9 @@ int main(void)
         test_missed_and_blocked_releases_do_not_snap();
         test_snap_ignores_offscreen_neighbors_and_bounds_rounding();
         test_native_release_waits_to_snap_and_interrupt_does_not();
+        test_release_hysteresis_holds_then_lets_go();
+        test_every_contact_gets_a_seam();
+        test_command_places_freely();
         puts("plane snap runtime tests passed");
     }
     return 0;

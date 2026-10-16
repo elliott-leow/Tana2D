@@ -68,7 +68,14 @@ static NSVisualEffectView *hwm_glass(NSRect frame,CGFloat radius)
         [glass addSubview:self.label];
     }
     NSScreen *screen=hwm_pointer_screen(); NSRect visible=screen.visibleFrame;
+    BOOL replacing=self.panel.visible && self.panel.alphaValue>.05 && ![self.label.stringValue isEqualToString:text];
     self.label.stringValue=text;
+    /* A message that replaces one on screen crossfades instead of swapping. */
+    if(replacing && self.label.layer && ![NSWorkspace sharedWorkspace].accessibilityDisplayShouldReduceMotion) {
+        CATransition *fade=[CATransition animation];
+        fade.type=kCATransitionFade; fade.duration=.12;
+        [self.label.layer addAnimation:fade forKey:@"text"];
+    }
     CGFloat width=fmax(1,fmin(fmax(1,visible.size.width-24),ceil([self.label.attributedStringValue size].width)+44));
     NSRect frame=NSMakeRect(NSMidX(visible)-width/2,NSMinY(visible)+56,width,40);
     self.label.frame=NSMakeRect(16,10,width-32,20);
@@ -100,7 +107,7 @@ static void hwm_hud(NSString *text)
 
 /* Subsequence match. Higher is better; negative means no match. Consecutive
  * letters and word starts are rewarded so "mvl" finds "Move left". */
-static NSInteger hwm_fuzzy_score(NSString *query,NSString *candidate)
+static NSInteger hwm_fuzzy_match(NSString *query,NSString *candidate,NSMutableIndexSet *matched)
 {
     NSString *q=query.lowercaseString,*c=candidate.lowercaseString;
     if(!q.length) return 0;
@@ -112,12 +119,14 @@ static NSInteger hwm_fuzzy_score(NSString *query,NSString *candidate)
             score+=10;
             if((NSInteger)at==last+1) score+=8;
             if(at==0 || [c characterAtIndex:at-1]==' ' || [c characterAtIndex:at-1]=='/') score+=6;
+            [matched addIndex:at];
             last=(NSInteger)at; at++; found=YES; break;
         }
-        if(!found) return -1;
+        if(!found) { [matched removeAllIndexes]; return -1; }
     }
     return score-(NSInteger)c.length/4;
 }
+static NSInteger hwm_fuzzy_score(NSString *query,NSString *candidate) { return hwm_fuzzy_match(query,candidate,nil); }
 
 @class TanaPalette;
 @class TanaPaletteList;
@@ -128,20 +137,26 @@ static NSInteger hwm_fuzzy_score(NSString *query,NSString *candidate)
 @interface TanaPaletteList : NSView
 @property(nonatomic,retain) NSArray *rows; /* @[name,title,hint] */
 @property(nonatomic,retain) NSArray *axElements;
+@property(nonatomic,copy) NSString *query;
 @property(nonatomic) NSInteger selected;
 @property(nonatomic,assign) TanaPalette *owner;
+@property(nonatomic) CGFloat scrollCarry;
 - (NSInteger)first;
+- (NSRect)rectForRow:(NSInteger)row;
 @end
 
 @interface TanaPalette : NSObject <NSTextFieldDelegate>
 @property(nonatomic,retain) TanaKeyPanel *panel;
 @property(nonatomic,retain) NSTextField *field;
 @property(nonatomic,retain) TanaPaletteList *list;
+@property(nonatomic,retain) NSView *highlight;
+@property(nonatomic,retain) NSMutableArray *recent; /* command names, most recent first */
 @property(nonatomic,retain) NSArray *commands; /* @[name,title,hint] */
 @property(nonatomic,copy) void (^run)(NSString *name);
 + (instancetype)shared;
 - (void)toggleWithCommands:(NSArray *)commands run:(void (^)(NSString *name))run;
 - (void)activate:(NSInteger)row;
+- (void)moveHighlightAnimated:(BOOL)animated;
 - (void)close;
 @end
 
@@ -205,34 +220,79 @@ static const NSInteger TanaPaletteVisible=9;
 {
     if(_selected==selected) return;
     _selected=selected; [self setNeedsDisplay:YES];
+    [self.owner moveHighlightAnimated:YES];
     NSAccessibilityPostNotification(self,NSAccessibilitySelectedChildrenChangedNotification);
     NSAccessibilityPostNotification(self,NSAccessibilityLayoutChangedNotification);
 }
 - (NSInteger)first { return MAX(0,MIN(self.selected-TanaPaletteVisible/2,(NSInteger)self.rows.count-TanaPaletteVisible)); }
+- (NSRect)rectForRow:(NSInteger)row { return NSMakeRect(8,(row-[self first])*TanaPaletteRow,MAX(1,self.bounds.size.width-16),TanaPaletteRow-2); }
 - (void)drawRect:(NSRect)dirty
 {
     (void)dirty;
-    NSDictionary *title=@{NSFontAttributeName:[NSFont systemFontOfSize:14],NSForegroundColorAttributeName:NSColor.whiteColor};
-    NSDictionary *hint=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular],NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:1 alpha:hwm_accessibility_high_contrast() ? .9 : .65]};
+    BOOL contrast=hwm_accessibility_high_contrast();
+    /* The selection itself is a separate layer-backed view behind this one,
+     * so moving it animates without redrawing any text. */
+    NSColor *dim=[NSColor colorWithCalibratedWhite:1 alpha:contrast ? .92 : .78];
+    NSDictionary *title=@{NSFontAttributeName:[NSFont systemFontOfSize:14],NSForegroundColorAttributeName:dim};
+    NSDictionary *strong=@{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:NSColor.whiteColor};
+    NSDictionary *hint=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular],NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:1 alpha:contrast ? .9 : .55]};
     NSInteger first=[self first];
     for(NSInteger i=first;i<(NSInteger)self.rows.count && i<first+TanaPaletteVisible;i++) {
-        NSRect row=NSMakeRect(8,(i-first)*TanaPaletteRow,self.bounds.size.width-16,TanaPaletteRow-2);
-        if(i==self.selected) {
-            [[NSColor colorWithCalibratedRed:.36 green:.66 blue:1 alpha:hwm_accessibility_high_contrast() ? .62 : .32] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:row xRadius:8 yRadius:8] fill];
-        }
+        NSRect row=[self rectForRow:i];
         NSArray *entry=self.rows[i];
-        [entry[1] drawAtPoint:NSMakePoint(NSMinX(row)+12,NSMinY(row)+7) withAttributes:title];
+        NSString *name=entry[1];
+        NSMutableAttributedString *text=[[[NSMutableAttributedString alloc] initWithString:name attributes:title] autorelease];
+        if(i==self.selected) [text addAttribute:NSForegroundColorAttributeName value:NSColor.whiteColor range:NSMakeRange(0,name.length)];
+        /* Embolden what the query matched, so a result explains itself. */
+        NSMutableIndexSet *matched=[NSMutableIndexSet indexSet];
+        if(self.query.length && hwm_fuzzy_match(self.query,name,matched)>=0)
+            [matched enumerateRangesUsingBlock:^(NSRange range,BOOL *stop) {
+                (void)stop; if(NSMaxRange(range)<=name.length) [text addAttributes:strong range:range];
+            }];
         NSSize size=[entry[2] sizeWithAttributes:hint];
+        CGFloat room=fmax(1,row.size.width-36-size.width);
+        [text drawWithRect:NSMakeRect(NSMinX(row)+12,NSMinY(row)+7,room,20)
+                   options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingTruncatesLastVisibleLine];
         [entry[2] drawAtPoint:NSMakePoint(NSMaxX(row)-12-size.width,NSMinY(row)+9) withAttributes:hint];
     }
     if(!self.rows.count) [@"No matching command" drawAtPoint:NSMakePoint(20,8) withAttributes:hint];
 }
-- (void)mouseDown:(NSEvent *)event
+- (NSInteger)rowAtEvent:(NSEvent *)event
 {
     NSPoint p=[self convertPoint:event.locationInWindow fromView:nil];
-    NSInteger row=[self first]+(NSInteger)floor(p.y/TanaPaletteRow);
-    if(row>=0 && row<(NSInteger)self.rows.count) [self.owner activate:row];
+    if(p.x<0 || p.x>self.bounds.size.width || p.y<0) return -1;
+    NSInteger slot=(NSInteger)floor(p.y/TanaPaletteRow), row=[self first]+slot;
+    return slot<TanaPaletteVisible && row>=0 && row<(NSInteger)self.rows.count ? row : -1;
+}
+- (void)updateTrackingAreas
+{
+    [super updateTrackingAreas];
+    for(NSTrackingArea *area in self.trackingAreas) [self removeTrackingArea:area];
+    [self addTrackingArea:[[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseMoved|NSTrackingActiveAlways|NSTrackingInVisibleRect owner:self userInfo:nil] autorelease]];
+}
+/* Only real pointer movement selects, so a resting pointer never steals the
+ * row the keyboard chose. The visible window is not scrolled from here. */
+- (void)mouseMoved:(NSEvent *)event
+{
+    NSInteger row=[self rowAtEvent:event];
+    if(row>=0) self.selected=row;
+}
+- (void)mouseDown:(NSEvent *)event
+{
+    NSInteger row=[self rowAtEvent:event];
+    if(row>=0) [self.owner activate:row];
+}
+- (void)scrollWheel:(NSEvent *)event
+{
+    NSInteger count=(NSInteger)self.rows.count;
+    if(!count) return;
+    CGFloat delta=event.hasPreciseScrollingDeltas ? event.scrollingDeltaY/TanaPaletteRow : event.scrollingDeltaY;
+    self.scrollCarry+=delta;
+    NSInteger steps=(NSInteger)trunc(self.scrollCarry);
+    if(!steps) return;
+    self.scrollCarry-=steps;
+    self.selected=MAX(0,MIN(count-1,self.selected-steps));
 }
 @end
 
@@ -254,9 +314,14 @@ static const NSInteger TanaPaletteVisible=9;
     self.field.accessibilityHelp=@"Type to filter commands. Use Up and Down Arrow to choose a command, then Return to run it.";
     self.field.autoresizingMask=NSViewMinYMargin|NSViewWidthSizable;
     [glass addSubview:self.field];
+    self.highlight=[[[NSView alloc] initWithFrame:NSZeroRect] autorelease];
+    self.highlight.wantsLayer=YES; self.highlight.layer.cornerRadius=8; self.highlight.hidden=YES;
+    // Rows hang from the list's top edge, so the highlight keeps its distance from the top too.
+    self.highlight.autoresizingMask=NSViewMinYMargin|NSViewWidthSizable;
+    [glass addSubview:self.highlight];
     self.list=[[[TanaPaletteList alloc] initWithFrame:NSZeroRect] autorelease];
     self.list.owner=self; self.list.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
-    [glass addSubview:self.list];
+    [glass addSubview:self.list positioned:NSWindowAbove relativeTo:self.highlight];
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification object:self.panel queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { (void)n; [self close]; }];
 }
 - (void)layoutAnimated:(BOOL)animated
@@ -276,6 +341,27 @@ static const NSInteger TanaPaletteVisible=9;
     } else [self.panel setFrame:frame display:YES];
     self.field.frame=NSMakeRect(20,height-TanaPaletteHeader+14,MAX(1,width-40),28);
     self.list.frame=NSMakeRect(0,4,width,MIN(rows*TanaPaletteRow,MAX(1,height-TanaPaletteHeader-4)));
+    [self moveHighlightAnimated:NO];
+}
+/* The selection glides between rows instead of jumping, which keeps the eye on
+ * it while the arrow keys, pointer or scroll wheel move it. */
+- (void)moveHighlightAnimated:(BOOL)animated
+{
+    if(!self.highlight || !self.list) return;
+    NSInteger row=self.list.selected;
+    if(row<0 || row>=(NSInteger)self.list.rows.count) { self.highlight.hidden=YES; return; }
+    BOOL contrast=hwm_accessibility_high_contrast();
+    self.highlight.layer.backgroundColor=[NSColor colorWithCalibratedRed:.36 green:.66 blue:1 alpha:contrast ? .62 : .32].CGColor;
+    NSRect frame=[self.list convertRect:[self.list rectForRow:row] toView:self.highlight.superview];
+    BOOL reduce=[NSWorkspace sharedWorkspace].accessibilityDisplayShouldReduceMotion;
+    if(!animated || reduce || self.highlight.hidden || !self.panel.visible) {
+        self.highlight.frame=frame; self.highlight.hidden=NO; return;
+    }
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration=.12; context.allowsImplicitAnimation=YES;
+        context.timingFunction=[CAMediaTimingFunction functionWithControlPoints:.22 :1 :.36 :1];
+        [[self.highlight animator] setFrame:frame];
+    } completionHandler:nil];
 }
 - (void)filter
 {
@@ -286,13 +372,21 @@ static const NSInteger TanaPaletteVisible=9;
         if(score>=0) [scored addObject:@[@(score),command]];
     }
     if(query.length) [scored sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSArray *a,NSArray *b) { return [b[0] compare:a[0]]; }];
+    else if(self.recent.count) {
+        /* With nothing typed, what was run last is one Return away. */
+        NSArray *recent=self.recent;
+        [scored sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSArray *a,NSArray *b) {
+            NSUInteger x=[recent indexOfObject:a[1][0]],y=[recent indexOfObject:b[1][0]];
+            return x<y ? NSOrderedAscending : x>y ? NSOrderedDescending : NSOrderedSame;
+        }];
+    }
     /* Do not use NSArray KVC as a map here.  Asking the outer array for
      * `lastObject` sends that key to each scored entry, and NSArray then
      * recursively forwards it to the command strings.  NSString has no such
      * key, so opening the palette aborts with an NSUndefinedKeyException. */
     NSMutableArray *rows=[NSMutableArray arrayWithCapacity:scored.count];
     for(NSArray *scoredCommand in scored) [rows addObject:scoredCommand[1]];
-    self.list.rows=rows; self.list.selected=0;
+    self.list.query=query; self.list.rows=rows; self.list.selected=0;
     NSString *announcement=self.list.rows.count ? [NSString stringWithFormat:@"%ld commands available",(long)self.list.rows.count] : @"No matching commands";
     NSAccessibilityPostNotificationWithUserInfo(self.field,NSAccessibilityAnnouncementRequestedNotification,@{NSAccessibilityAnnouncementKey:announcement,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityLow)});
     [self layoutAnimated:self.panel.visible];
@@ -307,6 +401,7 @@ static const NSInteger TanaPaletteVisible=9;
     NSRect frame=self.panel.frame;
     if(!reduce) { [self.panel setFrame:NSOffsetRect(frame,0,12) display:YES]; self.panel.alphaValue=0; }
     [self.panel makeKeyAndOrderFront:nil]; [self.panel makeFirstResponder:self.field];
+    [self moveHighlightAnimated:NO];
     self.panel.accessibilityLabel=@"Tana2D command palette";
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
         context.duration=reduce ? 0 : .16; context.timingFunction=[CAMediaTimingFunction functionWithControlPoints:.22 :1 :.36 :1];
@@ -315,6 +410,8 @@ static const NSInteger TanaPaletteVisible=9;
 }
 - (void)close
 {
+    /* Close at once: keyboard focus must return to the user's window before
+     * the command runs, so no fade may keep this panel key. */
     if(!self.panel.visible) return;
     [self.panel orderOut:nil]; self.run=nil;
 }
@@ -322,6 +419,9 @@ static const NSInteger TanaPaletteVisible=9;
 {
     if(row<0 || row>=(NSInteger)self.list.rows.count) return;
     NSString *name=[[self.list.rows[row][0] retain] autorelease];
+    if(!self.recent) self.recent=[NSMutableArray array];
+    [self.recent removeObject:name]; [self.recent insertObject:name atIndex:0];
+    while(self.recent.count>5) [self.recent removeLastObject];
     void (^run)(NSString *)=[[self.run copy] autorelease];
     [self close];
     if(run) run(name);

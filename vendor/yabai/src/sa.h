@@ -1,6 +1,8 @@
 #ifndef SA_H
 #define SA_H
 
+#include <CoreGraphics/CoreGraphics.h>
+
 extern unsigned char __src_osax_payload[];
 extern unsigned int __src_osax_payload_len;
 extern unsigned char __src_osax_loader[];
@@ -18,6 +20,8 @@ void scripting_addition_batch_begin(void);
 void scripting_addition_batch_set_barrier(void (*barrier)(void));
 bool scripting_addition_batch_flush(void);
 bool scripting_addition_batch_end(void);
+bool scripting_addition_batch_end_deferred(void);
+bool scripting_addition_settle(void);
 bool scripting_addition_move_window(uint32_t wid, int x, int y);
 bool scripting_addition_set_opacity(uint32_t wid, float opacity, float duration);
 bool scripting_addition_set_layer(uint32_t wid, int layer);
@@ -27,6 +31,9 @@ bool scripting_addition_focus_window(uint32_t wid);
 bool scripting_addition_set_plane_transform(uint32_t wid, double x, double y, double scale);
 bool scripting_addition_set_plane_transform_xy(uint32_t wid, double x, double y, double scale_x, double scale_y);
 bool scripting_addition_plane_supported(void);
+bool scripting_addition_input_shape_supported(void);
+bool scripting_addition_set_input_shape(uint32_t wid, CGRect local_rect);
+bool scripting_addition_clear_input_shape(void);
 bool scripting_addition_scale_window(uint32_t wid, float x, float y, float w, float h);
 bool scripting_addition_swap_window_proxy_in(struct window_animation *animation_list, int animation_count);
 bool scripting_addition_swap_window_proxy_out(struct window_animation *animation_list, int animation_count);

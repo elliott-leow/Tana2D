@@ -6,6 +6,7 @@ static void hwm_drag_snap_reset(void);
 static uint64_t hwm_drag_pointer_generation;
 static bool hwm_drag_native_recovered;
 static bool hwm_drag_native_projected;
+static bool hwm_drag_native_unscaled;
 static bool hwm_drag_committed;
 static int hwm_drag_restore_layer;
 static CGRect hwm_drag_native_displayed;
@@ -51,6 +52,7 @@ static void hwm_drag_started(struct window *window)
      * global press, which could belong to a later physical click. */
     hwm_drag_pointer_generation=0;
     hwm_drag_native=g_mouse_state.window==window && g_mouse_state.current_action==MOUSE_MODE_NONE && !hwm_plane_pick_window;
+    hwm_drag_native_unscaled=hwm_drag_native && hwm_plane_scale==1 && !window->strip_plane_scaled;
     hwm_drag_window=window->id;
     /* The caller seeded hwm_drag_point from its own queued event/generation.
      * Do not replace it with the event tap's newer global sample here. */
@@ -64,7 +66,7 @@ static void hwm_drag_started(struct window *window)
     CGRect displayed;
     if(hwm_plane_displayed_frame(window->id,&displayed)) actual=displayed;
     hwm_drag_native_displayed=actual;
-    if(view && !CGRectIsNull(actual)) {
+    if(view && !CGRectIsNull(actual) && !hwm_drag_native_unscaled) {
         CGRect bounds=hwm_bounds(view);
         hwm_drag_world_origin=CGPointMake((actual.origin.x-bounds.origin.x)/hwm_plane_scale+hwm_drag_camera_x,
                                           (actual.origin.y-bounds.origin.y)/hwm_plane_scale+hwm_drag_camera_y);

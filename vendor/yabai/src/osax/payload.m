@@ -18,6 +18,9 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <signal.h>
+#include <time.h>
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -26,6 +29,7 @@
 
 #include "common.h"
 #include "../misc/plane_transform.h"
+#include "../misc/input_shape.h"
 
 #ifdef __x86_64__
 #include "x64_payload.m"
@@ -49,6 +53,9 @@ extern CGError SLSSetWindowAlpha(int cid, uint32_t wid, float alpha);
 extern OSStatus SLSMoveWindowWithGroup(int cid, uint32_t wid, CGPoint *point);
 extern CGError SLSReassociateWindowsSpacesByGeometry(int cid, CFArrayRef window_list);
 extern CGError SLSGetWindowOwner(int cid, uint32_t wid, int *window_cid);
+extern CGError SLSCopySpecifiedWindowShape(int cid, uint32_t wid, int shape_type, CFTypeRef *region);
+extern CGError CGSNewRegionWithRect(CGRect *rect, CFTypeRef *region);
+extern bool CGRegionEqualToRegion(CFTypeRef left, CFTypeRef right);
 extern CGError SLSSetWindowTags(int cid, uint32_t wid, uint64_t *tags, size_t tag_size);
 extern CGError SLSClearWindowTags(int cid, uint32_t wid, uint64_t *tags, size_t tag_size);
 extern CGError SLSGetWindowBounds(int cid, uint32_t wid, CGRect *frame);
@@ -66,6 +73,7 @@ extern void SLSTransactionCommit(CFTypeRef transaction, int synchronous);
 extern void SLSTransactionSetWindowLockedBounds(CFTypeRef,uint32_t,CGRect);
 extern void SLSTransactionClearWindowLockedBounds(CFTypeRef,uint32_t);
 extern void SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
+extern void SLSTransactionSetWindowEventShape(CFTypeRef transaction, uint32_t wid, CFTypeRef region);
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
 extern CGError SLSSetWindowSubLevel(int cid, uint32_t wid, int level);
@@ -93,6 +101,8 @@ static bool macOSSequoia;
 
 static pthread_t daemon_thread;
 static int daemon_sockfd;
+
+#include "input_shape_service.h"
 
 static void dump_class_info(Class c)
 {
@@ -642,17 +652,22 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     CGRect native[SA_PLANE_TRANSFORM_MAX_RECORDS];
     CGRect displayed[SA_PLANE_TRANSFORM_MAX_RECORDS];
     bool reset[SA_PLANE_TRANSFORM_MAX_RECORDS];
+    bool present[SA_PLANE_TRANSFORM_MAX_RECORDS];
     int cid = SLSMainConnectionID();
     /* Validate this packet before enqueuing any mutation. The manager decides
-     * whether native input is observed or needs a presentation update. */
+     * whether native input is observed or needs a presentation update. A
+     * window that closed after the frame was built is skipped: it must not
+     * cost every other window its frame, nor read as a lost helper. */
     for (uint16_t index = 0; index < count; ++index) {
-        if (SLSGetWindowBounds(cid, transforms[index].wid, &native[index]) != kCGErrorSuccess ||
+        present[index] = SLSGetWindowBounds(cid, transforms[index].wid, &native[index]) == kCGErrorSuccess;
+        if (present[index] &&
             !hwm_plane_transform_bounds(transforms[index], native[index], &displayed[index], &reset[index])) return false;
     }
     CFTypeRef transaction = SLSTransactionCreate(cid);
     if (!transaction) return false;
     // These transaction functions return void on current macOS.
     for (uint16_t index = 0; index < count; ++index) {
+        if (!present[index]) continue;
         uint32_t wid = transforms[index].wid;
         if (reset[index]) {
             SLSTransactionClearWindowLockedBounds(transaction, wid);
@@ -982,6 +997,7 @@ static void do_handshake(int sockfd)
     if (set_front_window_fp)               attrib |= OSAX_ATTRIB_SET_WINDOW;
     if (animation_time_addr)               attrib |= OSAX_ATTRIB_ANIM_TIME;
     attrib |= OSAX_ATTRIB_PLANE_TRANSFORM;
+    attrib |= OSAX_ATTRIB_INPUT_SHAPE;
 
     char bytes[BUFSIZ] = {};
     int version_length = strlen(OSAX_VERSION);
@@ -996,7 +1012,7 @@ static void do_handshake(int sockfd)
     send(sockfd, bytes, bytes_length+1, 0);
 }
 
-static bool handle_message(int sockfd, char *message, size_t length)
+static bool handle_message(int sockfd, int peer_pid, char *message, size_t length)
 {
     if (!message || !length) return false;
     enum sa_opcode op = *message++;
@@ -1062,6 +1078,9 @@ static bool handle_message(int sockfd, char *message, size_t length)
     case SA_OPCODE_WINDOW_PLANE_TRANSFORM: {
         return do_window_plane_transform((const unsigned char *) message, length);
     }
+    case SA_OPCODE_WINDOW_INPUT_SHAPE: {
+        return do_window_input_shape(peer_pid, (const unsigned char *) message, length);
+    }
     default: return false;
     }
     return true;
@@ -1098,9 +1117,16 @@ static void *handle_connection(void *unused)
         if (sockfd == -1) continue;
 
         char message[SA_SOCKET_BUFF_LEN]; size_t message_length = 0;
+        pid_t peer_pid = 0;
+        socklen_t peer_pid_length = sizeof(peer_pid);
+        bool have_peer_pid = getsockopt(sockfd, SOL_LOCAL, LOCAL_PEERPID, &peer_pid, &peer_pid_length) == 0 &&
+                             peer_pid_length == sizeof(peer_pid) && peer_pid > 0;
         if (read_message(sockfd, message, &message_length)) {
-            bool success = handle_message(sockfd, message, message_length);
-            if ((unsigned char) message[0] == SA_OPCODE_WINDOW_PLANE_TRANSFORM) {
+            /* Legacy commands retain their existing socket contract. Only the
+             * lease command rejects a missing authenticated peer credential. */
+            bool success = handle_message(sockfd, have_peer_pid ? peer_pid : 0, message, message_length);
+            if ((unsigned char) message[0] == SA_OPCODE_WINDOW_PLANE_TRANSFORM ||
+                (unsigned char) message[0] == SA_OPCODE_WINDOW_INPUT_SHAPE) {
                 unsigned char acknowledgement = success ? 1 : 0;
                 send(sockfd, &acknowledgement, sizeof(acknowledgement), 0);
             }
@@ -1148,8 +1174,21 @@ static bool start_daemon(char *socket_path)
 
     init_instances();
     pthread_mutex_init(&window_fade_lock, NULL);
+    if (pthread_mutex_init(&input_shape_lock, NULL) != 0) {
+        close(daemon_sockfd); unlink(socket_path); return false;
+    }
     table_init(&window_fade_table, 150, hash_wid, compare_wid);
-    pthread_create(&daemon_thread, NULL, &handle_connection, NULL);
+    /* Accept no leases until their independent expiry worker is running. */
+    if (pthread_create(&input_shape_cleanup_thread, NULL, &input_shape_cleanup, NULL) != 0) {
+        pthread_mutex_destroy(&input_shape_lock);
+        close(daemon_sockfd); unlink(socket_path); return false;
+    }
+    if (pthread_create(&daemon_thread, NULL, &handle_connection, NULL) != 0) {
+        pthread_cancel(input_shape_cleanup_thread);
+        pthread_join(input_shape_cleanup_thread, NULL);
+        pthread_mutex_destroy(&input_shape_lock);
+        close(daemon_sockfd); unlink(socket_path); return false;
+    }
 
     return true;
 }

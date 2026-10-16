@@ -37,7 +37,24 @@ static void test_selection_swipes(void) {
     assert(!hwm_plane_selection_gesture_sample(&g,1,c,4,2)); // Stale baseline.
     assert(!hwm_plane_selection_gesture_sample(&g,1,c,5,2.01));
 }
+static void test_release_velocity(void) {
+    HWMPlaneVelocity v={0};
+    HWMPlanePoint r=hwm_plane_velocity_release(&v,1,0); near(r.x,0); near(r.y,0);
+    for(int i=0;i<12;i++) hwm_plane_velocity_add(&v,1+i*.01,i*15.0,-i*5.0);
+    r=hwm_plane_velocity_release(&v,1.11,22); near(r.x,1500); near(r.y,-500);
+    r=hwm_plane_velocity_release(&v,1.15,22); near(r.x,1500*exp(-22*.04)); near(r.y,-500*exp(-22*.04)); // Uneven lift.
+    r=hwm_plane_velocity_release(&v,1.3,22); near(r.x,0); near(r.y,0); // Paused before lifting.
+    hwm_plane_velocity_add(&v,.5,0,0); // Time went backwards: a new history.
+    r=hwm_plane_velocity_release(&v,.51,22); near(r.x,0);
+    hwm_plane_velocity_add(&v,.505,40,0);
+    r=hwm_plane_velocity_release(&v,.51,22); near(r.x,0); // Too short to measure.
+    hwm_plane_velocity_add(&v,NAN,0,0);
+    HWMPlaneVelocity slow={0};
+    for(int i=0;i<4;i++) hwm_plane_velocity_add(&slow,i*.2,i*10.0,0);
+    r=hwm_plane_velocity_release(&slow,.61,22); near(r.x,0); // Samples too far apart.
+}
 int main(void) {
+    test_release_velocity();
     test_selection_swipes();
     for(int angle=0;angle<360;angle+=15) for(int zoom=0;zoom<2;zoom++) {
         HWMPlaneGesture g={0}; HWMPlaneCamera camera={-900,250,zoom?.5:2},out;
@@ -56,7 +73,13 @@ int main(void) {
         near(out.x,camera.x); near(out.y,camera.y);
         assert(!hwm_plane_gesture_sample(&g,2,contacts,3,1.03,1600,.625,1,camera,&out));
         // A finger lifting or being replaced must not produce a centroid jump.
-        assert(hwm_plane_gesture_sample(&g,1,contacts,2,1.03,1600,.625,1,camera,&out));
+        // A finger briefly lifting holds the gesture without moving the camera.
+        assert(!hwm_plane_gesture_sample(&g,1,contacts,2,1.025,1600,.625,1,camera,&out));
+        assert(g.active); near(out.x,camera.x); near(out.y,camera.y);
+        assert(hwm_plane_gesture_sample(&g,1,contacts,3,1.028,1600,.625,1,camera,&out));
+        near(out.x,camera.x); near(out.y,camera.y);
+        // A full lift ends it without a centroid jump.
+        assert(hwm_plane_gesture_sample(&g,1,contacts,0,1.03,1600,.625,1,camera,&out));
         assert(!g.active); near(out.x,camera.x); near(out.y,camera.y);
         contacts[0].id=9; contacts[0].x=.9;
         assert(hwm_plane_gesture_sample(&g,1,contacts,3,1.04,1600,.625,1,camera,&out));

@@ -18,7 +18,16 @@ static inline bool hwm_plane_gesture_sample(HWMPlaneGesture *g,uintptr_t device,
     if(!g || !out || !isfinite(time) || camera.scale<=0 || !isfinite(camera.scale)) return false;
     *out=camera;
     if(g->active && device!=g->device) return false;
-    if(count!=3) { bool was=g->active; g->active=false; return was; }
+    /* Fingers rarely land or lift together. A momentary one- or two-finger
+     * frame holds the gesture without moving the camera; ending it there made
+     * the renderer start native placement mid-swipe, then resume panning over
+     * windows that were still being moved. Only a full lift (or a stale
+     * pause) ends it. Matching identities on return avoids a centroid jump. */
+    if(count!=3) {
+        if(!g->active) return false;
+        if(count>0 && count<3 && time>=g->time && time-g->time<.2) return false;
+        g->active=false; return true;
+    }
     for(int i=0;i<3;i++) if(!isfinite(contacts[i].x) || !isfinite(contacts[i].y)) return false;
     double dx=0,dy=0; bool continuous=g->active && time>=g->time && time-g->time<.2;
     if(continuous) for(int i=0;i<3;i++) {
@@ -35,6 +44,37 @@ static inline bool hwm_plane_gesture_sample(HWMPlaneGesture *g,uintptr_t device,
     g->active=true; g->device=device; g->time=time;
     for(int i=0;i<3;i++) g->contacts[i]=contacts[i];
     return true;
+}
+/* Camera velocity at release, from the last few pan samples. A pause before
+ * lifting, or too short a history, reads as zero: only a moving release
+ * carries on. Units are plane points per second. */
+typedef struct { double time[8],x[8],y[8]; unsigned count; } HWMPlaneVelocity;
+static inline void hwm_plane_velocity_add(HWMPlaneVelocity *v,double time,double x,double y)
+{
+    if(!v || !isfinite(time) || !isfinite(x) || !isfinite(y)) return;
+    if(v->count && time<v->time[(v->count-1)%8]) v->count=0;
+    unsigned i=v->count++%8; v->time[i]=time; v->x[i]=x; v->y[i]=y;
+}
+static inline HWMPlanePoint hwm_plane_velocity_release(const HWMPlaneVelocity *v,double now,double omega)
+{
+    HWMPlanePoint zero={0,0};
+    if(!v || v->count<2 || !isfinite(now)) return zero;
+    unsigned last=(v->count-1)%8;
+    if(now-v->time[last]>.06) return zero;
+    unsigned available=v->count<8 ? v->count : 8, oldest=last;
+    for(unsigned k=1;k<available;k++) {
+        unsigned i=(v->count-1-k)%8;
+        if(v->time[last]-v->time[i]>.1) break;
+        oldest=i;
+    }
+    double dt=v->time[last]-v->time[oldest];
+    if(oldest==last || dt<.012) return zero;
+    /* Fingers rarely lift together, and a partial lift holds the camera.
+     * Release with the velocity the glide would have reached by now had it
+     * begun at the last sample, so motion resumes without a jolt. */
+    double decay=isfinite(omega) && omega>0 ? exp(-omega*fmax(0,now-v->time[last])) : 1;
+    HWMPlanePoint out={(v->x[last]-v->x[oldest])/dt*decay,(v->y[last]-v->y[oldest])/dt*decay};
+    return isfinite(out.x) && isfinite(out.y) ? out : zero;
 }
 /* A four-finger vertical swipe selects once, then stays latched until all
  * contacts lift. Contact replacement and stale frames establish a new baseline. */

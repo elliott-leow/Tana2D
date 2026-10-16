@@ -8,6 +8,7 @@
 #include <float.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "strip_geometry.h"
 
 typedef struct { double x, y, width, height; } HWMPlaneRect;
@@ -53,10 +54,16 @@ static inline HWMPlaneCamera hwm_plane_camera_mix(HWMPlaneCamera from,HWMPlaneCa
     if(progress<=0) return from;
     if(progress>=1) return to;
     double scale=exp(log(from.scale)+(log(to.scale)-log(from.scale))*progress);
+    /* Translation follows 1/scale rather than time. The one plane point that
+     * is shown at the same place before and after then stays still, so a
+     * zoom reads as a single scale about that point instead of a pan that
+     * drifts sideways while the scale catches up (and swings at the end). */
+    double inverse=1/to.scale-1/from.scale, mix=progress;
+    if(fabs(inverse)*fmin(from.scale,to.scale)>1e-6) mix=(1/scale-1/from.scale)/inverse;
     double cx=from.x+width/(2*from.scale),cy=from.y+height/(2*from.scale);
     double tx=to.x+width/(2*to.scale),ty=to.y+height/(2*to.scale);
-    HWMPlaneCamera mixed={cx+(tx-cx)*progress-width/(2*scale),
-                           cy+(ty-cy)*progress-height/(2*scale),scale};
+    HWMPlaneCamera mixed={cx+(tx-cx)*mix-width/(2*scale),
+                           cy+(ty-cy)*mix-height/(2*scale),scale};
     return hwm_plane_camera_valid(mixed) ? mixed : fallback;
 }
 
@@ -298,7 +305,10 @@ static inline void hwm_plane_snap_consider(HWMPlaneRect moving,const HWMPlaneRec
                                            HWMPlanePoint candidate,HWMPlaneSnapTarget *best,double *cost,
                                            bool *best_preferred,HWMPlaneSnapCandidateCache *cache)
 {
-    if(!isfinite(candidate.x) || !isfinite(candidate.y) || hypot(candidate.x-moving.x,candidate.y-moving.y)>range ||
+    /* Each axis is its own magnet: a corner engages whenever both edges are
+     * individually in range, not only inside a diagonal circle. */
+    if(!isfinite(candidate.x) || !isfinite(candidate.y) ||
+       fmax(fabs(candidate.x-moving.x),fabs(candidate.y-moving.y))>range ||
        !hwm_plane_snap_candidate_cache_add(cache,candidate) ||
        !hwm_plane_snap_candidate_clear_contacts(moving,candidate,neighbors,count,gap,range)) return;
     size_t contacts=hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,candidate);
@@ -347,7 +357,7 @@ static inline bool hwm_plane_snap_choose(HWMPlaneRect moving,const HWMPlaneRect 
         double align=fabs(a)<=fabs(b) ? a : b;
         HWMPlanePoint aligned={x,moving.y+align};
         HWMPlanePoint raw={x,moving.y};
-        bool aligned_in_range=hypot(aligned.x-moving.x,aligned.y-moving.y)<=range;
+        bool aligned_in_range=fmax(fabs(aligned.x-moving.x),fabs(aligned.y-moving.y))<=range;
         bool aligned_clear=aligned_in_range && hwm_plane_snap_candidate_clear_contacts(moving,aligned,neighbors,count,gap,range);
         /* The historic single-edge target aligned the perpendicular edge when
          * possible. Keep that landing unless raw X holds more contacts. */
@@ -370,7 +380,7 @@ static inline bool hwm_plane_snap_choose(HWMPlaneRect moving,const HWMPlaneRect 
         double align=fabs(a)<=fabs(b) ? a : b;
         HWMPlanePoint aligned={moving.x+align,y};
         HWMPlanePoint raw={moving.x,y};
-        bool aligned_in_range=hypot(aligned.x-moving.x,aligned.y-moving.y)<=range;
+        bool aligned_in_range=fmax(fabs(aligned.x-moving.x),fabs(aligned.y-moving.y))<=range;
         bool aligned_clear=aligned_in_range && hwm_plane_snap_candidate_clear_contacts(moving,aligned,neighbors,count,gap,range);
         if(!aligned_clear || hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,raw)>
                              hwm_plane_snap_contact_count(moving,neighbors,count,gap,range,aligned))
@@ -380,6 +390,78 @@ static inline bool hwm_plane_snap_choose(HWMPlaneRect moving,const HWMPlaneRect 
     if(!isfinite(cost)) return false;
     *out=best; return true;
 }
+/* Release hysteresis. An engaged target keeps each axis it moved until the
+ * raw proposal travels `release` from it; engaging still needs `range`, so a
+ * pointer resting near the boundary cannot chatter on and off. Only edges that
+ * still touch hold: a perpendicular alignment alone never keeps a magnet. */
+static inline bool hwm_plane_snap_hold(HWMPlaneRect moving,const HWMPlaneRect *neighbors,size_t count,
+                                       double gap,double release,const HWMPlaneSnapTarget *held,
+                                       bool lock_x,bool lock_y,HWMPlaneSnapTarget *out)
+{
+    if(!out || !held || !hwm_plane_rect_valid(moving) || (!neighbors && count) ||
+       !isfinite(gap) || gap<0 || !isfinite(release) || release<0) return false;
+    HWMPlanePoint point={lock_x && fabs(held->point.x-moving.x)<=release ? held->point.x : moving.x,
+                         lock_y && fabs(held->point.y-moving.y)<=release ? held->point.y : moving.y};
+    if(point.x==moving.x && point.y==moving.y) return false;
+    HWMPlaneSnapTarget best={{moving.x,moving.y},0,0,0,0};
+    double cost=INFINITY; bool best_preferred=false;
+    HWMPlaneSnapCandidateCache candidates={0};
+    hwm_plane_snap_consider(moving,neighbors,count,gap,release,held,point,&best,&cost,&best_preferred,&candidates);
+    if(!isfinite(cost)) return false;
+    *out=best; return true;
+}
+
+/* A fresh target wins only by adding contacts (sliding into a corner);
+ * otherwise the held one stays. `kept` reports which bound applies. */
+static inline bool hwm_plane_snap_choose_held(HWMPlaneRect moving,const HWMPlaneRect *neighbors,size_t count,
+                                              double gap,double range,double release,
+                                              const HWMPlaneSnapTarget *held,bool lock_x,bool lock_y,
+                                              HWMPlaneSnapTarget *out,bool *kept)
+{
+    if(kept) *kept=false;
+    HWMPlaneSnapTarget fresh,hold;
+    bool have_fresh=hwm_plane_snap_choose(moving,neighbors,count,gap,range,held,&fresh);
+    bool have_hold=held && release>range &&
+        hwm_plane_snap_hold(moving,neighbors,count,gap,release,held,lock_x,lock_y,&hold);
+    if(have_hold && (!have_fresh || fresh.contact_count<=hold.contact_count)) {
+        if(out) *out=hold;
+        if(kept) *kept=true;
+        return true;
+    }
+    if(have_fresh && out) *out=fresh;
+    return have_fresh;
+}
+
+/* The touching span of every docked edge, relative to the landing origin.
+ * edge follows HWMPlaneSnapTarget: axis*2+side. Overlapping spans on one edge
+ * (stacked neighbors) merge, so feedback draws one seam per real contact. */
+typedef struct { int edge; double from,to; } HWMPlaneSnapSeam;
+enum { HWM_PLANE_SNAP_SEAMS = 8 };
+static inline size_t hwm_plane_snap_seams(HWMPlaneRect moving,const HWMPlaneRect *neighbors,size_t count,
+                                          double gap,double range,HWMPlanePoint point,
+                                          HWMPlaneSnapSeam *out,size_t capacity)
+{
+    size_t n=0;
+    if(!out || !capacity || !hwm_plane_rect_valid(moving)) return 0;
+    for(size_t i=0;i<count;i++) for(int axis=0;axis<2;axis++) for(int side=0;side<2;side++) {
+        if(!hwm_plane_snap_contact_matches(moving,neighbors,count,i,gap,range,point,axis,side)) continue;
+        HWMPlaneRect other=neighbors[i];
+        HWMPlaneSnapSeam seam={axis*2+side,
+            axis==0 ? fmax(point.y,other.y)-point.y : fmax(point.x,other.x)-point.x,
+            axis==0 ? fmin(point.y+moving.height,other.y+other.height)-point.y
+                    : fmin(point.x+moving.width,other.x+other.width)-point.x};
+        if(!(seam.to>seam.from)) continue;
+        for(size_t j=0;j<n;) {
+            if(out[j].edge==seam.edge && out[j].from<=seam.to && seam.from<=out[j].to) {
+                seam.from=fmin(seam.from,out[j].from); seam.to=fmax(seam.to,out[j].to);
+                out[j]=out[--n]; j=0; // A wider span can now reach an earlier one.
+            } else ++j;
+        }
+        if(n<capacity) out[n++]=seam;
+    }
+    return n;
+}
+
 static inline bool hwm_plane_snap_neighbors_target(HWMPlaneRect moving,const HWMPlaneRect *neighbors,
                                                    size_t count,double gap,double range,HWMPlanePoint *out)
 {
@@ -422,6 +504,139 @@ static inline HWMPlanePoint hwm_plane_edge_pan(HWMPlaneEdgePan *state,HWMPlaneRe
     return (HWMPlanePoint){x*rate,y*rate};
 }
 
+/* Hover focus has no dwell. Centering is separate: the window must already be
+ * near the viewport center, and several pointer samples must approach its
+ * interior. Merely crossing an edge or parking the cursor never recenters. */
+typedef struct {
+    uint32_t window;
+    HWMPlanePoint previous;
+    double began,approach;
+    bool centered;
+} HWMPlaneHoverIntent;
+static inline bool hwm_plane_hover_intent(HWMPlaneHoverIntent *s,uint32_t window,HWMPlanePoint point,
+                                          HWMPlaneRect frame,HWMPlaneRect viewport,double now)
+{
+    if(!s)return false;
+    if(!window || !hwm_plane_rect_valid(frame) || !hwm_plane_rect_valid(viewport) || !isfinite(now)) { *s=(HWMPlaneHoverIntent){0};return false; }
+    if(s->window!=window) { *s=(HWMPlaneHoverIntent){.window=window,.previous=point,.began=now};return false; }
+    HWMPlanePoint previous=s->previous;s->previous=point;
+    double cx=frame.x+frame.width*.5,cy=frame.y+frame.height*.5;
+    double near=hypot(cx-viewport.x-viewport.width*.5,cy-viewport.y-viewport.height*.5);
+    double dx=point.x-previous.x,dy=point.y-previous.y,step=hypot(dx,dy);
+    if(s->centered || near<2 || near>fmin(viewport.width,viewport.height)*.2 || step>80) { s->approach=0;return false; }
+    double distance=hypot(cx-previous.x,cy-previous.y);
+    if(distance>1) s->approach=fmax(0,s->approach+(dx*(cx-previous.x)+dy*(cy-previous.y))/distance);
+    bool interior=point.x>frame.x+frame.width*.12 && point.x<frame.x+frame.width*.88 &&
+                  point.y>frame.y+frame.height*.12 && point.y<frame.y+frame.height*.88;
+    if(!interior || now-s->began<.09 || s->approach<18)return false;
+    s->centered=true;return true;
+}
+
+/* Seconds for a camera transition. Short hops (auto-centering, a nearby
+ * window) settle quickly; long travel and large zoom changes get a little
+ * more time so the eye can follow. Distances are in display points. */
+static inline double hwm_plane_camera_duration(HWMPlaneCamera from,HWMPlaneCamera to,double width,double height)
+{
+    if(!hwm_plane_camera_valid(from) || !hwm_plane_camera_valid(to) ||
+       !isfinite(width) || !isfinite(height) || width<=0 || height<=0) return .36;
+    double scale=fmin(from.scale,to.scale);
+    double cx=(from.x+width/(2*from.scale))-(to.x+width/(2*to.scale));
+    double cy=(from.y+height/(2*from.scale))-(to.y+height/(2*to.scale));
+    double travel=hypot(cx,cy)*scale/fmax(1,hypot(width,height));
+    double zoom=fabs(log2(to.scale/from.scale));
+    return fmin(.42,.22+.12*fmin(1,travel)+.05*fmin(2,zoom));
+}
+
+/* Camera motion: x and y in plane units per second, zoom in natural-log
+ * scale per second. */
+typedef struct { double x, y, zoom; } HWMPlaneCameraVelocity;
+
+/* Camera transition progress. A transition that interrupts a moving camera
+ * starts at `launch` progress per second instead of from rest, so retargeting
+ * mid-flight bends the path rather than stopping dead and restarting. The
+ * caller keeps launch below omega, which keeps progress monotonic and never
+ * past 1. *rate (optional) receives progress per second. */
+static inline double hwm_plane_camera_progress(double elapsed,double duration,double launch,double *rate)
+{
+    double unused;
+    if(!rate) rate=&unused;
+    *rate=0;
+    double v=isfinite(launch) && launch>0 ? launch : 0;
+    if(!isfinite(elapsed) || elapsed<=0) { *rate=v; return 0; }
+    if(!isfinite(duration) || elapsed>=duration) return 1;
+    double p=hstrip_spring(0,1,v,elapsed,hstrip_spring_omega(duration,1),rate);
+    return fmin(1,fmax(0,p));
+}
+
+/* Velocity of a transition camera at `progress`, moving at `rate`. */
+static inline HWMPlaneCameraVelocity hwm_plane_camera_velocity(HWMPlaneCamera from,HWMPlaneCamera to,
+                                                              double width,double height,double progress,double rate)
+{
+    HWMPlaneCameraVelocity none={0,0,0};
+    if(!isfinite(rate) || rate==0 || !isfinite(progress) || progress<0 || progress>=1) return none;
+    double step=progress<.999 ? 1e-4 : -1e-4;
+    HWMPlaneCamera a=hwm_plane_camera_mix(from,to,width,height,progress),b=hwm_plane_camera_mix(from,to,width,height,progress+step);
+    if(!hwm_plane_camera_valid(a) || !hwm_plane_camera_valid(b)) return none;
+    HWMPlaneCameraVelocity v={(b.x-a.x)/step*rate,(b.y-a.y)/step*rate,(log(b.scale)-log(a.scale))/step*rate};
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.zoom) ? v : none;
+}
+
+/* Initial progress rate for a new transition that continues `velocity`.
+ * The motion is projected onto the new path's starting direction measured
+ * on screen (points for translation, half the diagonal per e-fold of zoom),
+ * so only the part heading the new way is kept. Motion away from the new
+ * target starts from rest. Capped at 0.8 omega: no overshoot. */
+static inline double hwm_plane_camera_launch(HWMPlaneCamera from,HWMPlaneCamera to,double width,double height,
+                                             HWMPlaneCameraVelocity velocity,double duration)
+{
+    if(!hwm_plane_camera_valid(from) || !hwm_plane_camera_valid(to) || !isfinite(width) || !isfinite(height) ||
+       width<=0 || height<=0 || !isfinite(duration) || duration<=0 ||
+       !isfinite(velocity.x) || !isfinite(velocity.y) || !isfinite(velocity.zoom)) return 0;
+    const double step=1e-4;
+    HWMPlaneCamera next=hwm_plane_camera_mix(from,to,width,height,step);
+    double zoom_weight=hypot(width,height)*.5;
+    double dx=(next.x-from.x)/step*from.scale,dy=(next.y-from.y)/step*from.scale;
+    double dz=(log(next.scale)-log(from.scale))/step*zoom_weight;
+    double length=dx*dx+dy*dy+dz*dz;
+    if(!isfinite(length) || length<1) return 0;
+    double along=(velocity.x*from.scale*dx+velocity.y*from.scale*dy+velocity.zoom*zoom_weight*dz)/length;
+    if(!isfinite(along) || along<=0) return 0;
+    return fmin(along,.8*hstrip_spring_omega(duration,1));
+}
+
+/* Camera that centers a plane rectangle at 100%: centered horizontally and
+ * vertically when it fits, top-aligned when taller than the viewport. A
+ * rectangle wider than the viewport has no single centered view. */
+static inline bool hwm_plane_center_camera(HWMPlaneRect window,double width,double height,HWMPlanePoint *out)
+{
+    if(!out || !hwm_plane_rect_valid(window) || !isfinite(width) || !isfinite(height) ||
+       width<=0 || height<=0 || window.width>width) return false;
+    *out=(HWMPlanePoint){round(window.x+(window.width-width)*.5),
+                         round(window.y-fmax(0,(height-window.height)*.5))};
+    return true;
+}
+
+/* Auto-centering at 100%. When a pan ends with some window's centered view
+ * within `radius` display points, and the pan moved toward that view, the
+ * camera finishes the job. Panning away from a centered window, a touch that
+ * barely moved, and windows that are already centered are left alone.
+ * Returns the index of the chosen candidate, or -1. */
+static inline long hwm_plane_auto_center(HWMPlaneCamera start,HWMPlaneCamera end,
+                                         const HWMPlanePoint *targets,size_t count,double radius)
+{
+    if(!targets || !hwm_plane_camera_valid(start) || !hwm_plane_camera_valid(end) ||
+       fabs(end.scale-1)>.001 || !isfinite(radius) || radius<=0) return -1;
+    if(hypot(end.x-start.x,end.y-start.y)<6) return -1;
+    long best=-1; double nearest=radius;
+    for(size_t i=0;i<count;i++) {
+        double distance=hypot(targets[i].x-end.x,targets[i].y-end.y);
+        if(!isfinite(distance) || distance<.5 || distance>=nearest) continue;
+        if(hypot(targets[i].x-start.x,targets[i].y-start.y)<distance+4) continue;
+        nearest=distance; best=(long)i;
+    }
+    return best;
+}
+
 /* A release can gently approach center, but cannot pull against an escape pan.
  * Distances and the 12-point cap are in display points at every zoom. */
 static inline HWMPlaneCamera hwm_plane_magnetic_camera(HWMPlaneCamera start,HWMPlaneCamera end,HWMPlanePoint center)
@@ -433,6 +648,23 @@ static inline HWMPlaneCamera hwm_plane_magnetic_camera(HWMPlaneCamera start,HWMP
     double strength=.2*fmin(1,(120-distance)/56),step=fmin(12,distance*strength);
     end.x+=dx/distance*step/end.scale; end.y+=dy/distance*step/end.scale;
     return end;
+}
+
+/* Pinching to exactly 100% by hand is fiddly, and a camera parked at 96%
+ * leaves every window slightly soft with projected input. A pinch that was
+ * heading toward actual size and rests at or above the detent finishes the
+ * zoom, keeping the plane point under `anchor` (display points from the
+ * viewport origin) still. Zooming out never snaps back. */
+#define HWM_PLANE_ZOOM_DETENT 0.9
+static inline bool hwm_plane_zoom_detent(HWMPlaneCamera camera,HWMPlanePoint anchor,bool zooming_in,HWMPlaneCamera *out)
+{
+    if(!out || !zooming_in || !hwm_plane_camera_valid(camera) || !isfinite(anchor.x) || !isfinite(anchor.y) ||
+       camera.scale>=HWM_PLANE_MAX_SCALE || camera.scale<HWM_PLANE_ZOOM_DETENT) return false;
+    double x=camera.x+anchor.x/camera.scale-anchor.x,y=camera.y+anchor.y/camera.scale-anchor.y;
+    if(!isfinite(x) || !isfinite(y)) return false;
+    // Native frames are placed on whole points at 100%.
+    *out=(HWMPlaneCamera){round(x),round(y),HWM_PLANE_MAX_SCALE};
+    return true;
 }
 
 #endif

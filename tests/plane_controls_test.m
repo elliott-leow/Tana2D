@@ -9,10 +9,17 @@ int main(void) { @autoreleasepool {
     hwm_plane_controls_begin();
     assert(hwm_camera_controls);
     assert(!hwm_camera_controls.panel.visible);
+    assert(!hwm_plane_controls_hit(CGPointMake(100,100)));
+    NSRect visible=NSScreen.mainScreen.visibleFrame;
+    double screenHeight=NSScreen.screens.firstObject.frame.size.height;
+    assert(hwm_zoom_workspace_contains(CGPointMake(NSMidX(visible),screenHeight-NSMidY(visible))));
+    assert(!hwm_zoom_workspace_contains(CGPointMake(-100,-100)));
+    hwm_zoom_shield_update(false);
+    assert(!hwm_zoom_shield.visible && !hwm_zoom_shield.canBecomeKeyWindow);
     assert(!hwm_camera_controls.panel.canBecomeKeyWindow);
     NSArray *buttons=hwm_camera_controls.panel.contentView.subviews;
-    assert(buttons.count==3);
-    const char *actions[]={"fit-all","fit-focused","actual-size"};
+    assert(buttons.count==2);
+    const char *actions[]={"fit-all","actual-size"};
     for(NSUInteger i=0;i<buttons.count;i++) {
         NSButton *button=buttons[i];
         assert(button.accessibilityLabel.length>0);

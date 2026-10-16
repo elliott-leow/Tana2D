@@ -91,7 +91,48 @@ static void test_snap_can_escape_existing_overlap_and_keeps_edge(void)
     near(target.point.x,200); assert(target.neighbor==0);
 }
 
-static void test_snap_has_radial_bound(void)
+static void test_snap_hold_and_seams(void)
+{
+    HWMPlaneRect right={300,100,100,100};
+    HWMPlaneSnapTarget held={{188,100},0,0,0,1},target; bool kept=false;
+    /* 16 points out: a fresh magnet would not engage, the held one does. */
+    assert(!hwm_plane_snap_choose((HWMPlaneRect){204,100,100,100},&right,1,12,12,NULL,&target));
+    assert(hwm_plane_snap_choose_held((HWMPlaneRect){204,100,100,100},&right,1,12,12,20,&held,true,false,&target,&kept));
+    near(target.point.x,188); near(target.point.y,100); assert(kept);
+    assert(!hwm_plane_snap_choose_held((HWMPlaneRect){209,100,100,100},&right,1,12,12,20,&held,true,false,&target,&kept));
+    /* An unlocked axis never holds, and alignment alone is not a contact. */
+    assert(!hwm_plane_snap_choose_held((HWMPlaneRect){204,100,100,100},&right,1,12,12,20,&held,false,true,&target,&kept));
+    /* 9 points off on both axes (12.7 diagonal) still docks the corner. */
+    HWMPlaneRect corner_only[]={{300,100,100,100},{188,212,100,100}};
+    assert(hwm_plane_snap_choose((HWMPlaneRect){197,91,100,100},corner_only,2,12,12,NULL,&target));
+    near(target.point.x,188); near(target.point.y,100); assert(target.contact_count==2);
+    /* A fresh target with more contacts wins over the held one. */
+    HWMPlaneRect corner[]={{300,100,100,100},{188,212,100,100}};
+    assert(hwm_plane_snap_choose_held((HWMPlaneRect){192,104,100,100},corner,2,12,12,20,&held,true,false,&target,&kept));
+    near(target.point.x,188); near(target.point.y,100); assert(target.contact_count==2);
+
+    HWMPlaneSnapSeam seams[HWM_PLANE_SNAP_SEAMS];
+    HWMPlaneRect moving={188,100,100,100};
+    assert(hwm_plane_snap_seams(moving,corner,2,12,12,(HWMPlanePoint){188,100},seams,HWM_PLANE_SNAP_SEAMS)==2);
+    bool vertical=false,horizontal=false;
+    for(int i=0;i<2;i++) {
+        if(seams[i].edge==0) { vertical=true; near(seams[i].from,0); near(seams[i].to,100); }
+        if(seams[i].edge==2) { horizontal=true; near(seams[i].from,0); near(seams[i].to,100); }
+    }
+    assert(vertical && horizontal);
+    HWMPlaneRect shorter={300,150,100,100};
+    assert(hwm_plane_snap_seams(moving,&shorter,1,12,12,(HWMPlanePoint){188,100},seams,HWM_PLANE_SNAP_SEAMS)==1);
+    near(seams[0].from,50); near(seams[0].to,100);
+    /* Stacked neighbors along one edge read as one continuous seam. */
+    HWMPlaneRect stacked[]={{300,100,100,60},{300,140,100,100}};
+    assert(hwm_plane_snap_seams(moving,stacked,2,12,12,(HWMPlanePoint){188,100},seams,HWM_PLANE_SNAP_SEAMS)==1);
+    near(seams[0].from,0); near(seams[0].to,100);
+    /* Separate neighbors with a break between them keep separate seams. */
+    HWMPlaneRect split[]={{300,60,100,60},{300,150,100,100}};
+    assert(hwm_plane_snap_seams(moving,split,2,12,12,(HWMPlanePoint){188,100},seams,HWM_PLANE_SNAP_SEAMS)==2);
+}
+
+static void test_snap_has_axis_bound(void)
 {
     const double scales[]={.1,.25,.5,.7,1,2,4};
     HWMPlaneRect neighbor={100,100,100,100};
@@ -101,7 +142,7 @@ static void test_snap_has_radial_bound(void)
             HWMPlaneRect moving={212+ix*.25/scale,100+iy*.25/scale,40,50};
             HWMPlanePoint target;
             if(hwm_plane_snap_neighbors_target(moving,&neighbor,1,12,range,&target)) {
-                assert(hypot(target.x-moving.x,target.y-moving.y)<=range);
+                assert(fabs(target.x-moving.x)<=range && fabs(target.y-moving.y)<=range);
                 assert(!hwm_plane_rects_overlap((HWMPlaneRect){target.x,target.y,40,50},neighbor));
             } else { near(target.x,moving.x); near(target.y,moving.y); }
         }
@@ -185,6 +226,100 @@ static void test_simultaneous_multi_neighbor_snap(void)
     near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==80);
 }
 
+static void test_auto_center(void)
+{
+    HWMPlanePoint target;
+    assert(hwm_plane_center_camera((HWMPlaneRect){1000,300,600,400},1200,900,&target));
+    near(target.x,700); near(target.y,50);
+    assert(hwm_plane_center_camera((HWMPlaneRect){1000,300,600,1400},1200,900,&target));
+    near(target.y,300); // Taller than the viewport: top-aligned.
+    assert(!hwm_plane_center_camera((HWMPlaneRect){1000,300,1600,400},1200,900,&target));
+    HWMPlanePoint targets[]={{700,50},{1400,50}};
+    HWMPlaneCamera start={400,50,1};
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){640,80,1},targets,2,120)==0);
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){1300,50,1},targets,2,120)==1);
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){500,50,1},targets,2,120)==-1); // Too far.
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){640,80,.5},targets,2,120)==-1); // Zoomed out.
+    assert(hwm_plane_auto_center((HWMPlaneCamera){700,50,1},(HWMPlaneCamera){760,50,1},targets,2,120)==-1); // Escape.
+    assert(hwm_plane_auto_center((HWMPlaneCamera){640,50,1},(HWMPlaneCamera){642,50,1},targets,2,120)==-1); // A touch.
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){700,50,1},targets,2,120)==-1); // Already centered.
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){640,80,1},NULL,2,120)==-1);
+}
+
+
+/* A retargeted camera transition continues the motion it interrupts. */
+static void test_camera_launch(void)
+{
+    const double w=1200,h=900,d=.3;
+    HWMPlaneCamera from={0,0,1},right={1000,0,1},left={-1000,0,1};
+    /* At rest, or with no motion, a transition starts from rest. */
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){0,0,0},d),0);
+    /* Heading the same way: progress rate is speed over distance. */
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){2000,0,0},d),2);
+    /* Heading away from the new target never pushes progress backwards. */
+    near(hwm_plane_camera_launch(from,left,w,h,(HWMPlaneCameraVelocity){2000,0,0},d),0);
+    /* Perpendicular motion carries nothing along the new path. */
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){0,3000,0},d),0);
+    /* A violent fling is capped below the spring's frequency. */
+    double cap=.8*hstrip_spring_omega(d,1);
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){1e7,0,0},d),cap);
+    /* Zoom motion counts toward a zoom-only transition. */
+    HWMPlaneCamera out={-300,-225,.5};
+    HWMPlaneCameraVelocity zooming=hwm_plane_camera_velocity(from,out,w,h,.3,3);
+    assert(zooming.zoom<0);
+    double launch=hwm_plane_camera_launch(hwm_plane_camera_mix(from,out,w,h,.3),out,w,h,zooming,d);
+    assert(launch>0 && launch<=cap);
+    /* Invalid input starts from rest. */
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){NAN,0,0},d),0);
+    near(hwm_plane_camera_launch((HWMPlaneCamera){0,0,0},right,w,h,(HWMPlaneCameraVelocity){1,0,0},d),0);
+    near(hwm_plane_camera_launch(from,right,w,h,(HWMPlaneCameraVelocity){1,0,0},0),0);
+    near(hwm_plane_camera_launch(from,from,w,h,(HWMPlaneCameraVelocity){1000,0,0},d),0);
+    /* Progress is monotonic, ends exactly at 1, and starts at the launch rate. */
+    double rate;
+    near(hwm_plane_camera_progress(0,d,cap,&rate),0); near(rate,cap);
+    near(hwm_plane_camera_progress(d,d,cap,&rate),1);
+    near(hwm_plane_camera_progress(NAN,d,cap,NULL),0);
+    for(int l=0;l<3;l++) {
+        double launch_rate=(double[]){0,2,cap}[l],previous=0;
+        for(double t=.001;t<d;t+=.001) {
+            double p=hwm_plane_camera_progress(t,d,launch_rate,&rate);
+            assert(p>=previous && p<=1 && rate>=-1e-9); previous=p;
+        }
+        assert(previous>.999);
+    }
+    /* Without a launch it matches the original ease. */
+    for(double t=0;t<=d;t+=.01) near(hwm_plane_camera_progress(t,d,0,NULL),hstrip_spring_progress(t,d));
+    /* A transition's velocity matches its finite difference, and continuing
+     * it into the same target keeps the speed it had. */
+    HWMPlaneCameraVelocity v=hwm_plane_camera_velocity(from,right,w,h,.5,2);
+    assert(fabs(v.x-2000)<1e-3 && fabs(v.y)<1e-9 && fabs(v.zoom)<1e-9);
+    HWMPlaneCamera mid=hwm_plane_camera_mix(from,right,w,h,.5);
+    assert(fabs(hwm_plane_camera_launch(mid,right,w,h,v,d)-4)<1e-3);
+    v=hwm_plane_camera_velocity(from,right,w,h,1,2); near(v.x,0);
+    v=hwm_plane_camera_velocity(from,right,w,h,.5,0); near(v.x,0);
+}
+
+/* A pinch resting just short of 100% finishes about the pinch point. */
+static void test_zoom_detent(void)
+{
+    HWMPlaneCamera camera={100,50,.95},out={0,0,0};
+    HWMPlanePoint anchor={600,300};
+    assert(hwm_plane_zoom_detent(camera,anchor,true,&out));
+    near(out.scale,1);
+    /* The plane point under the anchor stays under it. */
+    assert(fabs((camera.x+anchor.x/camera.scale)-(out.x+anchor.x))<=.5);
+    assert(fabs((camera.y+anchor.y/camera.scale)-(out.y+anchor.y))<=.5);
+    near(out.x,round(out.x)); near(out.y,round(out.y));
+    near(hwm_plane_zoom_detent((HWMPlaneCamera){0,0,HWM_PLANE_ZOOM_DETENT},anchor,true,&out),1);
+    /* Zooming out, below the detent, already at 100%, or invalid: no snap. */
+    assert(!hwm_plane_zoom_detent(camera,anchor,false,&out));
+    assert(!hwm_plane_zoom_detent((HWMPlaneCamera){0,0,.85},anchor,true,&out));
+    assert(!hwm_plane_zoom_detent((HWMPlaneCamera){0,0,1},anchor,true,&out));
+    assert(!hwm_plane_zoom_detent((HWMPlaneCamera){0,0,NAN},anchor,true,&out));
+    assert(!hwm_plane_zoom_detent(camera,(HWMPlanePoint){INFINITY,0},true,&out));
+    assert(!hwm_plane_zoom_detent(camera,anchor,true,NULL));
+}
+
 int main(void)
 {
     const double requested_zooms[]={.000001,.001,.1,.25,.5,1,1.001,2,4,DBL_MAX};
@@ -196,8 +331,24 @@ int main(void)
     HWMPlaneCamera from={-600,300,.2},to={200,-90,1};
     HWMPlaneCamera middle=hwm_plane_camera_mix(from,to,1200,900,.5);
     near(middle.scale,sqrt(.2));
-    near(middle.x+1200/(2*middle.scale),((from.x+3000)+(to.x+600))*.5);
-    near(middle.y+900/(2*middle.scale),((from.y+2250)+(to.y+450))*.5);
+    double mix=(1/sqrt(.2)-5)/(1-5);
+    near(middle.x+1200/(2*middle.scale),(from.x+3000)+((to.x+600)-(from.x+3000))*mix);
+    near(middle.y+900/(2*middle.scale),(from.y+2250)+((to.y+450)-(from.y+2250))*mix);
+    /* The point shown at the same screen place at both ends never moves. */
+    double fixed_x=(from.x*from.scale-to.x*to.scale)/(from.scale-to.scale);
+    for(double t=.1;t<1;t+=.1) {
+        HWMPlaneCamera c=hwm_plane_camera_mix(from,to,1200,900,t);
+        near((fixed_x-c.x)*c.scale,(fixed_x-from.x)*from.scale);
+    }
+    /* Pure translation is still linear in progress. */
+    HWMPlaneCamera pan=hwm_plane_camera_mix((HWMPlaneCamera){0,0,1},(HWMPlaneCamera){100,-40,1},1200,900,.25);
+    near(pan.x,25); near(pan.y,-10); near(pan.scale,1);
+    double hop=hwm_plane_camera_duration((HWMPlaneCamera){0,0,1},(HWMPlaneCamera){40,0,1},1200,900);
+    double trip=hwm_plane_camera_duration((HWMPlaneCamera){0,0,1},(HWMPlaneCamera){4000,0,1},1200,900);
+    double zoom=hwm_plane_camera_duration(from,to,1200,900);
+    assert(hop>=.22 && hop<.26 && trip>hop && trip<=.42 && zoom>hop && zoom<=.42);
+    near(hwm_plane_camera_duration((HWMPlaneCamera){0,0,0},to,1200,900),.36);
+    test_auto_center();
     HWMPlaneCamera start=hwm_plane_camera_mix(from,to,1200,900,0),end=hwm_plane_camera_mix(from,to,1200,900,1);
     near(start.x,from.x); near(start.scale,from.scale); near(end.y,to.y); near(end.scale,1);
     HWMPlaneCamera invalid_from={0,0,0};
@@ -208,9 +359,12 @@ int main(void)
     fallback=hwm_plane_camera_mix(from,to,1200,900,NAN);
     near(fallback.x,from.x); near(fallback.y,from.y); near(fallback.scale,from.scale);
     test_edge_pan_hold();
+    test_camera_launch();
+    test_zoom_detent();
     test_multi_neighbor_snap();
     test_snap_can_escape_existing_overlap_and_keeps_edge();
-    test_snap_has_radial_bound();
+    test_snap_has_axis_bound();
+    test_snap_hold_and_seams();
     test_simultaneous_multi_neighbor_snap();
     HWMPlaneCamera camera={0,0,1};
     camera=hwm_plane_camera_pan(camera,-900,640);
@@ -276,6 +430,21 @@ int main(void)
         nudged=hwm_plane_magnetic_camera(end,end,(HWMPlanePoint){0,0});
         near(nudged.x,end.x); // Touching and lifting cannot ratchet the camera.
     }
+    HWMPlaneHoverIntent intention={0};
+    HWMPlaneRect near_window={360,200,400,300}, far_window={760,200,400,300};
+    HWMPlaneRect hover_view={0,0,1000,700};
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){425,350},near_window,hover_view,1));
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){425,350},near_window,hover_view,2)); // Dwell alone.
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){432,350},near_window,hover_view,2.01));
+    assert(hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){452,350},near_window,hover_view,2.02));
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){480,350},near_window,hover_view,2.2)); // Once per entry.
+    assert(!hwm_plane_hover_intent(&intention,2,(HWMPlanePoint){825,350},far_window,hover_view,3));
+    assert(!hwm_plane_hover_intent(&intention,2,(HWMPlanePoint){855,350},far_window,hover_view,3.2)); // Distant windows.
+    intention=(HWMPlaneHoverIntent){0};
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){480,350},near_window,hover_view,4));
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){452,350},near_window,hover_view,4.2)); // Moving away.
+    assert(!hwm_plane_hover_intent(&intention,1,(HWMPlanePoint){600,350},near_window,hover_view,4.21)); // Fast pass-through.
+    assert(!hwm_plane_hover_intent(&intention,3,(HWMPlanePoint){452,350},near_window,hover_view,5)); // New target resets intent.
     puts("plane geometry tests passed");
     return 0;
 }

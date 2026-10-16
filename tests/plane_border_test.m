@@ -76,6 +76,10 @@ static CGError SLSOrderWindow(int connection,uint32_t id,int mode,uint32_t relat
 static CGError SLSSetMouseEventEnableFlags(int connection,uint32_t id,bool enabled)
 { (void)connection; (void)id; (void)enabled; return kCGErrorSuccess; }
 
+static bool test_moving;
+static double hwm_zoom_pinch_time=-1;
+static bool hwm_view_in_motion(struct view *view,double now) { (void)view; (void)now; return test_moving; }
+
 #include "../src/plane_border.m"
 
 /* The old direct clear/gradient renderer is the visual reference. Compare
@@ -194,6 +198,25 @@ int main(void)
     hwm_plane_border_tick(&view,1);
     assert(transform_calls==13 && hwm_plane_border_visible && hwm_plane_border_frame.origin.x==498);
     verify_border_pixels(&view);
+
+    /* Zooming changes the screen-space padding's share of the canvas on
+     * nearly every frame. In motion, the cached outline is only transformed;
+     * the reshape and redraw happen once the camera rests. */
+    feedback=CGRectMake(100,100,400,300); hwm_plane_border_tick(&view,1);
+    int shapes=shape_calls,transforms=transform_calls;
+    CGSize rested=hwm_plane_border_canvas;
+    test_moving=true;
+    for(int i=1;i<=6;i++) {
+        hwm_plane_scale=.5-.02*i; feedback.size=CGSizeMake(800*hwm_plane_scale,600*hwm_plane_scale);
+        assert(hwm_plane_border_tick(&view,1)); // A crisp redraw is still owed.
+        assert(shape_calls==shapes && CGSizeEqualToSize(hwm_plane_border_canvas,rested));
+        assert(transform_calls==transforms+i && hwm_plane_border_visible);
+    }
+    test_moving=false;
+    assert(!hwm_plane_border_tick(&view,1));
+    assert(shape_calls==shapes+1 && !CGSizeEqualToSize(hwm_plane_border_canvas,rested));
+    assert(!hwm_plane_border_tick(&view,1) && shape_calls==shapes+1);
+    hwm_plane_scale=.5;
     CGContextRelease(hwm_plane_border_context); hwm_plane_border_context=NULL;
     return 0;
 }

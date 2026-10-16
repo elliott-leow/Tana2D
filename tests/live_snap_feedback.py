@@ -36,11 +36,13 @@ def settled(wid):
 def pointer(phase,point): strip('fixture-pointer',moving,0,phase,*point)
 def preview_matches(p):
     assert p['snapActive'] and p['snapPreviewVisible'] and p['snapNeighbor']==peer,p
-    m=metrics(p['snapPreviewWindow'])
-    near(m['public_display_x'],round(viewport['x']+(p['snapX']-p['cameraX'])*p['cameraScale']))
-    near(m['public_display_y'],round(viewport['y']+(p['snapY']-p['cameraY'])*p['cameraScale']))
-    near(m['public_display_width'],round(p['worldWidth']*p['cameraScale']))
-    near(m['public_display_height'],round(p['worldHeight']*p['cameraScale']))
+    m=metrics(p['snapPreviewWindow']);margin=p['snapPreviewMargin']
+    # The seam surface extends into the gutter on every side of the landing.
+    assert p['snapSeams']>=1,p
+    near(m['public_display_x'],round(viewport['x']+(p['snapX']-p['cameraX'])*p['cameraScale'])-margin)
+    near(m['public_display_y'],round(viewport['y']+(p['snapY']-p['cameraY'])*p['cameraScale'])-margin)
+    near(m['public_display_width'],round(p['worldWidth']*p['cameraScale'])+2*margin)
+    near(m['public_display_height'],round(p['worldHeight']*p['cameraScale'])+2*margin)
 
 initial=state()
 windows=json.loads(command('query','--windows'))

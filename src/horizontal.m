@@ -123,12 +123,31 @@ static bool hwm_plane_y_scrolling;
 #include "plane_gesture.h"
 static HWMPlaneGesture hwm_plane_gesture;
 static HWMPlaneCamera hwm_plane_pan_origin;
+static HWMPlaneVelocity hwm_plane_pan_velocity;
 static HWMPlaneSelectionGesture hwm_selection_gesture;
 static double hwm_plane_scale=1;
 static bool hwm_camera_animating;
 static HWMPlaneCamera hwm_camera_from,hwm_camera_target;
-static double hwm_camera_start,hwm_camera_width,hwm_camera_height;
+static double hwm_camera_start,hwm_camera_width,hwm_camera_height,hwm_camera_duration=.36;
+// Progress per second the current transition started with (see hwm_plane_camera_launch).
+static double hwm_camera_launch,hwm_camera_rate;
 static _Atomic bool hwm_plane_selecting;
+/* Browsing owns input; live app windows are always native and unscaled. */
+#define HWM_NATIVE_ZOOM 1
+static bool hwm_zoom_workspace;
+static uint32_t hwm_zoom_buttons;
+static bool hwm_zoom_render_native(struct view *view,double now);
+static void hwm_zoom_hover_tick(void);
+static bool hwm_zoom_rest_focus_armed;
+static double hwm_zoom_pinch_time=-1; // Last pinch sample; hover waits for the zoom to rest.
+// The last pinch moved toward 100% at hwm_zoom_detent_point; see hwm_plane_zoom_detent.
+static bool hwm_zoom_detent_armed;
+static CGPoint hwm_zoom_detent_point;
+static void hwm_zoom_rest_focus(struct view *view);
+static void hwm_zoom_cancel_native(void);
+static bool hwm_zoom_native_busy(uint32_t wid);
+static bool hwm_zoom_wait_native(uint32_t wid);
+static bool hwm_zoom_size_restoring(uint32_t wid);
 static bool hwm_plane_select_click;
 static bool hwm_plane_pick_automatic;
 static uint32_t hwm_plane_pick_window;
@@ -137,13 +156,15 @@ static void hwm_plane_pointer(CGEventType type,CGPoint point);
 static void hwm_plane_pointer_finish(bool choose);
 static void hwm_plane_transition_to(struct view *view,double x,double y,double scale,bool animate);
 static bool hwm_plane_fit_active;
-static bool hwm_magnetic_centering=true;
+static bool hwm_magnetic_centering=false;
+static bool hwm_auto_center=true,hwm_pan_momentum=true;
+static double hwm_auto_center_radius=120;
 static void hwm_plane_set_camera(struct view *view,double x,double y,bool animate);
 static void hwm_plane_fit_all(struct view *view);
 static void hwm_plane_fit_focused(struct view *view);
 static void hwm_plane_actual_size(struct view *view);
 static void hwm_plane_arrange_grid(struct view *view);
-static void hwm_plane_zoom_at_pointer(struct view *view,double scale);
+static void hwm_plane_zoom_at_pointer(struct view *view,double scale,CGPoint pointer);
 static void hwm_feedback_navigation(bool wall);
 static void hwm_feedback_focus(struct window *previous,struct window *next);
 static void hwm_feedback_tick(struct view *view,double now);
@@ -301,6 +322,7 @@ static void hwm_place_unplaced(struct view *view);
 static void hwm_action(int action);
 static bool hwm_feedback_animating(double now);
 static void hwm_focus_any(struct window *w);
+static struct window *hwm_action_window(void);
 static void hwm_arrangement_window_opened(void);
 
 enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PLANE_PICK, HWM_PLANE_RESIZE, HWM_PLANE_INTERRUPT, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
@@ -380,18 +402,18 @@ static double hwm_clamp_offset(double offset)
 static void hwm_plane_camera_sample(struct view *view,double now)
 {
     if(!view || !hwm_camera_animating) return;
-    double duration=.36*fmax(0,hwm_motion_scale);
+    double duration=hwm_camera_duration*fmax(0,hwm_motion_scale);
     double elapsed=fmax(0,now-hwm_camera_start);
-    double progress=duration<=0 || elapsed>=duration ? 1 : hstrip_spring_progress(elapsed,duration);
+    double progress=duration<=0 ? 1 : hwm_plane_camera_progress(elapsed,duration,hwm_camera_launch,&hwm_camera_rate);
     HWMPlaneCamera camera=hwm_plane_camera_mix(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height,progress);
     view->strip_offset=camera.x; hwm_plane_y=camera.y; hwm_plane_scale=hwm_plane_zoom_clamp(camera.scale);
     hwm_plane_fit_active=fabs(camera.scale-1)>.001;
-    if(progress>=1) hwm_camera_animating=false;
+    if(progress>=1) { hwm_camera_animating=false; hwm_camera_rate=0; }
 }
 static void hwm_plane_camera_stop(struct view *view,double now)
 {
     if(!hwm_camera_animating) return;
-    hwm_plane_camera_sample(view,now); hwm_camera_animating=false;
+    hwm_plane_camera_sample(view,now); hwm_camera_animating=false; hwm_camera_rate=0;
     view->strip_target_offset=view->strip_offset; hwm_plane_y_target=hwm_plane_y;
     hwm_scroll_current_velocity=0; hwm_plane_y_current_velocity=0;
 }
@@ -424,6 +446,8 @@ static void hwm_scroll(struct view *view, double target, bool animate)
     hwm_scroll_initial_velocity=hwm_release_velocity?release:hwm_scroll_current_velocity;
     hwm_release_velocity=false;
     hwm_feedback_navigation(target<0 || target>hwm_max_offset());
+    // A placement aimed at the old camera must not land during the new motion.
+    if(fabs(hwm_clamp_offset(target)-view->strip_target_offset)>.25) hwm_zoom_cancel_native();
     view->strip_target_offset = hwm_clamp_offset(target);
     view->strip_scroll_start = now;
     view->strip_scrolling = animate && fabs(view->strip_target_offset-view->strip_from_offset) > .25;
@@ -451,6 +475,7 @@ static void hwm_plane_set_camera(struct view *view,double x,double y,bool animat
     if(!view || !isfinite(x) || !isfinite(y) || (hwm_plane_pointer_owned() && !hwm_drag_camera_owned)) return;
     double now=hwm_clock();
     hwm_scroll(view,x,animate);
+    if(fabs(y-hwm_plane_y_target)>.25) hwm_zoom_cancel_native();
     hwm_plane_y_from=hwm_plane_camera_y(now); hwm_plane_y_target=y;
     hwm_plane_y_initial_velocity=animate ? hwm_plane_y_current_velocity : 0;
     hwm_plane_y_start=now;
@@ -463,12 +488,29 @@ static void hwm_plane_transition_to(struct view *view,double x,double y,double s
 {
     if(!view || hwm_plane_pointer_owned() || !isfinite(x) || !isfinite(y) || !isfinite(scale) || scale<=0) return;
     scale=hwm_plane_zoom_clamp(scale);
+    hwm_zoom_workspace=scale<1; hwm_zoom_detent_armed=false;
     double now=hwm_clock();
     double current_x=hwm_offset(view,now),current_y=hwm_plane_camera_y(now);
+    /* Whatever the camera is doing now (a transition, a glide, a settle)
+     * carries into this one, so a retarget bends the path instead of
+     * stopping dead and restarting. Sampled after hwm_offset above. */
+    HWMPlaneCameraVelocity moving={0,0,0};
+    if(hwm_camera_animating)
+        moving=hwm_plane_camera_velocity(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height,
+            hwm_plane_camera_progress(now-hwm_camera_start,hwm_camera_duration*fmax(0,hwm_motion_scale),hwm_camera_launch,NULL),hwm_camera_rate);
+    else {
+        if(view->strip_scrolling) moving.x=hwm_scroll_current_velocity;
+        if(hwm_plane_y_scrolling) moving.y=hwm_plane_y_current_velocity;
+    }
     hwm_camera_from=(HWMPlaneCamera){current_x,current_y,hwm_plane_scale};
     hwm_camera_target=(HWMPlaneCamera){x,y,scale};
+    hwm_zoom_cancel_native();
     CGRect bounds=hwm_bounds(view);
     hwm_camera_width=bounds.size.width; hwm_camera_height=bounds.size.height;
+    hwm_camera_duration=hwm_plane_camera_duration(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height);
+    hwm_camera_launch=hwm_plane_camera_launch(hwm_camera_from,hwm_camera_target,hwm_camera_width,hwm_camera_height,
+                                              moving,hwm_camera_duration*fmax(0,hwm_motion_scale));
+    hwm_camera_rate=hwm_camera_launch;
     hwm_camera_start=now;
     view->strip_scrolling=false; hwm_plane_y_scrolling=false;
     hwm_scroll_initial_velocity=hwm_scroll_current_velocity=0;
@@ -480,6 +522,29 @@ static void hwm_plane_transition_to(struct view *view,double x,double y,double s
         hwm_plane_fit_active=fabs(scale-1)>.001;
     }
     hwm_state_pending=true; hwm_wake();
+}
+
+static bool hwm_plane_displayed_frame(uint32_t wid,CGRect *out);
+static void hwm_zoom_native_press(struct view *view,struct window *w)
+{
+    if(!view || !w || hwm_plane_scale!=1 ||
+       (!w->strip_plane_scaled && !hwm_camera_animating && !view->strip_scrolling && !hwm_plane_y_scrolling && !hwm_zoom_native_busy(w->id))) return;
+    // Freeze at the native frame actually grabbed, rather than a camera
+    // sample whose AX placements have not painted yet. Otherwise the first
+    // drag incorrectly counts the remaining camera travel as user movement.
+    CGRect frame=g_mouse_state.window_frame,bounds=hwm_bounds(view);
+    if(CGRectIsNull(frame) || frame.size.width<=0)return;
+    hwm_zoom_cancel_native();
+    (void)hwm_zoom_wait_native(w->id);
+    if(SLSGetWindowBounds(g_connection,w->id,&frame)==kCGErrorSuccess)g_mouse_state.window_frame=frame;
+    CGRect shown=frame;
+    if(w->strip_plane_scaled && !hwm_plane_displayed_frame(w->id,&shown))shown=w->strip_last_frame;
+    double x=w->strip_world_x-(shown.origin.x-bounds.origin.x);
+    double y=w->strip_world_y-(shown.origin.y-bounds.origin.y);
+    hwm_plane_set_camera(view,x,y,false);
+    hwm_plane_selecting=false;hwm_zoom_workspace=false;
+    w->frame=frame;w->strip_last_frame=shown;w->strip_last_plane_scale=1;
+    w->strip_last_offset=x;w->strip_last_camera_y=y;
 }
 
 static HWMPlaneRect hwm_plane_bounds(struct view *view,bool focused_only)
@@ -499,39 +564,51 @@ static HWMPlaneRect hwm_plane_bounds(struct view *view,bool focused_only)
 
 static void hwm_plane_fit(struct view *view,bool focused)
 {
-    if(!view) return;
+    if(!view || hwm_plane_pointer_owned() || g_mouse_state.window) return;
     CGRect bounds=hwm_bounds(view); HWMPlaneRect world=hwm_plane_bounds(view,focused);
     if(world.width<=0 || world.height<=0) return;
     HWMPlaneCamera camera=hwm_plane_camera_fit(world,(HWMPlaneRect){0,0,bounds.size.width,bounds.size.height},36);
     hwm_plane_transition_to(view,camera.x,camera.y,camera.scale,true);
+    hwm_zoom_workspace=true;
 }
 static void hwm_plane_fit_all(struct view *view) { hwm_plane_fit(view,false); }
-static void hwm_plane_fit_focused(struct view *view) { hwm_plane_fit(view,true); }
+static void hwm_plane_fit_focused(struct view *view) { hwm_plane_actual_size(view); }
 static void hwm_plane_actual_size(struct view *view)
 {
-    if(!view || hwm_plane_pointer_owned()) return;
-    double now=hwm_now(); hwm_plane_camera_stop(view,now);
-    double old=hwm_plane_scale;
-    /* Keep the viewport centre on the same world point as scale returns. */
+    if(!view || hwm_plane_pointer_owned() || g_mouse_state.window) return;
+    // Sample rather than stop: a transition in flight hands its motion on.
+    double now=hwm_clock(); hwm_plane_camera_sample(view,now);
     CGRect bounds=hwm_bounds(view);
-    double cx=view->strip_offset+bounds.size.width/(2*fmax(1e-12,old));
-    double cy=hwm_plane_camera_y(now)+bounds.size.height/(2*fmax(1e-12,old));
-    hwm_plane_transition_to(view,cx-bounds.size.width*.5,cy-bounds.size.height*.5,1,true);
+    struct window *w=hwm_action_window();
+    double x=w ? w->strip_world_x+(w->strip_width-bounds.size.width)*.5 : view->strip_offset;
+    double y=w ? w->strip_world_y-fmax(0,(bounds.size.height-w->strip_height)*.5) : hwm_plane_camera_y(now);
+    hwm_zoom_cancel_native();
+    hwm_plane_transition_to(view,x,y,1,true);
 }
-static void hwm_plane_zoom_at_pointer(struct view *view,double scale)
+/* pointer is where the pinch happened: the event's own location. A location
+ * off the screen (some forwarded gestures carry none) falls back to asking
+ * WindowServer, which costs a round trip on every pinch sample. */
+static void hwm_plane_zoom_at_pointer(struct view *view,double scale,CGPoint pointer)
 {
-    if(!view || hwm_plane_pointer_owned() || !isfinite(scale)) return;
-    scale=hwm_plane_zoom_clamp(fmax(HWM_PLANE_MIN_SCALE,scale));
+    if(!view || hwm_plane_pointer_owned() || g_mouse_state.window || !isfinite(scale)) return;
+    scale=hwm_plane_zoom_clamp(fmax(HWM_PLANE_MIN_SCALE,fmin(1,scale)));
     if(scale==hwm_plane_scale) return;
+    /* Zoom stays anchored at the pointer all the way to 100%. Jumping to the
+     * focused window at the end of a pinch read as a stutter. */
+    hwm_zoom_workspace=scale<1;
     hwm_plane_camera_stop(view,hwm_now());
     CGRect bounds=hwm_bounds(view); CGPoint point=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
     CGPoint cursor;
-    if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && CGRectContainsPoint(bounds,cursor)) point=cursor;
+    if(CGRectContainsPoint(bounds,pointer)) point=pointer;
+    else if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && CGRectContainsPoint(bounds,cursor)) point=cursor;
     double old=hwm_plane_scale;
     double wx=view->strip_target_offset+(point.x-bounds.origin.x)/old;
     double wy=hwm_plane_y_target+(point.y-bounds.origin.y)/old;
     hwm_plane_scale=scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001;
-    hwm_plane_set_camera(view,wx-(point.x-bounds.origin.x)/hwm_plane_scale,wy-(point.y-bounds.origin.y)/hwm_plane_scale,false);
+    double x=wx-(point.x-bounds.origin.x)/hwm_plane_scale,y=wy-(point.y-bounds.origin.y)/hwm_plane_scale;
+    // Native frames are placed on whole points at 100%.
+    if(scale==1) { x=round(x); y=round(y); }
+    hwm_plane_set_camera(view,x,y,false);
 }
 
 #include "strip_ax_async.m"
@@ -575,11 +652,13 @@ static bool horizontal_flush_node(struct window_node *node)
 
 static uint32_t hwm_edge_window;
 #include "strip_feedback.m"
+static bool hwm_view_in_motion(struct view *view,double now);
 #include "plane_border.m"
 #include "strip_interaction.m"
 #include "strip_visibility.m"
 #include "strip_renderer.m"
 #include "window_transitions.m"
+#include "native_zoom.m"
 #include "plane_resize.m"
 static bool hwm_plane_pointer_owned(void) { return hwm_drag_window || hwm_edge_window || hwm_resize_owned; }
 #include "plane_pick_event.m"
@@ -613,11 +692,20 @@ static void hwm_plane_clear_legacy_pointer(struct window *window)
     hwm_mouse_pointer_button=-1;
 }
 #include "plane_interaction_lifecycle.m"
+/* Collect the reply to the last frame handed to the helper, so every handler
+ * still starts with all earlier presentation applied. It has almost always
+ * arrived by now; the frame itself no longer waits for it. */
+static void horizontal_event_settle(void)
+{
+    if(!scripting_addition_settle()) hwm_batch_failed();
+}
+static int hwm_backend_misses;
 static void horizontal_tick(void)
 {
     __atomic_store_n(&hwm_tick_pending, false, __ATOMIC_RELEASE);
     if (hwm_stop_requested) { hwm_shutdown(); return; }
-    hwm_plane_controls_update(hwm_ready && !hwm_paused && !hwm_suspended && !space_is_fullscreen(space_manager_active_space()),hwm_plane_scale);
+    // The camera panel is no longer shown; zoom is driven by gestures and shortcuts.
+    hwm_plane_controls_update(false,hwm_plane_scale);
     if(hwm_resize_owned && (hwm_paused || hwm_suspended || hwm_overview_active)) hwm_plane_resize_tick(hwm_view(),hwm_now());
     if (!hwm_ready || hwm_paused || hwm_suspended || mission_control_is_active()) return;
     double start = hwm_now(), latency = hwm_tick_note(start);
@@ -632,10 +720,14 @@ static void horizontal_tick(void)
     }
     hwm_drawn_time=start;
     if (!hwm_backend_ok) {
-        if (start-hwm_last_backend_retry < 2) return;
+        // A failed command is usually one slow reply, not a lost helper: ask
+        // again at once and carry on if it answers. Only a helper that keeps
+        // not answering is reloaded.
+        if (hwm_backend_misses && start-hwm_last_backend_retry < .5) return;
         hwm_last_backend_retry = start;
         hwm_backend_ok = tana_backend_ready();
-        if (!hwm_backend_ok) { hwm_helper_reload(); return; }
+        if (!hwm_backend_ok) { if (++hwm_backend_misses >= 3) hwm_helper_reload(); return; }
+        hwm_backend_misses = 0;
         if(hwm_helper_attempts) { hwm_helper_attempts=0; hwm_hud(@"Window helper reconnected"); }
         hwm_layout(view, false);
     }
@@ -657,6 +749,17 @@ static void horizontal_tick(void)
             hwm_focus_follow_to(view,view->strip_target_offset);
         }
     }
+    // A pinch toward 100% that rests just short of it finishes the zoom.
+    if(hwm_zoom_detent_armed && start-hwm_zoom_pinch_time>=.15) {
+        hwm_zoom_detent_armed=false;
+        HWMPlaneCamera camera={view->strip_offset,hwm_plane_y,hwm_plane_scale},next;
+        CGRect bounds=hwm_bounds(view); CGPoint p=hwm_zoom_detent_point;
+        if(!CGRectContainsPoint(bounds,p)) p=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
+        if(!hwm_camera_animating && !view->strip_scrolling && !hwm_plane_y_scrolling && !g_mouse_state.window &&
+           !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) &&
+           hwm_plane_zoom_detent(camera,(HWMPlanePoint){p.x-bounds.origin.x,p.y-bounds.origin.y},true,&next))
+            hwm_plane_transition_to(view,next.x,next.y,next.scale,true);
+    }
     // Content can shrink under a parked camera; glide back inside the strip.
     if(!view->strip_scrolling && !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) &&
        (view->strip_offset>hwm_max_offset()+.5 || hwm_rubber)) hwm_scroll(view,fmin(view->strip_offset,hwm_max_offset()),true);
@@ -674,16 +777,15 @@ static void horizontal_tick(void)
     bool active = hwm_render(view, frame) || edge!=NULL || hwm_drag_window!=0;
     mark=hwm_prof_mark(HWM_PROF_RENDER,mark);
     active |= hwm_render_shelf_floats(view,frame);
-    active |= hwm_render_floating(frame);
-    active |= hwm_render_closing(frame);
-    active |= hwm_render_pops(frame);
+    active |= hwm_render_transitions(frame);
     mark=hwm_prof_mark(HWM_PROF_EXTRAS,mark);
     active |= hwm_preview_render(frame);
-    hwm_plane_border_tick(view,frame);
+    active |= hwm_plane_border_tick(view,frame);
     hwm_plane_resize_publish(view);
     hwm_batch_release();
+    hwm_zoom_hover_tick();
     mark=hwm_prof_mark(HWM_PROF_PREVIEW,mark);
-    active |= hwm_nav_pending || hwm_settle_pending;
+    active |= hwm_nav_pending || hwm_settle_pending || hwm_zoom_detent_armed;
     if(hwm_close_source && start-hwm_close_time>1.0) { hwm_close_source=0; hwm_close_target=0; }
     if (hwm_close_target && !hwm_close_source && start-hwm_close_time>.04) {
         if(hwm_plane_pointer_owned()) {
@@ -758,12 +860,9 @@ static void horizontal_cancel_automatic_focus(void)
 }
 static bool horizontal_hover_allowed(CGPoint point)
 {
-    // Plane selection keeps the live windows visible. Hover may focus them
-    // without raising or moving the camera; only a click chooses and zooms in.
-    if (hwm_overview_active) return false;
+    if (hwm_overview_active || hwm_plane_selecting) return false;
     if (!hwm_ready || !hwm_focus_guard) return true;
-    if (hwm_now()-hwm_focus_guard_time<.35) return false;
-    if (hypot(point.x-hwm_focus_guard_point.x,point.y-hwm_focus_guard_point.y)<6) return false;
+    if (hypot(point.x-hwm_focus_guard_point.x,point.y-hwm_focus_guard_point.y)<.01) return false;
     hwm_focus_guard=false; return true;
 }
 static void horizontal_hover_received(struct window *window)
@@ -781,9 +880,13 @@ static void horizontal_activated(struct application *application)
 static void horizontal_focused(struct window *window, struct view *view)
 {
     if (!hwm_ready || hwm_paused || hwm_overview_active) return;
+#ifdef HWM_TEST_FIXTURE_ONLY
+    if(!window_manager_is_window_eligible(window)) return;
+#endif
     hwm_workflow_note_explicit_focus(window,view);
     hwm_hold_focus();
-    scripting_addition_set_layer(window->id,window_check_flag(window,WINDOW_FLOAT)?LAYER_ABOVE:LAYER_BELOW);
+    int layer=window->layer==LAYER_AUTO ? (window_check_flag(window,WINDOW_FLOAT)?LAYER_ABOVE:LAYER_BELOW) : window->layer;
+    scripting_addition_set_layer(window->id,layer);
     // Focus that lands on another strip (the Dock, Command-Tab, a mark) brings that strip into view.
     if (!hwm_plane_pointer_owned() && hwm_shelf_of(window)!=hwm_shelf && ((view && view->layout==VIEW_STRIP && view_find_window_node(view,window->id)) || window->strip_float_homed)) {
         hwm_shelf_go(hwm_shelf_of(window),false);
@@ -793,8 +896,10 @@ static void horizontal_focused(struct window *window, struct view *view)
     // Keyboard navigation has already aimed the camera at its cursor. Focus
     // reports for windows it passed on the way must not pull the camera back.
     if (hwm_nav_window && hwm_now()-hwm_nav_time<.6) return;
+    // A camera transition already in flight was asked for explicitly. Revealing
+    // from here would stop it, freezing a zoom part-way at a fractional scale.
     if ((window->id==hwm_preserve_focus_window && hwm_now()<hwm_preserve_focus_until) || !view || view->layout!=VIEW_STRIP || hwm_close_target || hwm_plane_pointer_owned() ||
-        __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) || hwm_now()-hwm_last_input<.15) return;
+        hwm_camera_animating || __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) || hwm_now()-hwm_last_input<.15) return;
     CGRect bounds=hwm_bounds(view); HWMPlaneCamera current={view->strip_target_offset,hwm_plane_camera_y(hwm_now()),hwm_plane_scale}, next;
     HWMPlaneRect world={window->strip_world_x,window->strip_world_y,window->strip_width,window->strip_height};
     if(hwm_plane_reveal(current,world,(HWMPlaneRect){0,0,bounds.size.width,bounds.size.height},&next))
@@ -1027,11 +1132,11 @@ static void hwm_action(int action)
 {
     if(action==HWM_CANCEL_DRAG) { hwm_cancel_drag(); return; }
     if(action==HWM_OVERVIEW) {
-        if(hwm_overview_active) horizontal_overview_select(0,0);
-        else hwm_overview_begin(true);
+        if(hwm_zoom_workspace) hwm_plane_actual_size(hwm_view());
+        else hwm_plane_fit_all(hwm_view());
         return;
     }
-    if(action==HWM_OVERVIEW_CANCEL) { horizontal_overview_select(0,0); return; }
+    if(action==HWM_OVERVIEW_CANCEL) { hwm_plane_actual_size(hwm_view()); return; }
     if (action==HWM_TERMINAL || action==HWM_BROWSER) {
         hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -na Ghostty")
                                        : (hwm_browser_command ?: @"open -b org.mozilla.firefox"));
@@ -1189,11 +1294,30 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         int code = (int)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);
         if (code >= 0 && code < 128 && hwm_keys[code]) { hwm_keys[code] = false; return true; }
     }
+    if(type==kCGEventRightMouseUp || type==kCGEventOtherMouseUp || type==kCGEventRightMouseDragged || type==kCGEventOtherMouseDragged) {
+        unsigned button=(unsigned)CGEventGetIntegerValueField(event,kCGMouseEventButtonNumber);
+        if(button<32 && (hwm_zoom_buttons&(1u<<button))) {
+            if(type==kCGEventRightMouseUp || type==kCGEventOtherMouseUp) hwm_zoom_buttons&=~(1u<<button);
+            return true;
+        }
+    }
     if (hwm_paused) return false;
+    if(!hwm_plane_select_click && [NSRunLoop.currentRunLoop.currentMode isEqualToString:NSEventTrackingRunLoopMode]) return false;
+    if(hwm_plane_selecting && !hwm_plane_select_click &&
+       (type==kCGEventLeftMouseDown || type==kCGEventLeftMouseUp || type==kCGEventRightMouseDown || type==kCGEventRightMouseUp || type==kCGEventScrollWheel) &&
+       !hwm_zoom_workspace_contains(CGEventGetLocation(event))) return false;
+    if(hwm_plane_controls_hit(CGEventGetLocation(event)) && !hwm_plane_select_click &&
+       (type==kCGEventLeftMouseDown || type==kCGEventLeftMouseUp || type==kCGEventMouseMoved)) return false;
     if(hwm_plane_pick_event(type,event)) { hwm_plane_interaction_tap_note_plane_event(type); return true; }
     if(hwm_plane_resize_event(type,event)) { hwm_plane_interaction_tap_note_plane_event(type); return true; }
-    if(hwm_plane_selecting && type==kCGEventKeyDown && CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==53) {
-        hwm_plane_selecting=false; hwm_keys[53]=true; return true;
+    if(type==kCGEventKeyDown && CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==53 && hwm_drag_window && !hwm_drag_native) {
+        hwm_keys[53]=true; event_loop_post(&g_event_loop,HORIZONTAL_INPUT,NULL,HWM_CANCEL_DRAG); return true;
+    }
+    if(hwm_plane_selecting && (hwm_plane_scale<.999 || hwm_camera_animating) && type==kCGEventKeyDown &&
+       (CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==53 || CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==36)) {
+        int code=(int)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);
+        hwm_keys[code]=true;
+        event_loop_post(&g_event_loop,HORIZONTAL_INPUT,strdup("actual-size"),HWM_NAMED_ACTION); return true;
     }
     if(hwm_tab_click && type==kCGEventLeftMouseUp) { hwm_tab_click=false; return true; }
     if(!hwm_overview_active && type==kCGEventLeftMouseDown) {
@@ -1262,6 +1386,22 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
         if (CGEventGetFlags(event)&(kCGEventFlagMaskCommand|kCGEventFlagMaskControl)) return false;
         event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_EVENT);
         return true;
+    }
+    if(hwm_plane_selecting && !hwm_overview_active) {
+        if(type==kCGEventScrollWheel) {
+            event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_EVENT); return true;
+        }
+        if(type==kCGEventRightMouseDown || type==kCGEventOtherMouseDown) {
+            unsigned button=(unsigned)CGEventGetIntegerValueField(event,kCGMouseEventButtonNumber);
+            if(button<32) hwm_zoom_buttons|=1u<<button;
+        }
+        if(type==kCGEventKeyDown) {
+            int code=(int)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);
+            if(code>=0 && code<128) hwm_keys[code]=true;
+        }
+        if(type==kCGEventRightMouseDown || type==kCGEventRightMouseUp ||
+           type==kCGEventRightMouseDragged || type==kCGEventOtherMouseDown || type==kCGEventOtherMouseUp ||
+           type==kCGEventOtherMouseDragged || type==kCGEventKeyDown || type==kCGEventKeyUp) return true;
     }
     /* GestureKit/LinearMouse forwards a real trackpad pinch as a type-29
      * gesture: field 110 is IOHID zoom (8), field 113 is an incremental
@@ -1406,33 +1546,43 @@ static void horizontal_input(void *context, int action)
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
         struct view *view=hwm_view();
-        if(view && !hwm_paused && !hwm_suspended && !hwm_resize_owned && !hwm_drag_window && !mission_control_is_active()) {
+        if(view && !hwm_paused && !hwm_suspended && !hwm_resize_owned && !hwm_drag_window && !g_mouse_state.window && !mission_control_is_active()) {
             int select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
             if(select || hwm_selection_gesture.engaged || sample->count>=4) {
                 hwm_plane_gesture.active=false;
                 __atomic_store_n(&__pending_gesture,false,__ATOMIC_RELEASE);
                 if(select) {
                     hwm_plane_pointer_finish(false);
-                    if(select>0) { hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(view); }
+                    if(select>0) { hwm_hold_focus(); hwm_plane_fit_all(view); }
                     else hwm_plane_choose_window(view,hwm_action_window());
                 }
                 free(sample); return;
             }
             double now=hwm_now(); CGRect bounds=hwm_bounds(view);
+            if(sample->count==3 && !hwm_plane_gesture.active) {
+                // Panning at 100% browses native windows; it never enters
+                // card selection, which would consume Return, Escape and clicks.
+                if(hwm_plane_scale<1) hwm_zoom_workspace=true;
+                hwm_zoom_cancel_native();
+            }
             HWMPlaneCamera camera={hwm_offset(view,now),hwm_plane_camera_y(now),hwm_plane_scale},target;
-            if(!hwm_plane_gesture.active && sample->count==3) hwm_plane_pan_origin=camera;
+            if(!hwm_plane_gesture.active && sample->count==3) { hwm_plane_pan_origin=camera; hwm_plane_pan_velocity=(HWMPlaneVelocity){0}; }
             if(hwm_plane_gesture_sample(&hwm_plane_gesture,sample->device,sample->contacts,sample->count,
                                         sample->time,bounds.size.width,sample->aspect,hwm_swipe_gain,camera,&target)) {
                 hwm_held_lead=0; hwm_held_count=0; hwm_rubber=0;
                 hwm_scroll_current_velocity=0; hwm_plane_y_current_velocity=0; hwm_release_velocity=false;
                 hwm_plane_set_camera(view,target.x,target.y,false);
+                if(hwm_plane_gesture.active) hwm_plane_velocity_add(&hwm_plane_pan_velocity,sample->time,target.x,target.y);
                 view->strip_last_time=sample->time; hwm_last_input=now;
                 __atomic_store_n(&__pending_gesture,hwm_plane_gesture.active,__ATOMIC_RELEASE);
                 if(!hwm_plane_gesture.active) {
                     hwm_focus_after_scroll=false;
                     __atomic_store_n(&__last_gesture_time,read_os_timer(),__ATOMIC_RELEASE);
                     CGPoint pointer;
-                    if(SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer,hwm_plane_pan_origin);
+                    HWMPlanePoint velocity=hwm_plane_velocity_release(&hwm_plane_pan_velocity,sample->time,
+                                                                        hwm_scroll_omega/fmax(.15,hwm_motion_scale));
+                    if(!hwm_plane_pan_release(view,hwm_plane_pan_origin,velocity) &&
+                       SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer,hwm_plane_pan_origin);
                 }
                 hwm_input_log[hwm_input_log_count%HWM_FRAME_LOG].time=sample->time;
                 hwm_input_log[hwm_input_log_count++%HWM_FRAME_LOG].offset=target.x;
@@ -1448,13 +1598,21 @@ static void horizontal_input(void *context, int action)
     if(CGEventGetType(event)==29 && CGEventGetIntegerValueField(event,110)==8) {
         double delta=CGEventGetDoubleValueField(event,113);
         if(isfinite(delta) && fabs(delta)<4) {
-            hwm_plane_zoom_at_pointer(view,hwm_plane_scale*exp(delta));
+            CGPoint pointer=CGEventGetLocation(event);
+            hwm_plane_zoom_at_pointer(view,hwm_plane_scale*exp(delta),pointer);
+            hwm_zoom_pinch_time=now;
+            if(delta) { hwm_zoom_detent_armed=delta>0 && hwm_plane_scale<1; hwm_zoom_detent_point=pointer; }
         }
         hwm_last_input=now; CFRelease(event); return;
     }
     if (CGEventGetType(event) == kCGEventScrollWheel) {
         double dx = CGEventGetDoubleValueField(event,kCGScrollWheelEventPointDeltaAxis2);
         double dy = CGEventGetDoubleValueField(event,kCGScrollWheelEventPointDeltaAxis1);
+        if(hwm_plane_selecting) {
+            hwm_zoom_workspace=true;
+            hwm_plane_set_camera(view,view->strip_target_offset+dx/hwm_plane_scale,hwm_plane_y_target+dy/hwm_plane_scale,false);
+            hwm_last_input=now; CFRelease(event); return;
+        }
         if (CGEventGetFlags(event)&kCGEventFlagMaskShift) {
             hwm_scroll(view,view->strip_offset+(fabs(dx)>fabs(dy)?dx:dy),false);
             hwm_settle_pending=true;
@@ -1570,6 +1728,7 @@ static void hwm_drag_update(struct view *view,struct window *window,CGPoint poin
 static void hwm_drag_snap_commit(struct view *view,struct window *window)
 {
     CGPoint target;
+    if(hwm_snap_free) return;
     if((hwm_snap_window==window->id && hwm_snap_contact_count && (target=hwm_snap_point,true)) ||
        hwm_drag_snap_target(view,window,&target)) {
         bool accepted=(target.x==window->strip_world_x && target.y==window->strip_world_y) ||
@@ -1621,10 +1780,42 @@ static bool hwm_number(struct token token, double *out)
 static void horizontal_command(FILE *rsp, char *message)
 {
     struct token command = get_token(&message);
+    if(token_equals(command,"fixture-only")) {
+#ifdef HWM_TEST_FIXTURE_ONLY
+        fprintf(rsp,"true\n");
+#else
+        fprintf(rsp,"false\n");
+#endif
+        return;
+    }
+    if(token_equals(command,"zoom-status")) {
+        NSData *data=[NSJSONSerialization dataWithJSONObject:hwm_zoom_native_diagnostics() options:0 error:NULL];
+        fwrite(data.bytes,1,data.length,rsp);fputc('\n',rsp);return;
+    }
+    if(token_equals(command,"hover-status")) {
+        NSMutableArray *rows=[NSMutableArray array];
+        unsigned count=MIN(hwm_hover_timing_count,128);
+        for(unsigned i=0;i<count;i++) {
+            HWMHoverTiming t=hwm_hover_timings[(hwm_hover_timing_count-count+i)%128];
+            [rows addObject:@{@"id":@(t.wid),@"started":@(t.started),@"issued":@(t.issued),@"ms":@((t.issued-t.started)*1000),@"workspace":@(t.workspace)}];
+        }
+        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"samples":rows,@"shield":@(atomic_load(&hwm_zoom_shield_requested)),@"inputWindow":@(hwm_zoom_input_window)} options:0 error:NULL];
+        fwrite(data.bytes,1,data.length,rsp);fputc('\n',rsp);return;
+    }
+    if(token_equals(command,"fixture-hover")) {
+        double id,x,y;
+        if(!hwm_number(get_token(&message),&id) || !hwm_number(get_token(&message),&x) || !hwm_number(get_token(&message),&y) || id<1 || id>UINT32_MAX) { daemon_fail(rsp,"expected fixture id x y\n");return; }
+        struct window *w=window_manager_find_window(&g_window_manager,(uint32_t)id);
+        if(!w || !w->application->name || strcmp(w->application->name,"Tana2DFixture")) { daemon_fail(rsp,"hover replay requires a managed Tana2DFixture window\n");return; }
+        horizontal_native_hover(CGPointMake(x,y),(uint64_t)(hwm_now()*1e9));fprintf(rsp,"{}\n");return;
+    }
     if(token_equals(command,"fixture-pointer")) { hwm_fixture_pointer(rsp,message); return; }
+#if defined(HWM_TEST_FIXTURE_ONLY) || defined(HWM_TEST_INPUT_REPLAY)
+    if(token_equals(command,"fixture-swipe")) { hwm_fixture_swipe(rsp,message); return; }
+#endif
     if(token_equals(command,"subscribe")) {
         if(!hwm_ipc_subscribe(rsp)) { daemon_fail(rsp,"too many subscribers\n"); return; }
-        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.5.10\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
+        fprintf(rsp,"{\"event\":\"subscribed\",\"version\":\"0.6.5\",\"strip\":%d}\n",hwm_shelf+1); fflush(rsp);
         hwm_ipc_layout(hwm_view()); return;
     }
     if(token_equals(command,"mark") || token_equals(command,"jump-mark")) {
@@ -1671,6 +1862,8 @@ static void horizontal_command(FILE *rsp, char *message)
         if(hwm_plane_pointer_owned()) { daemon_fail(rsp,"finish the active pointer interaction before zooming\n"); return; }
         double scale; if(!hwm_number(get_token(&message),&scale) || scale<HWM_PLANE_MIN_SCALE || scale>HWM_PLANE_MAX_SCALE) { daemon_fail(rsp,"zoom must be between 0.001 and 1 (100%%)\n"); return; }
         struct view *view=hwm_view(); if(!view) return;
+        if(scale==1) { hwm_plane_actual_size(view); return; }
+        hwm_zoom_cancel_native(); hwm_zoom_workspace=true;
         /* Finish sampling the previous zoom before assigning the new scale.
          * Otherwise hwm_scroll's camera stop restores the old animated scale. */
         hwm_plane_camera_stop(view,hwm_now());
@@ -1752,7 +1945,7 @@ static void horizontal_command(FILE *rsp, char *message)
             @"snapEdge":@(hwm_snap_axis*2+hwm_snap_side),@"snapX":@(hwm_snap_point.x),@"snapY":@(hwm_snap_point.y),@"snapContacts":@(hwm_snap_contact_count),
             @"snapEngagements":@(hwm_snap_engagements),@"snapCommits":@(hwm_snap_commits),@"hapticsEnabled":@(hwm_haptics),
             @"snapPreviewVisible":@(hwm_preview_visible && hwm_preview_ordered && !hwm_preview_hiding),@"snapPreviewWindow":@(hwm_preview_id),
-            @"previewDraws":@(hwm_preview_draws),@"previewMoves":@(hwm_preview_moves),
+            @"snapSeams":@(hwm_preview_snap_mode?hwm_preview_seam_count:0),@"snapPreviewMargin":@(hwm_preview_snap_mode?hwm_preview_margin(hwm_preview_gutter):0),@"snapFree":@(hwm_snap_free),@"previewDraws":@(hwm_preview_draws),@"previewMoves":@(hwm_preview_moves),
             @"transformDirty":@(w->strip_transform_dirty),@"scale":@(w->strip_last_plane_scale),@"edge":@(hwm_edge_window==w->id),
             @"drag":@(hwm_drag_window==w->id),@"nativeDrag":@(hwm_drag_window==w->id && hwm_drag_native),@"hiddenTab":@(hwm_workflow_tab_hidden(w)),@"layout":@(view?view->layout:0)};
         NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
@@ -1801,10 +1994,7 @@ static void horizontal_command(FILE *rsp, char *message)
     if(token_equals(command,"overview")) { hwm_action(HWM_OVERVIEW); return; }
     if(token_equals(command,"overview-cancel")) { hwm_action(HWM_OVERVIEW_CANCEL); return; }
     if(token_equals(command,"overview-progress")) {
-        double value;
-        if(!hwm_number(get_token(&message),&value) || value<0 || value>1) { daemon_fail(rsp,"progress must be between 0 and 1\n"); return; }
-        if(!hwm_overview_active) hwm_overview_begin(false);
-        hwm_overview_set_progress(value);
+        daemon_fail(rsp,"overview-progress was replaced by workspace zoom; use zoom, fit-all, or actual-size\n");
         return;
     }
     if (token_equals(command,"close")) { hwm_action(HWM_CLOSE); return; }
@@ -1816,7 +2006,7 @@ static void horizontal_command(FILE *rsp, char *message)
     }
     if (token_equals(command,"status")) {
         CGRect viewport=view?hwm_bounds(view):CGRectZero;
-        fprintf(rsp,"{\"version\":\"0.5.10\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
+        fprintf(rsp,"{\"version\":\"0.6.5\",\"zoom_mode\":\"%s\",\"plane\":true,\"ready\":%s,\"paused\":%s,\"backend\":%s,\"space\":%llu,\"camera\":{\"x\":%.3f,\"y\":%.3f,\"scale\":%.5f},\"viewport\":{\"x\":%.2f,\"y\":%.2f,\"width\":%.2f,\"height\":%.2f},\"autofocus\":%s,\"frames\":%llu,\"frames_over_8ms\":%llu,\"max_frame_ms\":%.3f,\"move_failures\":%llu,\"resize_operations\":%llu,\"windows\":[",hwm_zoom_workspace?"workspace":hwm_plane_selecting?"preparing":"native",hwm_ready?"true":"false",hwm_paused?"true":"false",hwm_backend_ok?"true":"false",(unsigned long long)hwm_space,view?view->strip_target_offset:0,hwm_plane_y_target,hwm_plane_scale,viewport.origin.x,viewport.origin.y,viewport.size.width,viewport.size.height,g_window_manager.ffm_mode==FFM_AUTOFOCUS?"true":"false",(unsigned long long)hwm_frames,(unsigned long long)hwm_slow_frames,hwm_max_frame_ms,(unsigned long long)hwm_move_failures,(unsigned long long)hwm_resize_operations);
         bool comma = false;
         if (view) for (struct window_node *n = window_node_find_first_leaf(view->root); n; n = window_node_find_next_leaf(n)) {
             for (int i=0;i<n->window_count;++i) {
@@ -1873,7 +2063,7 @@ void horizontal_plane_action(const char *name)
 static NSArray *hwm_command_sections(void)
 {
     return @[
-      @[@"Camera",@[@[@"select-window",@"Choose a window"],@[@"fit-all",@"Fit all windows"],@[@"fit-focused",@"Fit focused window"],@[@"actual-size",@"Actual size (100%)"],@[@"home",@"Return to origin"]]],
+      @[@"Workspace",@[@[@"select-window",@"Show workspace"],@[@"actual-size",@"Return to window (100%)"],@[@"home",@"Return to origin"]]],
       @[@"Navigate",@[@[@"left",@"Focus left"],@[@"right",@"Focus right"],@[@"up",@"Focus above"],@[@"down",@"Focus below"],@[@"previous",@"Previous window"],@[@"center",@"Center window"]]],
       @[@"Arrange",@[@[@"move-left",@"Move left"],@[@"move-right",@"Move right"],@[@"move-up",@"Move up"],@[@"move-down",@"Move down"],@[@"arrange-grid",@"Arrange in grid"],@[@"preset-width",@"Cycle window width"],@[@"undo",@"Undo arrangement"]]],
       @[@"Window",@[@[@"maximize",@"Fill screen at 100%"],@[@"float",@"Float / tile"],@[@"close",@"Close window"],@[@"terminal",@"New terminal"],@[@"browser",@"Open browser"]]],
@@ -1994,6 +2184,9 @@ static void hwm_alpha_sync(bool restore)
 
 static NSString *hwm_state_path(void)
 {
+#ifdef HWM_TEST_FIXTURE_ONLY
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"tana2d-fixture-only-layout.json"];
+#endif
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Tana2D/layout.json"];
 }
 static long long hwm_boot_time(void)
@@ -2051,6 +2244,8 @@ static void hwm_load_state(void)
         if ([state[@"version"] intValue]>=3 && isfinite(width) && width>=160 && width<=20000) w->strip_width=width;
         double height=[entry[@"height"] isKindOfClass:[NSNumber class]] ? [entry[@"height"] doubleValue] : 0;
         if ([state[@"version"] intValue]>=3 && isfinite(height) && height>=100 && height<=20000) w->strip_height=height;
+        if(!hwm_zoom_restore_sizes) hwm_zoom_restore_sizes=[NSMutableSet new];
+        [hwm_zoom_restore_sizes addObject:@(w->id)];
         double x=[entry[@"x"] isKindOfClass:[NSNumber class]] ? [entry[@"x"] doubleValue] : NAN;
         double y=[entry[@"y"] isKindOfClass:[NSNumber class]] ? [entry[@"y"] doubleValue] : NAN;
         if(isfinite(x) && isfinite(y)) { w->strip_world_x=x; w->strip_world_y=y; w->strip_initialized=true; }
@@ -2088,6 +2283,7 @@ static void hwm_load_state(void)
     double y=[camera[@"y"] isKindOfClass:[NSNumber class]] ? [camera[@"y"] doubleValue] : 0;
     double scale=[camera[@"scale"] isKindOfClass:[NSNumber class]] ? [camera[@"scale"] doubleValue] : 1;
     if(isfinite(scale) && scale>0) { hwm_plane_scale=hwm_plane_zoom_clamp(scale); hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001; }
+    hwm_zoom_workspace=hwm_plane_scale<1; hwm_plane_selecting=false;
     hwm_plane_set_camera(view,isfinite(x)?x:0,isfinite(y)?y:0,false);
 }
 static void hwm_signal_stop(int signal_number) { (void)signal_number; hwm_stop_requested = 1; }
@@ -2119,6 +2315,7 @@ static void hwm_shutdown(void)
 {
     if (!hwm_ready) return;
     hwm_plane_abort_interaction(NULL,HWM_PLANE_INTERRUPT_SHUTDOWN);
+    if(hwm_zoom_group)dispatch_group_wait(hwm_zoom_group,dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC));
     dispatch_sync(dispatch_get_main_queue(), ^{ hwm_mt_end(); hwm_ca_stop(); });
     horizontal_overview_done();
     hwm_preview_hide_immediately();
@@ -2129,6 +2326,7 @@ static void hwm_shutdown(void)
     hwm_visibility_restore_all();
     hwm_alpha_sync(true);
     hwm_plane_controls_update(false,1);
+    hwm_zoom_shield_update(false);
     hwm_save_state_now(true); // On disk before the process goes away.
     window_manager_set_menubar_opacity(&g_window_manager,1.0f);
     hwm_ready = false;

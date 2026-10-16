@@ -562,6 +562,8 @@ static double hwm_helper_last=-100;
 static void hwm_helper_reload(void)
 {
     double now=hwm_now();
+    // After a Dock restart, hwm_helper_tick loads the helper once Dock is up.
+    if(hwm_helper_due) return;
     if(!hwm_helper_auto || now-hwm_helper_last<8 || hwm_helper_attempts>=4) return;
     hwm_helper_last=now; ++hwm_helper_attempts;
     warn("Tana2D: window helper is not answering; running the loader (attempt %d).\n",hwm_helper_attempts);

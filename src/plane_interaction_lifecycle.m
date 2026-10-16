@@ -73,6 +73,9 @@ static bool hwm_plane_interaction_matches(struct window *window,uint32_t identif
  * manager, while the helper can still restore its shadow and layer. */
 static void hwm_plane_abort_interaction(struct window *window,HWMPlaneInterruptReason reason)
 {
+#ifdef HWM_NATIVE_ZOOM
+    hwm_zoom_cancel_native();
+#endif
     (void)reason;
     bool drag=hwm_plane_interaction_matches(window,hwm_drag_window);
     bool pick=hwm_plane_interaction_matches(window,hwm_plane_pick_window);

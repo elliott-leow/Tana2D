@@ -3,6 +3,38 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
+## Auto-centering, pan glide, and camera paths — October 16, 2026
+
+At 100%, a three-finger pan release now centers a window whose centered view
+is within `autoCenterDistance` (default 120) points of where the camera comes
+to rest, provided the pan moved toward that view by more than 4 points.
+Windows wider than the viewport have no centered view and are skipped; taller
+ones are top-aligned, matching click-to-center. The decision uses world
+geometry only. It does not read the pointer, change focus, move native frames,
+or resize; it calls `hwm_hold_focus` like the old magnet, and the window under
+the pointer is focused when the camera rests as before.
+
+A release moving faster than 250 display points per second (measured over the
+last 100 ms of samples, ignored if the fingers paused more than 60 ms before
+lifting, and decayed by the gap an uneven finger lift leaves before release)
+continues with that velocity on the existing critically damped
+camera spring, which then decays exponentially and travels `v/omega` (a 45 ms
+time constant at the default scroll speed: about 90 points for a 2000 point/s
+flick). Auto-centering evaluates the
+landing point, so a flick toward a window lands centered. Reduce Motion
+disables the glide.
+
+Camera transitions interpolate translation linearly in `1/scale`, which keeps
+the screen point common to both ends fixed; pure translation is unchanged.
+Transition time is 0.22–0.42 s depending on travel and zoom change, instead of
+a fixed 0.36 s.
+
+`make all test` passes. New tests cover the fixed point at nine progress values,
+transition duration bounds, centered-view geometry, the auto-center rules
+(radius, zoom, escape, touch, already centered), release velocity estimation,
+and the runtime release path including glide-into-center and disabled settings.
+Physical trackpad feel is not yet verified on the installed build.
+
 ## Native presentation override repair — October 14, 2026
 
 Earlier fixture results did not establish native-drag correctness. Terminal and
@@ -842,8 +874,9 @@ executable SHA-256 was
 `9501864595c1ce86c9d8659359bbc803a5338f36c3a8ceb926ae00e6677766c3`.
 
 This verifies menu focus protection. The application-content hover coordinate
-bridge remains an unshipped prototype pending independent cross-window tracking
-checks; the remaining 2x native-titlebar cases are not declared fixed here.
+bridge remains unshipped pending helper installation and live application
+checks; the remaining 2x native-titlebar cases are not declared
+fixed here.
 
 
 ### Camera maximum zoom (0.5.10)
@@ -875,3 +908,514 @@ and offscreen-peer rejection. Each case checked unchanged dimensions and
 independent presentation bounds; cleanup removed fixtures, restored focus and
 camera, and changed no user-window world geometry. The report is
 `build/multi-snap-matrix.json` (version 0.5.10).
+
+### Content hover prototype and input-shape lease (unshipped)
+
+The Firefox control explicitly aligned displayed and native frames and passed
+8/8 checks. A translated scale-1 frame is not an untransformed control: its
+unbridged DOM coordinates differed by exactly the displayed/native origin
+offset. The prototype's per-process event mapping and tracking-event handling
+then passed 32/32 Firefox cases at 100%, 75%, 50%, and 25%. Each case required a
+fresh DOM mousemove, the correct target and CSS `:hover`, and client coordinates
+within two native pixels. Allowing for the system's integer pointer-warp
+rounding resolved five false tracking exits. The report is
+`build/input-browser-quantized-hover-pass.json`.
+
+An independent native fixture passed all 18 crossings between a 50% window and
+a translated 100% window, including event coordinates, independently polled
+pointer coordinates, tracking state, and the software cursor's actual displayed
+position. Its arrow/I-beam bitmap, dimensions, and hotspot matched the captured
+native system cursors exactly. Outside-window exit and re-entry also passed.
+This required an input-shape override so AppKit's native-pointer window lookup
+could find the transformed window. The report is
+`build/input_virtual_cursor_owned_shape_pass.json`; this is an owned-window
+prototype, not installed application behavior.
+
+Helper 0.5.4 adds a capability-gated, acknowledged input-shape lease. The actual
+socket peer owns the lease; expiry after 500ms or peer exit restores the saved
+type-9 shape, including the WindowServer default. A separate 50ms cleanup
+worker performs recovery. Newer application-owned shapes and replacement
+window owners are preserved. Production-path sanitizer tests cover malformed
+packets, framing, ownership, switching, allocation/commit/read failures,
+restoration retries, expiry, death, and default/custom restoration. The batch
+sender test checks framing, failed acknowledgements, and publication barriers.
+The full `make all` and `make test` checks passed.
+
+`make test-live-input-shape-service` exercises the same service against a hidden
+owned WindowServer window and passed eight checks without moving the pointer,
+camera, focus, or user windows. It does not verify the Dock payload's access to
+foreign application windows. The protected helper was subsequently upgraded to
+0.5.4 with capability `0x180`. Its actual foreign-window mutation test failed
+all four cases; matching an already-existing shape succeeded, which verified
+transport and reads but did not prove mutation.
+
+The source now connects `HWMContentHover` to the manager's existing HID tap,
+publishes geometry only after the presentation batch is released, and gives
+the event loop the displayed pointer for focus/display decisions. Per-process
+taps repair the native global and window-local hover coordinates. The cursor
+panel paints the system bitmap at its native size and hotspot. Buttons,
+dragging, scrolling, keyboard input, pause, overview, lifecycle cancellation,
+and shutdown release the hover path. A separate ACK connection avoids touching
+the render thread's mutable batch state. Capability checks keep the path off
+without the matching helper. `strip content-hover-status` exposes its state.
+
+`tests/content_hover_test.m` exercises this production event owner with native
+UI/warp operations stubbed: fractional motion (including zero integer deltas),
+physical display clipping and multiple displays, original-target admission,
+stale queued moves, interruption barriers, failed ACK cleanup, and native entry
+before HID delivery. The sanitizer-backed target is `make test-content-hover`.
+
+The integrated component also ran against real owned windows through a private
+Unix socket and the production input-shape service. The service authenticated
+the child peer and restricted targets to those fixture windows. There were
+18/18 passing positions at 50%/translated 100%, and 18/18 at 25%/75%, including
+fresh event and independently polled coordinates, tracking state, independently
+observed cursor-window placement, exact arrow/I-beam artwork, size, and hotspot.
+Exit and re-entry (including the correct I-beam) passed for both runs. The
+reports are `build/content-hover-owned-50-100-pass-report.json` and
+`build/content-hover-owned-25-75-pass-report.json`; detailed rows are in the matching
+driver logs. Both reports confirm unchanged user-window world geometry and
+restored camera/focus. An initial failure exposed deferred exit ordering within
+one app; another exposed repeated cursor-panel ordering. Both were corrected
+before the final passing runs. These are generated-input owned-window checks,
+not installed-app or ordinary physical-input verification.
+
+Delivery-time window validation now lives in `content_hover_window.h`, shared
+by the production mapper and live harness. Sanitizer-backed presentation tests
+verify refreshed native/displayed frames and rejection without partial updates
+when the owner PID changes, WindowServer queries fail, native dimensions are
+invalid, or public presentation data disappears. A visible fixture run with
+this shared validator passed its fresh-geometry and wrong-PID preflight, then
+aborted on incoming input before completing its position matrix. Its cleanup
+preserved user-window world geometry and left the newer camera state alone.
+
+`make test-live-content-hover-validation` subsequently passed the actual shared
+validator inside a per-process event-tap callback. It creates an invisible,
+mouse-ignoring fixture window and posts only a null event to its own PID. The
+callback refreshes zeroed native/displayed geometry and rejects a different
+owner PID while WindowServer is routing that event. This confirms these
+queries complete in the callback without moving the pointer or taking focus;
+it does not verify the foreign-window input-shape mutation or full hover path.
+The log is `build/live-content-hover-validation.log`.
+
+The HID mask retains motion when focus-follows-mouse is off and includes
+middle/extra-button streams. Focus mode changes update only the serialized
+focus policy; they no longer tear down the shared tap. The existing focus
+handler still rejects automatic focus while disabled. Mask assertions and a
+production-owner middle-button test cover the hover release before native
+routing; installed focus-mode and button checks remain pending.
+
+On October 15, the user reported that pointer movement no longer felt one to
+one with the trackpad and requested immediate rollback. The experimental
+0.5.11 input mapper was stopped and removed from the manager. Installed 0.5.12
+restores the previous mouse-event path, native cursor queries, event mask, and
+focus-mode tap behavior. The inactive experimental component and its tests are
+archived under `build/disabled-content-hover-source` and are not compiled into
+the manager. The installed executable contains no `HWMContentHover` or
+`horizontal_content_hover` symbols. All six user-window world frames were
+preserved. Build, signing, and packaging checks passed; physical trackpad feel
+has not been independently verified.
+
+The protected helper remains 0.5.4 for compatibility, but the rolled-back
+manager sends no input-shape requests. Application-content hover remains
+unresolved, including the Firefox ChatGPT sidebar case where the pointer was
+on "Choose A Fun Story" while another row highlighted. Do not re-enable the
+experimental motion reconstruction to address that bug.
+
+After rollback, a read-only probe compared window transforms with AppKit's
+`convertPointFromScreen:` on an invisible, mouse-ignoring owned panel. All four
+untransformed controls returned the expected point. All 32 translated/scaled
+cases applied their requested displayed bounds, but none corrected AppKit's
+conversion: the test covered locked bounds and base-transform flags
+0, 1, 2, 4, 8, 16, and 32 at 100%, 75%, 50%, and 25%. The probe did not post
+input, move the pointer, focus a window, or mutate any user window. Its source
+and results are `build/native_coordinate_transform_probe.m` and
+`build/native-coordinate-transform-probe.log`. This rules out those tested
+transform variants as a complete hover correction; it does not rule out every
+WindowServer mechanism.
+
+The installed Firefox is 158.0. Its matching upstream
+[`ScreenLocationForEvent` implementation](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_158_0_RELEASE/widget/cocoa/nsCocoaUtils.mm#L170-L204)
+reads the live `NSEvent.mouseLocation` for mouse-moved/entered/exited events,
+then converts that screen point into the window. Inference: changing only
+mouse-event coordinates cannot repair that polling path. A replacement must
+also preserve the user's requested native trackpad motion. The experimental
+cursor reconstruction remains removed.
+
+A separate listen-only pointer observation tool is in
+`build/live_pointer_passthrough.c`. Its timestamp-pairing attempt was
+inconclusive, and no movement arrived during the revised observation. Neither
+run verifies trackpad feel or the original hover bug.
+
+The next pointer-preserving candidate moves only the app's native frame behind
+fixed displayed bounds. The invisible owned-window anchor matrix passed 17/32
+cases at 100%, 75%, 50%, and 25%, while preserving the displayed rectangle and
+native dimensions. The other 15 cases hit AppKit's top-of-screen clamp; their
+coordinate error equals the rejected native-origin displacement. Source and
+results: `build/native_anchor_coordinate_probe.m` and
+`build/native-anchor-coordinate-probe.log`. No pointer operation was used.
+This is an incomplete candidate, not an installed fix.
+
+System compositor zoom was inspected without enabling it. The current local
+SkyLight implementation `_set_zoom_parameters_on_display` clamps factors below
+1 to 1, so it cannot directly provide Tana's zoomed-out range. A newly-created,
+never-shown connection-owned unmanaged Space accepted three nonidentity
+transforms, but public displayed bounds did not establish their intended
+composition and AppKit conversion was not corrected. That test is inconclusive
+as a visible compositor implementation. It restored the previous Space list
+and active Space and removed its own Space. Its files are
+`build/space_coordinate_probe.m` and `build/space-coordinate-probe.log`.
+
+`build/virtual_display_anchor_probe.m` is a concrete next experiment: create one
+process-owned virtual display above the physical screen, run the same invisible
+anchor matrix, remove the virtual display, and compare the original display's
+ID, bounds, and pixel dimensions. It never warps/posts input or explicitly
+moves a user window. It has a 20-second process deadline. Its default inspection
+mode only queries classes/selectors and is verified on the current machine:
+all required API methods exist and one display is online. Adding/removing a
+display changes macOS display configuration and can trigger window
+rearrangement, so the `--run` mode required user approval. The current 0.5.12
+app and all six user-window world frames remained unchanged during the
+inspection-only probes.
+
+While awaiting approval for the virtual-display experiment, the prepared probe
+was updated to require a listen-only input observer and cancel on mouse,
+keyboard, modifier, or scroll activity. Cancellation clears/closes its fixture
+and removes the process-owned display through the ordinary cleanup path.
+An isolated cancellation check stopped the native anchor matrix after three
+passing positions and correctly returned cancellation (exit 2), rather than
+reporting a completed passing matrix. Its log is
+`build/anchor-probe-cancel-check.log`. Recompilation and inspection-only mode
+passed. Cancellation during actual display reconfiguration remains unverified.
+
+After explicit user approval, the temporary virtual-display test ran once.
+The extra display was online above the built-in display, and the invisible
+native-frame matrix passed 30/32 cases. The two failures were samples 3 and 4
+at 75% scale, each with about 49.13 points of native-origin/conversion error.
+Displayed bounds were preserved in every sample. This is an incomplete
+candidate; it does not verify the Firefox sidebar hover case or a production
+fix. The test did not warp, post, or rewrite pointer input.
+
+In-process teardown reported `removed=0` after its five-second removal wait,
+so that cleanup check failed and the probe exited with status 1. A fresh
+inspection after process exit found exactly one online display, the built-in
+display ID 1, at bounds `(0, 0, 1710, 1112)`. No probe process remained.
+The before/after manager snapshots preserve all six user-window world frames
+and the camera exactly; the foreground application remained Terminal PID 702.
+Tana 0.5.12 remained ready with its backend active and the experimental input
+mapper disabled. Do not rely on release-in-process teardown or repeat this
+experiment without first addressing its failed cleanup check.
+
+Evidence: `build/virtual-display-anchor-run.log`,
+`build/virtual-display-approved-before.json`,
+`build/virtual-display-approved-after.json`,
+`build/virtual-display-anchor-post-inspection.log`, and
+`build/virtual-display-post-exit-configuration.json`.
+
+### 0.6.0: workspace zoom and native application input
+
+Zoom now has two modes. Workspace mode presents live window cards for panning,
+zooming, choosing, and arranging. Choosing a card, pressing Escape/Enter, or
+using the percentage button returns to a native window at 100%. All zoom levels
+use the same card-selection rule; the old 70% interaction threshold is gone
+from the user workflow. The panel has two buttons: Workspace and the percentage.
+Existing overview commands use the workspace. The diagnostic
+`overview-progress` command is retired in favor of `zoom`, `fit-all`, and
+`actual-size`.
+
+A native nonactivating surface receives workspace tracking events above the
+cards. Physical mouse-moved events pass through unchanged; zoom does not warp,
+rewrite, hide, or reconstruct the cursor. The previous experimental mapper is
+still absent. No virtual display, Firefox injection, or display configuration
+change is used by this design.
+
+The native handoff clears compositor presentation bounds, places windows through
+Accessibility, and checks the app's accepted position against both native and
+public displayed bounds before permitting app input. Placements are asynchronous
+and cancelable; failed handoffs keep the workspace available. Native windows do
+not retain scale transforms or scaled open/close effects. Rows whose title bars
+are above the live viewport remain hidden until chosen or brought into view.
+
+Ordinary zoom preserves native sizes. Explicit layout restoration is separate:
+the worker moves to a safe native origin, applies the saved size, waits for that
+size to land, and then restores the intended position. It uses the existing
+enhanced-Accessibility workaround during resizing. Late AX notifications cannot
+replace a saved size during this handoff. This fixes the restart regression
+found during implementation; Firefox's affected width was restored to 1686.
+
+Validation of the final installed 0.6.0 build:
+
+- `make all test` passed, including native handoff, failure, cancellation,
+  safe-origin size restoration, controls, existing geometry/drag/lifecycle
+  suites, and 21 Python checks. Log: `build/zoom-redesign-tests.log`.
+- `tests/live_native_zoom.py` passed 24 AppKit coordinate samples across
+  25%, 50%, and 75% workspace zoom, three native handoffs, a card drag, and
+  native tracking/release. It used disposable windows and internal replay;
+  it did not move or post the system pointer. All six user world frames were
+  preserved. Report: `build/native-zoom-live-report.json`.
+- A real restart preserved all six window positions and sizes and returned to
+  native mode. Evidence: `build/zoom-redesign-fixed-restart-before.json` and
+  `build/zoom-redesign-fixed-restart-after.json`. The final installation also
+  preserved these frames (`build/zoom-redesign-final-before.json` and
+  `build/zoom-redesign-final-after.json`).
+- The workspace hit probe found Tana's native input surface above Firefox.
+  At native 100%, Firefox's AX frame, native frame, and displayed frame all
+  matched `(12, 51, 1686, 1049)` with unit scale. Evidence:
+  `build/zoom-shield-hit.log` and `build/zoom-redesign-firefox-native.json`.
+- Installed signing verification and `git diff --check` passed. The installed
+  executable has no experimental content-hover mapper symbols.
+
+The physical trackpad feel and the original "Choose A Fun Story" hover are
+awaiting user confirmation. Geometry tests do not substitute for that physical
+check. Camera controls have AppKit test coverage; the computer-use screenshot
+returned a blank auxiliary surface, so it did not provide visual UI acceptance.
+
+### 0.6.1: immediate native hover and gradual centering
+
+Hover keeps the current zoom. Native focus and camera centering are independent:
+focus uses background AX main/focused attributes immediately, while centering
+requires inward pointer movement into a window whose center is within 20% of
+the viewport's shorter dimension. It requires 18 points of approach over at
+least 90 ms and an interior hit, and runs once per entry. Stationary pointers,
+distant windows, outward movement, and fast crossings do not trigger centering.
+Centering uses the existing camera animation; reduced motion disables this
+automatic movement. Zoomed-out cards retain their workspace browsing behavior.
+
+At 100%, camera movement uses actual AppKit positions. Native windows keep
+receiving input during motion. A pending placement no longer puts every window
+behind the workspace input surface. Mouse movement coalescing retains the newest
+point and timestamp. The native hover path bypasses the old 120 ms gesture
+cooldown, 350 ms focus guard, and private focus routine's 40 ms sleep. It does
+not warp, reconstruct, or remap the cursor.
+
+A press during native camera motion freezes the camera at the grabbed native
+frame. Cancellation returns immediately; only this window's already issued AX
+placement can require a bounded fence of up to 25 ms. Native drag movement is
+measured from its press frame, so remaining camera travel or repaint lag cannot
+be added to the user's movement. Shutdown separately drains pending placement
+work before restoring original native geometry.
+
+Final installed-build verification:
+
+- `make all test` passed, including hover intent, native input during camera
+  motion, per-window placement isolation, bounded cancellation, native drag
+  repaint lag, existing suites, and 21 Python checks. Log:
+  `build/hover-fast-tests.log`.
+- `tests/live_hover_latency.py` passed. Actual AppKit key-window receipt took
+  at most 5.1 ms for the internal production-handler samples. Three stationary
+  OS motion events traversed the real event tap and event loop, reaching AppKit
+  in 7.8–13.4 ms. The test moved the disposable row beneath the unchanged cursor;
+  it performed no pointer warps. Report: `build/hover-latency-live-report.json`.
+- The same run verified animated centering without a zoom change, no immediate
+  camera jump, and native focus during the animation. Twelve paired AppKit and
+  WindowServer frame samples settled to matching coordinates. Transient native
+  repaint lag reached 9 points during motion; these are not claims of exact
+  frame agreement throughout an animation.
+- `tests/live_native_zoom.py` passed 24 coordinate samples, three explicit
+  zoom handoffs, workspace dragging, and a native grab during camera animation.
+  The latter preserved exactly 60 by 30 world points of movement. Log:
+  `build/hover-native-zoom-regression.log`; report:
+  `build/native-zoom-live-report.json`.
+- Both live runs and the final restart preserved all six user world frames.
+  Restart snapshots: `build/hover-final-before-install.json` and
+  `build/hover-final-after-install.json`.
+
+The timing samples measure software delivery and actual test-app focus, not
+physical trackpad sensor latency or a universal deadline for an unresponsive
+application. The original Firefox sidebar and physical trackpad feel still
+require user observation. Application-content interaction remains native-size
+only; hovering a zoomed-out card does not open or zoom that window.
+
+### 0.6.3 recovery: remove the native input blocker
+
+The attempted shared compositor camera at 100% failed live acceptance. A window
+whose AppKit frame could not align kept a workspace input panel above the apps.
+The user reported that both hover and content clicks stopped working. Tana2D
+was stopped with SIGTERM, which removes its panels and restores native windows.
+The shared-camera handoff was reverted; it is not a completed scrolling fix.
+
+The recovery uses native AppKit placement at 100%, including camera movement.
+Pending or failed placement cannot enable a global input cover. The four-panel
+hole mechanism has been removed. Changing the camera at 100% also no longer
+enters card-selection mode, which consumes ordinary app clicks. Native placement
+completion now requires agreement between the app's AX position and native
+WindowServer bounds, preventing completion from being reported before a move
+lands. Regression tests cover that deferred completion and input remaining open
+when another placement is pending or fails.
+
+The recovery app is installed at `/Applications/Tana2D.app` without opening it.
+Its version is 0.6.3. The native build, sanitizer tests, Python suite, signature,
+and installed executable comparison passed. The installed executable was also
+checked to exclude the fixture-only test build. Logs:
+`build/native-input-recovery-build.log`,
+`build/native-input-recovery-tests.log`, and
+`build/native-input-recovery-install.log`.
+
+Live acceptance remains incomplete. Before the session locked, the isolated
+test build passed the 24 native coordinate samples, three zoom handoffs, and
+workspace card drag, then failed native camera-grab preservation by 4 points
+horizontally and 1 vertically. Native completion verification was tightened
+after that failure; its live retest is pending. The subsequent button-click
+checks could not run: macOS reported `session_unlocked:false`, fixture AX
+references were unavailable, and the manager was suspended. Those attempts
+are not passing tests. The isolated manager and its fixtures were stopped.
+
+`make build/tana2d-fixture-only` builds a manager which excludes all applications
+except Tana2DFixture and uses a separate temporary layout file. It must never be
+installed as the ordinary manager. `strip fixture-only` identifies this build.
+`tests/live_native_clicks.py` refuses the ordinary manager or a locked session.
+It requires actual AppKit button actions, both at rest and during camera
+movement, at the unchanged physical pointer. Its click probe refuses a hit
+covered by another window. It never warps or reconstructs the pointer.
+
+Remaining requirements: windows moving as one plane at 100%, no disappearance
+at the native top-edge clamp, no flashing or jiggle, and hover plus native clicks
+within the requested 50 ms. The recovered native renderer is not evidence that
+these have all been solved. Keep the ordinary manager stopped until real input
+acceptance can be completed on an unlocked desktop.
+
+### 0.6.4: windows move as one plane at 100%
+
+Reported: at 100% windows jiggled, disappeared, and did not move at once.
+A frame-level probe (`desktop_motion_probe`, ~600 Hz CGWindowList sampling)
+reproduced this against installed 0.6.3: during an 80x120 pan, windows drifted
+up to 47 px apart, alternate frames moved different windows, two windows
+faded to alpha 0 near the top edge, and one was clamped natively at y=51.
+Earlier tests checked end states with fixture windows, which answer
+Accessibility instantly, so they could not see this.
+
+Causes and fixes:
+
+- The native hover handler froze a moving camera at the hovered window's last
+  frame and rendered synchronously from inside the handler. Windows sliding
+  under a still pointer generate hover, so pans halted part-way and some
+  windows were drawn a frame apart. Hover now never stops, steers, or renders
+  the camera, and does not change focus mid-motion; the window under the
+  pointer is focused once the camera rests.
+- Magnetic hover/post-pan centering started camera moves from pointer motion,
+  feeding the loop above. It is now off by default (`magneticCentering`).
+- A momentary one- or two-finger frame ended the swipe, so the renderer began
+  native placement mid-gesture and then resumed panning over windows still
+  being moved. The gesture now holds through partial lifts until a full lift
+  or a 200 ms stale pause.
+- Only trackpad gestures cancelled in-flight native placement. Every camera
+  change now does, so stale AX moves cannot land during new motion.
+- Per-window origin rounding let gaps wobble by 1 px. World and camera are
+  rounded separately with the same rule on the motion and native paths.
+- Native handoff cleared each window's transform in its own blocking round
+  trip; windows landing together now clear in one transaction.
+- Starting a swipe, IPC camera changes, and state restore could enter card
+  selection at 100%, where Return/Escape and clicks are consumed. Selection is
+  now limited to zoomed-out workspace mode.
+
+Test changes: `tests/live_desktop_motion.py` runs `build/tana2d-replay` (never
+installed) against the real desktop and real apps, replaying three-finger
+swipes through the production touch path (`strip fixture-swipe`), camera pans,
+and rapid swipe bursts; only the camera changes and is restored.
+`tests/live_plane_motion.py` covers the same with fixtures under the pointer and
+past the top edge. Both assert per-frame relative drift, frames moving windows
+by different amounts, opacity, settle time, and rest position.
+
+Results: `make all test` passed (all suites, 21 Python checks). On the real
+desktop, every pan/swipe/burst case had 0 px drift, no split frames, alpha 1,
+and settled in 260-310 ms (bursts at their last swipe). Fixture motion passed
+17/17. `live_pan_stability.py` passed with 0 px error, windows above the top
+edge visible, and clipped-window focus in 3-7 ms. `live_native_zoom.py`,
+`live_hover_latency.py` (key receipt <= 6.1 ms), and `live_native_clicks.py`
+(13-41 ms, at rest and during camera motion) passed. User world frames were
+preserved throughout. Installed 0.6.4 is running and passed the pan test.
+Physical trackpad feel still needs the user's confirmation.
+
+### 0.6.5: interactive zoom, hover border, smoother zoom
+
+Requested: smoother zoom, usable applications while zoomed out, a focus
+border that follows hover while zoomed out, and no workspace/100% pill.
+
+- The camera panel is no longer shown, and the workspace input cover is gone.
+  Zoomed-out windows are no longer captured as cards: presses, drags, scrolls,
+  Return, and Escape reach the application. Control + Return / Control + Up
+  toggles between the whole workspace and the focused window at 100%. A pure
+  top-edge press is left to the title bar at every zoom; zoomed-out top
+  corners remain resize handles.
+- Hover focuses the window under the pointer at every zoom, so the focus
+  border follows it. During a pinch or camera motion, hover waits and focuses
+  the window under the pointer once the camera rests.
+- Pinch stays anchored at the pointer up to 100% instead of finishing with
+  an animated jump to the focused window.
+- The focus border's raster size includes screen-space padding, so it changed
+  on nearly every zoom frame. Each change reshaped the surface, flushed
+  synchronously, and suspended screen updates. In motion, the cached outline
+  is now only transformed, and it is redrawn once at rest.
+- A focus change during a camera transition no longer starts a reveal pan.
+  That pan stopped the transition, freezing a zoom at a fractional scale.
+
+Measured on the installed build with seven user windows at 60 Hz, using the
+replayed 30-sample pinch (`plane_gesture_probe`): before, 9–11 of 13–16 zoom
+frames exceeded 8 ms, at about 35 ms each. After, a pinch draws 30 frames, of
+4–10 ms during motion. One 17–35 ms tick remains about 150 ms after the pinch
+ends, when the border is redrawn (and native frames are placed at 100%).
+
+Live checks used disposable fixture windows with the ordinary manager and
+did not move the pointer. At 50% and 30% zoom, a click at the stationary
+pointer fired the fixture's button in 12–27 ms, with window-local coordinates
+within 1.2 points of the target. Hovering a second window (moved under the
+pointer, then one stationary mouse-moved event) focused it within 14–32 ms.
+The border then enclosed its displayed frame with the 2-point padding. The
+user's camera and focus were restored. `make all test` passed.
+
+Not verified: physical trackpad feel, and in-app hover or context-menu
+placement in applications that poll the cursor (such as Firefox) while
+zoomed out. The earlier analysis above predicts offsets there.
+
+### 0.6.5: click to zoom in below a threshold
+
+Requested: a click on a far zoomed-out window should focus it and zoom in on
+it. Below `zoomClickThreshold` (default 0.5; 0 disables) a press on a managed
+window is captured again: a click focuses it and zooms to it at 100%, and a
+drag moves it. At or above the threshold the application receives the click.
+The sanitizer-backed runtime test covers both sides of the boundary, capture
+held across a mid-press zoom change, and the disabled setting.
+
+Live, with disposable fixtures and the stationary pointer: at 60% two clicks
+reached the fixture button (19–23 ms; a third was correctly refused because
+the Finder desktop window covered the point). At 30% the click did not reach
+the application; the camera ended at 100% in native mode with that window
+focused. The user's camera was restored and `make all test` passed.
+
+### Docking feel and multi-edge feedback (2026-10-16)
+
+The user reported that a window docking to the right and the bottom showed the
+blue bar on only one edge. The renderer drew a seam for the primary contact only.
+Separately, a corner required the combined diagonal correction to fit inside 12
+screen points, so being 9 points off on both axes (12.7 diagonally) engaged just
+one edge.
+
+- Every contact now gets its own seam, drawn in the gutter between the two
+  windows and spanning exactly the edge they share. Overlapping stacked neighbors
+  on one edge merge into one seam. The preview no longer tints or outlines the
+  held window, which already sits at its landing. Seams use the active border
+  color with a soft halo. They redraw only when the contact set or shared spans
+  change, so a translation still reuses the cached raster.
+- Each axis is its own magnet. A candidate is accepted when each axis moves at
+  most 12 screen points, measured on the rounded helper submission. This
+  replaces the earlier Euclidean bound, so a corner can move up to 12 points on
+  both axes at once.
+- Release hysteresis: an engaged edge holds until the raw pointer proposal is
+  20 screen points away, while engagement still needs 12. A pointer resting
+  near the boundary no longer chatters or repeats haptics. Only axes the target
+  actually moved hold, and alignment alone never keeps a magnet. A fresh target
+  replaces a held one only by adding contacts.
+- An engagement haptic also fires when sliding into a corner adds a contact.
+- Holding Command while dragging disables docking, both live and at release.
+  The renderer polls the key, so pressing or releasing it without moving updates
+  the magnet.
+
+New tests cover hold and release at 0.5x, 1x and 2x, simultaneous vertical and
+horizontal seams, the 9/9-point corner, shared-span clipping, stacked-seam
+merging, and Command bypass with no commit. The preview test rasterizes a corner
+and checks both bars, gutter placement, and an untinted interior
+(`TANA2D_RENDER_PREVIEW=1` writes `build/snap-preview-seams.png`). The state
+query now reports `snapSeams`, `snapPreviewMargin` and `snapFree`. The live
+feedback scripts account for the gutter margin. `make all test` passed. The
+change has not yet been installed or run through the live CGEvent scripts.
+

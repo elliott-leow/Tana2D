@@ -17,6 +17,9 @@ static void hwm_plane_pointer(CGEventType type,CGPoint point)
     struct view *view=hwm_view();
     if(!view) { hwm_plane_pointer_finish(false); return; }
     if(type==kCGEventLeftMouseDown) {
+#ifdef HWM_NATIVE_ZOOM
+        hwm_zoom_cancel_native(); hwm_zoom_workspace=true;
+#endif
         hwm_plane_pointer_finish(false);
         hwm_plane_pick_automatic=!hwm_plane_selecting;
         struct window *w=hwm_plane_window_at(view,point);

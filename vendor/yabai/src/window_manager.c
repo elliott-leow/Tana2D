@@ -18,6 +18,9 @@ static TABLE_COMPARE_FUNC(compare_wm)
 
 bool window_manager_is_window_eligible(struct window *window)
 {
+#ifdef HWM_TEST_FIXTURE_ONLY
+    if(!window->application || !window->application->name || strcmp(window->application->name,"Tana2DFixture")) return false;
+#endif
     bool result = window->is_root && (window_is_real(window) || window_check_rule_flag(window, WINDOW_RULE_MANAGED));
     return result;
 }
@@ -271,6 +274,9 @@ void window_manager_center_mouse(struct window_manager *wm, struct window *windo
 
 bool window_manager_should_manage_window(struct window *window)
 {
+#ifdef HWM_TEST_FIXTURE_ONLY
+    if(!window_manager_is_window_eligible(window)) return false;
+#endif
     if (!window->is_root)                           return false;
     if (window_check_flag(window, WINDOW_FLOAT))    return false;
     if (window_is_sticky(window->id))               return false;
@@ -1297,9 +1303,32 @@ static void window_manager_make_key_window(ProcessSerialNumber *window_psn, uint
     SLPSPostEventRecordTo(window_psn, event_bytes);
 }
 
+static _Atomic uint64_t window_manager_hover_epoch;
+static void window_manager_focus_window_immediate(ProcessSerialNumber *window_psn, uint32_t window_id, AXUIElementRef ref)
+{
+    // AX focus reaches AppKit's actual key window. Old private key records can
+    // arrive as invalid mouse events on newer macOS. Keep AX off the renderer,
+    // and supersede queued work when the pointer moves to another window.
+    (void)window_id;
+    uint64_t epoch=atomic_fetch_add(&window_manager_hover_epoch,1)+1;
+    pid_t pid=0;GetProcessPID(window_psn,&pid);
+    if(!ref || !pid)return;
+    CFRetain(ref);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{ @autoreleasepool {
+        if(epoch==atomic_load(&window_manager_hover_epoch)) {
+            AXUIElementSetMessagingTimeout(ref,.04f);
+            [[NSRunningApplication runningApplicationWithProcessIdentifier:pid] activateWithOptions:0];
+            if(epoch==atomic_load(&window_manager_hover_epoch)) AXUIElementSetAttributeValue(ref,kAXMainAttribute,kCFBooleanTrue);
+            if(epoch==atomic_load(&window_manager_hover_epoch)) AXUIElementSetAttributeValue(ref,kAXFocusedAttribute,kCFBooleanTrue);
+        }
+        CFRelease(ref);
+    }});
+}
+
 void window_manager_focus_window_without_raise(ProcessSerialNumber *window_psn, uint32_t window_id)
 {
     TIME_FUNCTION;
+    atomic_fetch_add(&window_manager_hover_epoch,1);
     uint8_t event_bytes[0xf8];
 
     if (psn_equals(window_psn, &g_window_manager.focused_window_psn)) {
@@ -1332,6 +1361,7 @@ void window_manager_focus_window_without_raise(ProcessSerialNumber *window_psn, 
 void window_manager_focus_window_with_raise(ProcessSerialNumber *window_psn, uint32_t window_id, AXUIElementRef window_ref)
 {
     TIME_FUNCTION;
+    atomic_fetch_add(&window_manager_hover_epoch,1);
 
 #if 1
     horizontal_focus_requested(window_id);

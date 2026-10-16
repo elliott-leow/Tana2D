@@ -51,7 +51,11 @@ static bool hwm_config_reload(bool announce)
     if(![@[@"center",@"column",@"none"] containsObject:snap]) [problems addObject:@"settings.snap must be center, column or none"];
     hwm_magnet=[snapshot numberAt:@"snapMagnet" fallback:.1 minimum:0 maximum:.6];
     hwm_snap_threshold=[snapshot numberAt:@"snapThreshold" fallback:.15 minimum:.02 maximum:.6];
-    hwm_magnetic_centering=[snapshot boolAt:@"magneticCentering" fallback:YES];
+    hwm_magnetic_centering=[snapshot boolAt:@"magneticCentering" fallback:NO];
+    hwm_auto_center=[snapshot boolAt:@"autoCenter" fallback:YES];
+    hwm_pan_momentum=[snapshot boolAt:@"panMomentum" fallback:YES];
+    hwm_auto_center_radius=[snapshot numberAt:@"autoCenterDistance" fallback:120 minimum:20 maximum:400];
+    hwm_zoom_click_threshold=[snapshot numberAt:@"zoomClickThreshold" fallback:.5 minimum:0 maximum:1];
     hwm_swipe_gain=[snapshot numberAt:@"swipeGain" fallback:1 minimum:.4 maximum:3];
     NSString *placement=[[snapshot stringAt:@"newWindowPlacement" fallback:@"center-gap"] lowercaseString];
     hwm_new_placement=[placement isEqual:@"end"] ? 2 : [placement isEqual:@"beside-focused"] ? 1 : 0;
@@ -503,9 +507,11 @@ static bool hwm_named_action(const char *name)
     if((strcmp(name,"select-window")==0 || strcmp(name,"select-window-alt")==0)) {
         if(hwm_paused || hwm_suspended) return true;
         hwm_plane_pointer_finish(false);
-        hwm_plane_selecting=true; hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
+        // Toggle: zoom out to the whole workspace, or back to the focused window at 100%.
+        if(hwm_plane_scale<1) { hwm_plane_actual_size(hwm_view()); return true; }
+        hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
     }
-    if(strcmp(name,"fit-all")==0) { hwm_plane_pointer_finish(false); hwm_plane_selecting=false; hwm_plane_fit_all(hwm_view()); return true; }
+    if(strcmp(name,"fit-all")==0) { hwm_plane_pointer_finish(false); hwm_plane_fit_all(hwm_view()); return true; }
     if(strcmp(name,"fit-focused")==0) { hwm_plane_fit_focused(hwm_view()); return true; }
     if(strcmp(name,"actual-size")==0) { hwm_plane_actual_size(hwm_view()); return true; }
     if(strncmp(name,"exec:",5)==0) { hwm_spawn(@(name+5)); return true; }

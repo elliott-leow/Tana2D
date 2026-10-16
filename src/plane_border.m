@@ -23,19 +23,22 @@ static void hwm_plane_border_hide(void)
     if(hwm_plane_border_id && hwm_plane_border_visible) SLSOrderWindow(g_connection,hwm_plane_border_id,0,0);
     hwm_plane_border_visible=false;
 }
-static void hwm_plane_border_tick(struct view *view,double now)
+/* Returns true while the cached outline is only stretched to fit and a
+ * crisp redraw is still owed once motion stops. */
+static bool hwm_plane_border_tick(struct view *view,double now)
 {
-    if(hwm_paused || hwm_suspended || hwm_overview_active || hwm_border_mode==0) { hwm_plane_border_hide(); return; }
+    if(hwm_paused || hwm_suspended || hwm_overview_active || hwm_border_mode==0) { hwm_plane_border_hide(); return false; }
     struct window *focus=window_manager_find_window(&g_window_manager,hwm_drag_window?hwm_drag_window:hwm_feedback_focus_id);
-    if(!focus || focus->strip_no_border) { hwm_plane_border_hide(); return; }
+    if(!focus || focus->strip_no_border) { hwm_plane_border_hide(); return false; }
     CGRect screen=hwm_screen(view),frame=hwm_feedback_frame(view,focus,screen);
-    if(CGRectIsNull(frame)) { hwm_plane_border_hide(); return; }
+    if(CGRectIsNull(frame)) { hwm_plane_border_hide(); return false; }
+    bool travelling=false;
     if(!hwm_drag_window && !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) && hwm_border_travel) {
         double span=hwm_border_travel_span(),elapsed=now-hwm_border_travel_start;
         if(elapsed<span && hwm_border_from_id!=focus->id) {
             CGRect from=hwm_feedback_frame(view,window_manager_find_window(&g_window_manager,hwm_border_from_id),screen);
             if(!CGRectIsNull(from)) {
-                double p=hstrip_spring_progress(elapsed,span);
+                double p=hstrip_spring_progress(elapsed,span); travelling=true;
                 frame=CGRectMake(from.origin.x+(frame.origin.x-from.origin.x)*p,from.origin.y+(frame.origin.y-from.origin.y)*p,
                                  from.size.width+(frame.size.width-from.size.width)*p,from.size.height+(frame.size.height-from.size.height)*p);
             }
@@ -43,15 +46,23 @@ static void hwm_plane_border_tick(struct view *view,double now)
     }
     double pad=fmax(2,hwm_border_width);
     frame=CGRectIntegral(CGRectInset(frame,-pad,-pad));
-    if(frame.size.width>16384 || frame.size.height>16384) { hwm_plane_border_hide(); return; }
+    if(frame.size.width>16384 || frame.size.height>16384) { hwm_plane_border_hide(); return false; }
     // Rasterize at the window's stable world size. Camera zoom and focus
     // travel transform this cached outline instead of reallocating a surface
     // and synchronously flushing a new gradient on every display frame.
     CGSize canvas=CGSizeMake(ceil(fmax(1,frame.size.width/hwm_plane_scale)),ceil(fmax(1,frame.size.height/hwm_plane_scale)));
     if(!view_find_window_node(view,focus->id)) canvas=frame.size;
     bool reshape=!CGSizeEqualToSize(canvas,hwm_plane_border_canvas);
+    /* The padding is in screen points, so the canvas changes on nearly every
+     * zoom frame. A redraw reshapes the surface, flushes synchronously and
+     * suspends screen updates; doing it per frame made zooming stutter. In
+     * motion, stretch the cached outline and redraw once at rest. */
+    bool moving=travelling || hwm_view_in_motion(view,now) || now-hwm_zoom_pinch_time<.15;
+    bool stale=reshape && moving && hwm_plane_border_context && hwm_plane_border_id && hwm_plane_border_canvas.width>0 &&
+               hwm_plane_border_generation==hwm_border_generation;
+    if(stale) { canvas=hwm_plane_border_canvas; reshape=false; }
     bool redraw=reshape || hwm_plane_border_generation!=hwm_border_generation || !hwm_plane_border_context;
-    if(!redraw && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return;
+    if(!redraw && hwm_plane_border_visible && hwm_plane_border_focus==focus->id && CGRectEqualToRect(frame,hwm_plane_border_frame)) return stale;
     if(redraw || !hwm_plane_border_visible) hwm_batch_begin();
     else hwm_batch_begin_plane();
     bool drawable=true;
@@ -117,8 +128,9 @@ static void hwm_plane_border_tick(struct view *view,double now)
     // A queued helper command is not a displayed outline until the batch is
     // acknowledged. Do not cache a requested frame on either failure path:
     // otherwise the equality fast path suppresses every later retry.
-    if(!transformed || !ordered || !hwm_backend_ok) { hwm_plane_border_batch_failed(); return; }
+    if(!transformed || !ordered || !hwm_backend_ok) { hwm_plane_border_batch_failed(); return false; }
     hwm_plane_border_visible=true; hwm_plane_border_frame=frame; hwm_plane_border_focus=focus->id;
+    return stale;
 }
 
 /* The held-drag path only translates an existing cached outline. Its command

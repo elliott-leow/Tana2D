@@ -3,7 +3,11 @@
     "motionStrength": 1,
     "autofocus": "off",
     "focusAfterScroll": "none",
-    "magneticCentering": true,
+    "magneticCentering": false,
+    "autoCenter": true,
+    "autoCenterDistance": 120,
+    "panMomentum": true,
+    "zoomClickThreshold": 0.5,
     "showMenuBar": true,
     "showStripMap": false,
     "stripWidths": [

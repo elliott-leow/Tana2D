@@ -1428,6 +1428,13 @@ out:
 static EVENT_HANDLER(MOUSE_MOVED)
 {
     horizontal_moved_queued = false;
+    pthread_mutex_lock(&horizontal_hover_sample_lock);
+    CGPoint point=horizontal_hover_point;
+    uint64_t timestamp=horizontal_hover_timestamp;
+    pthread_mutex_unlock(&horizontal_hover_sample_lock);
+    // Native plane hover owns its immediate handoff. It must not wait behind
+    // the legacy gesture cooldown or an earlier pending focus notification.
+    if (horizontal_native_hover(point,timestamp)) goto out;
     if (g_window_manager.ffm_mode == FFM_DISABLED) goto out;
     if (menu_focus_suppressed()) goto out;
     if (mission_control_is_active())               goto out;
@@ -1438,7 +1445,6 @@ static EVENT_HANDLER(MOUSE_MOVED)
     float dt = ((float) read_os_timer() - last_gesture_time) * (1000.0f / (float)read_os_freq());
     if (dt < 120.0f) goto out;
 
-    CGPoint point = CGEventGetLocation(context);
     if (!horizontal_hover_allowed(point)) goto out;
     struct window *window = window_manager_find_window_at_point(&g_window_manager, point);
 
@@ -1739,6 +1745,7 @@ static void *event_loop_run(void *context)
             } while (!__sync_bool_compare_and_swap(&event_loop->head, head, next));
 
             int type = __atomic_load_n(&next->type, __ATOMIC_RELAXED);
+            horizontal_event_settle();
             uint64_t began = read_os_timer();
             switch (type) {
 #define EVENT_TYPE_ENTRY(value) case value: EVENT_HANDLER_##value(__atomic_load_n(&next->context, __ATOMIC_RELAXED), __atomic_load_n(&next->param1, __ATOMIC_RELAXED)); break;

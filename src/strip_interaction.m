@@ -19,6 +19,9 @@ static void horizontal_mouse_down(struct window *w, CGPoint p)
     hwm_edge_window=0; hwm_edge_neighbor=0; hwm_edge_changed=false;
     if(!hwm_ready || hwm_paused || hwm_overview_active || !w) return;
     struct view *v=window_manager_find_managed_window(&g_window_manager,w);
+#ifdef HWM_NATIVE_ZOOM
+    hwm_zoom_native_press(v,w);
+#endif
     if(!v || v->layout!=VIEW_STRIP || g_mouse_state.current_action==MOUSE_MODE_MOVE) return;
     if(!window_check_flag(w,WINDOW_RESIZABLE)) return;
     CGRect f=g_mouse_state.window_frame, hit=w->strip_last_frame;

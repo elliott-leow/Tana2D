@@ -164,7 +164,9 @@ def positive_case(label,peers,target,scale,mode,source_sign=(1,1),contacts=2,par
     if metric_preview:
         p=metric_preview; m=p['_previewMetrics']; px,py=projected(p,p['snapX'],p['snapY'])
         preview_public={'x':m['public_display_x'],'y':m['public_display_y'],'w':m['public_display_width'],'h':m['public_display_height'],
-                        'expected':(px,py,round(300*scale),round(300*scale))}
+                        'expected':(px-p['snapPreviewMargin'],py-p['snapPreviewMargin'],
+                                    round(300*scale)+2*p['snapPreviewMargin'],round(300*scale)+2*p['snapPreviewMargin']),
+                        'seams':p.get('snapSeams')}
     surface=metrics(moving)
     border=metrics(final['borderWindow'])
     landed=near(final['worldX'],target[0],.35) and near(final['worldY'],target[1],.35)

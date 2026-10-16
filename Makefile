@@ -5,7 +5,7 @@ SOURCES = vendor/yabai/src/manifest.m vendor/yabai/src/osax/payload_bin.c vendor
 HEADERS = $(shell find src vendor/yabai/src -name '*.h' -o -name '*.c' -o -name '*.m')
 OSAX_DEPS = $(wildcard vendor/yabai/src/osax/*.m vendor/yabai/src/osax/*.h vendor/yabai/src/misc/*.h)
 
-.PHONY: all test test-plane-visibility-failure test-menu-focus-guard bench clean
+.PHONY: all test test-input-shape test-live-input-shape-service test-plane-visibility-failure test-menu-focus-guard bench clean
 all: build/tana2d
 vendor/yabai/src/osax/payload_bin.c: $(OSAX_DEPS)
 	$(MAKE) -B -C vendor/yabai ./src/osax/payload_bin.c
@@ -16,8 +16,22 @@ vendor/yabai/src/osax/loader_bin.c: vendor/yabai/src/osax/payload_bin.c
 build/tana2d: $(SOURCES) $(HEADERS)
 	mkdir -p build
 	$(CC) $(CFLAGS) $(SOURCES) $(FRAMEWORKS) -o $@
+build/tana2d-fixture-only: $(SOURCES) $(HEADERS)
+	mkdir -p build
+	$(CC) $(CFLAGS) -DHWM_TEST_FIXTURE_ONLY=1 $(SOURCES) $(FRAMEWORKS) -o $@
+# Manages the real desktop and additionally accepts replayed trackpad swipes
+# for live motion tests. Never install or package this build.
+build/tana2d-replay: $(SOURCES) $(HEADERS)
+	mkdir -p build
+	$(CC) $(CFLAGS) -DHWM_TEST_INPUT_REPLAY=1 $(SOURCES) $(FRAMEWORKS) -o $@
+build/desktop_motion_probe: tests/desktop_motion_probe.m
+	mkdir -p build
+	$(CC) -fobjc-arc tests/desktop_motion_probe.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o $@
 test:
 	mkdir -p build
+	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fsanitize=address,undefined tests/native_zoom_test.m -framework Cocoa -o build/native_zoom_test
+	./build/native_zoom_test
+	$(MAKE) test-input-shape
 	$(CC) -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/strip_geometry_test.c -o build/strip_geometry_test
 	./build/strip_geometry_test
 	$(CC) -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/sa_transport_test.c -o build/sa_transport_test
@@ -83,6 +97,14 @@ test-menu-focus-guard:
 	mkdir -p build
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc tests/menu_focus_guard_test.m -framework Cocoa -o build/menu_focus_guard_test
 	./build/menu_focus_guard_test
+test-input-shape:
+	mkdir -p build
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/input_shape_test.m -framework Cocoa -o build/input_shape_test
+	./build/input_shape_test
+test-live-input-shape-service:
+	mkdir -p build
+	$(CC) -fobjc-arc -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-variable tests/live_input_shape_service.m -framework Cocoa -framework ApplicationServices -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_input_shape_service
+	./build/live_input_shape_service
 test-plane-visibility-failure:
 	mkdir -p build
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_visibility_failure_test.m -framework Cocoa -o build/plane_visibility_failure_test
@@ -100,11 +122,14 @@ clean:
 live-tools:
 	mkdir -p build/Tana2DFixture.app/Contents/MacOS
 	$(CC) -fno-objc-arc tests/plane_fixture.m -framework Cocoa -framework QuartzCore -o build/Tana2DFixture.app/Contents/MacOS/plane_fixture
+	cp build/Tana2DFixture.app/Contents/MacOS/plane_fixture build/Tana2DFixture.app/Contents/MacOS/Tana2DFixture
 	python3 scripts/fixture_plist.py build/Tana2DFixture.app/Contents/Info.plist
 	$(CC) tests/window_metrics.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/window_metrics
 	$(CC) tests/plane_gesture_probe.m -framework Cocoa -o build/plane_gesture_probe
 	$(CC) tests/plane_pointer_probe.m -framework Cocoa -o build/plane_pointer_probe
 	$(CC) tests/plane_hit_probe.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/plane_hit_probe
+	$(CC) tests/stationary_hover_probe.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/stationary_hover_probe
+	$(CC) tests/native_stability_probe.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/native_stability_probe
 	$(CC) -fno-objc-arc -fblocks tests/live_input_projection.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_input_projection
 
 	$(CC) -fno-objc-arc tests/live_transform_transaction.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o build/live_transform_transaction
