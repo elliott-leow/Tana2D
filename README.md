@@ -1,10 +1,10 @@
 # Tana2D
 
 A macOS window manager with an unbounded two-dimensional workspace. Derived from
-[Tana](https://github.com/elliott-leow/Tana), developed as a separate project.
+[Tana](https://github.com/elliott-leow/Tana), and inspired by DriftWM. The name comes from the Japanese word for shelf (棚 (たな))
 
 Experimental. See the [verification record](docs/VERIFICATION.md) for tested
-behavior and remaining limits.
+behavior and remaining limits. In particular, there are many performance issues remaining. This window manager consists of AI generated code.
 
 Pinch to zoom, swipe to pan. The pinch is read from the fingers' separation,
 so the thumb may rest or both fingers drift while they part; the fingers need
