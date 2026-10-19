@@ -64,5 +64,30 @@ int main(void)
     for (uint16_t index = 0; index < SA_PLANE_TRANSFORM_MAX_RECORDS; ++index) maximum[index] = (HwmPlaneTransform){ index + 1, index, -index, 1, 1 };
     assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), maximum, SA_PLANE_TRANSFORM_MAX_RECORDS, &length));
     assert(length <= SA_SOCKET_BUFF_LEN);
+    // A native move travels in the same packet and keeps its window id apart.
+    HwmPlaneTransform ride = { 6672 | HWM_PLANE_TRANSFORM_NATIVE, 120.5, 51, 1, 1 };
+    assert(hwm_plane_transform_valid(ride) && hwm_plane_transform_native(ride) && hwm_plane_transform_wid(ride) == 6672);
+    assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), &ride, 1, &length));
+    assert(hwm_plane_transform_packet_decode(packet + 1, length - 1, decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count) && count == 1);
+    assert(hwm_plane_transform_native(decoded[0]) && hwm_plane_transform_wid(decoded[0]) == 6672 && decoded[0].x == 120.5);
+    HwmPlaneTransform scaled_ride = { 6672 | HWM_PLANE_TRANSFORM_NATIVE, 0, 0, .5, .5 };
+    assert(!hwm_plane_transform_valid(scaled_ride));
+    HwmPlaneTransform flag_only = { HWM_PLANE_TRANSFORM_NATIVE, 0, 0, 1, 1 };
+    assert(!hwm_plane_transform_valid(flag_only));
+    assert(!hwm_plane_transform_native(values[0]));
+    // An alpha record shares the packet and keeps its window id apart too.
+    HwmPlaneTransform fade[2] = { { 6672 | HWM_PLANE_TRANSFORM_ALPHA, .85, 0, 1, 1 }, ride };
+    assert(hwm_plane_transform_valid(fade[0]) && hwm_plane_transform_alpha(fade[0]) &&
+           !hwm_plane_transform_native(fade[0]) && hwm_plane_transform_wid(fade[0]) == 6672);
+    assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), fade, 2, &length));
+    assert(hwm_plane_transform_packet_decode(packet + 1, length - 1, decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count) && count == 2);
+    assert(hwm_plane_transform_alpha(decoded[0]) && decoded[0].x == .85 && !hwm_plane_transform_alpha(decoded[1]));
+    HwmPlaneTransform bright = { 6672 | HWM_PLANE_TRANSFORM_ALPHA, 1.5, 0, 1, 1 };
+    HwmPlaneTransform undefined = { 6672 | HWM_PLANE_TRANSFORM_ALPHA, NAN, 0, 1, 1 };
+    HwmPlaneTransform scaled_alpha = { 6672 | HWM_PLANE_TRANSFORM_ALPHA, 1, 0, .5, .5 };
+    HwmPlaneTransform both = { 6672 | HWM_PLANE_TRANSFORM_ALPHA | HWM_PLANE_TRANSFORM_NATIVE, 1, 0, 1, 1 };
+    HwmPlaneTransform alpha_only = { HWM_PLANE_TRANSFORM_ALPHA, 1, 0, 1, 1 };
+    assert(!hwm_plane_transform_valid(bright) && !hwm_plane_transform_valid(undefined) && !hwm_plane_transform_valid(scaled_alpha) &&
+           !hwm_plane_transform_valid(both) && !hwm_plane_transform_valid(alpha_only));
     puts("absolute plane transform packet tests passed");
 }

@@ -97,7 +97,10 @@ static void hwm_drag_autoscroll(struct view *view,double now)
     /* AppKit owns the native surface. Edge-pan would move the camera while
      * that surface stays under AppKit's pointer, producing a camera-attached
      * window and a stale transform. */
-    if(hwm_drag_native) { hwm_drag_native_sync(view,w); return; }
+    /* A pointer event that sampled the surface moments ago leaves nothing for
+     * the frame to learn; with the pointer still, the frame keeps sampling
+     * for AppKit's own late moves. */
+    if(hwm_drag_native) { if(hwm_now()-hwm_drag_native_sampled_at>.006) hwm_drag_native_sync(view,w); return; }
     // The tap publishes every drag before coalescing. Never poll the cursor
     // cache here: consuming drag events can leave that cache frozen.
     if(sampled && (g_mouse_state.window==w || hwm_plane_pick_window==w->id)) {
@@ -117,5 +120,6 @@ static void hwm_drag_autoscroll(struct view *view,double now)
         hwm_drag_camera_owned=false;
         hwm_drag_move=hwm_drag_world_at(view,hwm_drag_point); hwm_drag_move_pending=true;
     }
-    if(hwm_drag_move_pending) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
+    // The magnet's ease carries on between pointer samples.
+    if(hwm_drag_move_pending || hwm_snap_easing) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
 }

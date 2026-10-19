@@ -147,6 +147,9 @@ struct window
     bool strip_no_border, strip_sticky, strip_attention, strip_ruled;
     CGRect strip_float_home;  /* resting place of a float carried off with its strip */
     bool strip_float_homed;
+    CGPoint strip_server_moved; /* last WindowServer move past AppKit's menu-bar clamp */
+    int strip_native_failures; /* native placements that failed since the camera last moved */
+    bool strip_native_riding;  /* at 100% in motion: the native frame itself follows the camera */
 };
 
 enum window_flag

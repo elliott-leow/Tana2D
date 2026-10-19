@@ -39,6 +39,31 @@ static void hwm_visibility_record(struct window *w,uint32_t wid,pid_t pid,CGRect
  * WindowServer about every border window each half second cost frames. */
 static NSArray *hwm_visibility_discover_borders(void)
 {
+#ifdef HWM_VISIBILITY_OWNS_SCHEDULE
+    /* With the tool's process known, read only what is on screen, in one
+     * query, and keep just its windows. A description of every window on
+     * the system, twice a second, was the cost of running it beside Tana2D. */
+    pid_t tool=atomic_load(&hwm_borders_pid);
+    if(tool>0 && kill(tool,0)==0) {
+        enum { HWM_BORDER_SCAN_MAX=1024 };
+        uint32_t ids[HWM_BORDER_SCAN_MAX]; int count=0;
+        if(SLSGetOnScreenWindowList(g_connection,0,HWM_BORDER_SCAN_MAX,ids,&count)==kCGErrorSuccess && count>0) {
+            if(count>HWM_BORDER_SCAN_MAX) count=HWM_BORDER_SCAN_MAX;
+            NSMutableArray *numbers=[NSMutableArray arrayWithCapacity:(NSUInteger)count];
+            for(int i=0;i<count;i++) [numbers addObject:@(ids[i])];
+            CFTypeRef query=SLSWindowQueryWindows(g_connection,(CFArrayRef)numbers,count);
+            CFTypeRef iterator=query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+            NSMutableArray *snapshot=[NSMutableArray array];
+            while(iterator && SLSWindowIteratorAdvance(iterator)) {
+                if(SLSWindowIteratorGetPID(iterator)!=tool) continue;
+                [snapshot addObject:@{@"id":@(SLSWindowIteratorGetWindowID(iterator)),@"pid":@(tool),@"alpha":@(SLSWindowIteratorGetAlpha(iterator))}];
+            }
+            if(iterator) CFRelease(iterator);
+            if(query) CFRelease(query);
+            return [snapshot copy];
+        }
+    }
+#endif
     CFArrayRef list=CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID);
     NSMutableArray *snapshot=[NSMutableArray array];
     for(NSDictionary *entry in (NSArray *)list) {
@@ -152,7 +177,9 @@ static void hwm_visibility_set(struct window *w,bool hidden,CGRect frame)
     }
     if(w->strip_offscreen!=hidden) {
         bool old=w->strip_offscreen; w->strip_offscreen=hidden;
-        hwm_batch_require_updates();
+        // An alpha record is part of the frame's own transaction; only an
+        // ordinary helper command needs screen updates held around it.
+        if(!scripting_addition_plane_alpha_supported()) hwm_batch_require_updates();
         if(!scripting_addition_set_opacity(w->id,hidden || w->strip_pop==1 || w->strip_close_pending ? 0 : hwm_window_alpha(w),0)) {
             w->strip_offscreen=old; ++hwm_move_failures; hwm_backend_ok=false;
             // The primary did not change state, so neither may a companion.
@@ -179,6 +206,41 @@ static void hwm_visibility_set(struct window *w,bool hidden,CGRect frame)
         if(scripting_addition_set_opacity(wid,hide ? 0 : [entry[@"alpha"] floatValue],0)) entry[@"hidden"]=@(hide);
         else { ++hwm_move_failures; hwm_backend_ok=false; }
     }
+}
+
+/* A window coming on screen while the camera travels is revealed after the
+ * frame's transforms are handed over, never in the middle of them. An
+ * ordinary helper command inside a frame flushes the transforms queued so
+ * far and suspends screen updates to keep the frame whole; a pan or zoom
+ * that brought several windows into view stalled on that. Revealing a frame
+ * late is safe: until its new transform lands, the window is where it was
+ * hidden, off screen. A helper that takes alpha in the transform transaction
+ * needs none of this: the reveal lands in the frame that moves it on screen. */
+static uint32_t hwm_visibility_reveals[256];
+static int hwm_visibility_reveal_count;
+static bool hwm_visibility_defer_reveal(struct window *w)
+{
+    if(!w->strip_offscreen || hwm_visibility_companions.count || hwm_visibility_reveal_count>=256 ||
+       scripting_addition_plane_alpha_supported()) return false;
+    w->strip_offscreen=false;
+    hwm_visibility_reveals[hwm_visibility_reveal_count++]=w->id;
+    return true;
+}
+/* After the frame has been released: one pipelined batch, one wait. */
+static void hwm_visibility_flush_reveals(void)
+{
+    if(!hwm_visibility_reveal_count) return;
+    scripting_addition_batch_begin();
+    for(int i=0;i<hwm_visibility_reveal_count;i++) {
+        struct window *w=window_manager_find_window(&g_window_manager,hwm_visibility_reveals[i]);
+        // Hidden again, or taken over by an opening or closing animation.
+        if(!w || w->strip_offscreen) continue;
+        if(!scripting_addition_set_opacity(w->id,w->strip_pop==1 || w->strip_close_pending ? 0 : hwm_window_alpha(w),0)) {
+            w->strip_offscreen=true; ++hwm_move_failures; hwm_backend_ok=false;
+        }
+    }
+    if(!scripting_addition_batch_end()) hwm_batch_failed();
+    hwm_visibility_reveal_count=0;
 }
 
 static void hwm_visibility_restore_all(void)

@@ -1,6 +1,7 @@
 /* Standalone setup. No window management runs until every required check passes. */
 #import <ServiceManagement/ServiceManagement.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <WebKit/WebKit.h>
 
 #define TANA2D_HELPER_PATH "/Library/PrivilegedHelperTools/dev.tana2d.window-helper"
 static NSString *const TanaHelperPath=@TANA2D_HELPER_PATH;
@@ -14,7 +15,21 @@ static BOOL tana_backend_ready(void)
     if(!pw) return NO;
     char version[256]={0}; uint32_t attributes=0;
     snprintf(g_sa_socket_file,sizeof(g_sa_socket_file),SA_SOCKET_PATH_FMT,pw->pw_name);
-    return scripting_addition_request_handshake(version,sizeof(version),&attributes) && !strcmp(version,OSAX_VERSION) && (attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
+    return scripting_addition_request_handshake(version,sizeof(version),&attributes) && OSAX_VERSION_COMPATIBLE(version) && (attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
+}
+
+/* A read-only check for setup's status page. It opens its own connection and
+ * leaves the running window manager's capability state and pending frame
+ * reply alone, so polling it can never make a live frame fail. */
+static BOOL tana_backend_probe(void)
+{
+    struct passwd *pw=getpwuid(getuid());
+    if(!pw) return NO;
+    char path[sizeof(g_sa_socket_file)]; snprintf(path,sizeof(path),SA_SOCKET_PATH_FMT,pw->pw_name);
+    const char request[]={0x01,0x00,SA_OPCODE_HANDSHAKE};
+    char version[256]={0}; uint32_t attributes=0;
+    return hwm_sa_handshake(path,request,sizeof(request),version,sizeof(version),&attributes,HWM_SA_TIMEOUT_MS) &&
+           OSAX_VERSION_COMPATIBLE(version) && (attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
 }
 
 static BOOL tana_security_ready(void)
@@ -99,6 +114,51 @@ done:
     return result;
 }
 
+static NSString *tana_run_output(NSString *path,NSArray *arguments)
+{
+    NSTask *task=[[[NSTask alloc] init] autorelease]; task.launchPath=path; task.arguments=arguments;
+    NSPipe *pipe=[NSPipe pipe]; task.standardInput=[NSFileHandle fileHandleWithNullDevice];
+    task.standardOutput=pipe; task.standardError=[NSFileHandle fileHandleWithNullDevice];
+    if(![task launchAndReturnError:NULL]) return nil;
+    NSData *data=[pipe.fileHandleForReading readDataToEndOfFile]; [task waitUntilExit];
+    return task.terminationStatus==0 ? [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease] : nil;
+}
+
+/* The stored value, which takes effect on the next boot; kern.bootargs is the current boot. */
+static NSArray *tana_stored_boot_args(void);
+/* Status is polled every second while setup is open. The stored value only
+ * changes when setup writes it, so read it once and again after that write. */
+static NSArray *tana_boot_args_cache;
+static void tana_boot_args_invalidate(void) { @synchronized(NSArray.class) { [tana_boot_args_cache release]; tana_boot_args_cache=nil; } }
+static NSArray *tana_cached_boot_args(void)
+{
+    @synchronized(NSArray.class) {
+        if(!tana_boot_args_cache) tana_boot_args_cache=[tana_stored_boot_args() copy];
+        return [[tana_boot_args_cache retain] autorelease];
+    }
+}
+static NSArray *tana_stored_boot_args(void)
+{
+    NSString *output=tana_run_output(@"/usr/sbin/nvram",@[@"boot-args"]);
+    NSRange tab=[output rangeOfString:@"\t"];
+    if(tab.location==NSNotFound) return @[];
+    NSString *value=[output substringFromIndex:NSMaxRange(tab)];
+    NSMutableArray *parts=[NSMutableArray array];
+    for(NSString *part in [value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) if(part.length) [parts addObject:part];
+    return parts;
+}
+
+/* Appends the helper's boot argument and preserves every existing argument.
+ * Runs only as root, only when the user chooses it in setup. */
+static int tana_enable_arm64e_boot_arg(void)
+{
+    if(getuid()!=0) return 1;
+    NSArray *parts=tana_stored_boot_args();
+    if([parts containsObject:@"-arm64e_preview_abi"]) return 0;
+    NSString *value=[[parts arrayByAddingObject:@"-arm64e_preview_abi"] componentsJoinedByString:@" "];
+    return tana_run(@"/usr/sbin/nvram",@[[@"boot-args=" stringByAppendingString:value]])==0 ? 0 : 3;
+}
+
 static BOOL tana_session_unlocked(void)
 {
     CFDictionaryRef session=CGSessionCopyCurrentDictionary();
@@ -117,7 +177,16 @@ static void tana_startup_wait_for_unlock(BOOL (^is_unlocked)(void),void (^wait_t
     NSLog(@"Tana2D startup: desktop unlocked; continuing startup");
 }
 
-static NSDictionary *tana_setup_status(void)
+/* Accessibility grants follow the app's location; a copy in Downloads or a
+ * disk image is easily lost or translocated. A bare development binary is exempt. */
+static BOOL tana_in_applications(NSString *bundle_path)
+{
+    if(![bundle_path.pathExtension isEqual:@"app"]) return YES;
+    NSString *user=[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/"];
+    return [bundle_path hasPrefix:@"/Applications/"] || [bundle_path hasPrefix:user];
+}
+
+static NSDictionary *tana_setup_status_with_screens(NSUInteger screens)
 {
     BOOL unlocked=tana_session_unlocked();
     int connection=SLSMainConnectionID();
@@ -126,16 +195,46 @@ static NSDictionary *tana_setup_status(void)
     uint64_t space=display ? SLSManagedDisplayGetCurrentSpace(connection,display) : 0;
     if(display) CFRelease(display);
     BOOL normal=space && SLSSpaceGetType(connection,space)==0;
-    return @{@"accessibility":@(AXIsProcessTrusted()),@"security":@(tana_security_ready()),@"backend":@(tana_backend_ready()),
+    BOOL sip=scripting_addition_is_sip_friendly();
+#ifdef __arm64__
+    BOOL arm64e=scripting_addition_is_arm64e_enabled();
+    BOOL pending=sip && !arm64e && [tana_cached_boot_args() containsObject:@"-arm64e_preview_abi"];
+#else
+    BOOL arm64e=YES,pending=NO;
+#endif
+    return @{@"accessibility":@(AXIsProcessTrusted()),@"security":@(tana_security_ready()),@"backend":@(tana_backend_probe()),
+        @"sip":@(sip),@"arm64e":@(arm64e),@"bootArgsPending":@(pending),@"inApplications":@(tana_in_applications(NSBundle.mainBundle.bundlePath)),
         @"helperInstalled":@([[NSFileManager defaultManager] isExecutableFileAtPath:TanaHelperPath]),
         @"sessionUnlocked":@(unlocked),@"separateSpaces":@(separate),@"otherManagerPID":@(tana_other_manager()),
-        @"normalDesktop":@(normal),@"singleDisplay":@([NSScreen screens].count==1)};
+        @"normalDesktop":@(normal),@"singleDisplay":@(screens==1)};
 }
+static NSDictionary *tana_setup_status(void) { return tana_setup_status_with_screens([NSScreen screens].count); }
 
 static BOOL tana_setup_can_start(NSDictionary *status)
 {
     return [status[@"accessibility"] boolValue] && [status[@"backend"] boolValue] && [status[@"sessionUnlocked"] boolValue] &&
            [status[@"separateSpaces"] boolValue] && [status[@"singleDisplay"] boolValue] && [status[@"normalDesktop"] boolValue] && ![status[@"otherManagerPID"] intValue];
+}
+
+/* Remaining setup steps in the order a person completes them. Each step can
+ * only be done once the steps before it are; the Recovery change precedes the
+ * boot argument, which precedes its restart, which precedes the helper. */
+static NSArray *tana_setup_missing(NSDictionary *s)
+{
+    NSMutableArray *missing=[NSMutableArray array];
+    if(![s[@"inApplications"] boolValue]) [missing addObject:@"move"];
+    if(![s[@"accessibility"] boolValue]) [missing addObject:@"accessibility"];
+    if(![s[@"backend"] boolValue]) {
+        if(![s[@"sip"] boolValue]) [missing addObject:@"recovery"];
+        if(![s[@"arm64e"] boolValue]) [missing addObject:[s[@"bootArgsPending"] boolValue] ? @"restart" : @"bootArgs"];
+        [missing addObject:@"helper"];
+    }
+    if(![s[@"separateSpaces"] boolValue]) [missing addObject:@"spaces"];
+    if([s[@"otherManagerPID"] intValue]) [missing addObject:@"otherManager"];
+    if(![s[@"singleDisplay"] boolValue]) [missing addObject:@"display"];
+    if(![s[@"normalDesktop"] boolValue]) [missing addObject:@"fullscreen"];
+    if(![s[@"sessionUnlocked"] boolValue]) [missing addObject:@"locked"];
+    return missing;
 }
 
 static NSString *tana_settings_path(void)
@@ -144,15 +243,62 @@ static NSString *tana_settings_path(void)
     return [[base stringByAppendingPathComponent:@"Tana2D"] stringByAppendingPathComponent:@"config.json"];
 }
 
+/* Keyboard & screen reader mode. The values it replaces are kept beside it,
+ * so turning it off restores exactly what the person had. */
+static NSDictionary *tana_accessible_settings(void)
+{
+    return @{@"autofocus":@"off",@"focusAfterScroll":@"center",@"showMenuBar":@YES,@"motionStrength":@0,@"haptics":@NO};
+}
+static NSDictionary *tana_accessible_shortcuts(void)
+{
+    /* Preserve Spotlight, app Quit, and VoiceOver's Control-Option-P. */
+    return @{@"float-alt":@NO,@"utility":@"ctrl+cmd+u",@"utility-mark":@"ctrl+shift+cmd+u",@"float":@"alt+cmd+space",@"close":@"alt+cmd+q",@"commands":@"ctrl+cmd+p"};
+}
+static BOOL tana_keyboard_mode(NSDictionary *config)
+{
+    NSDictionary *settings=[config[@"settings"] isKindOfClass:NSDictionary.class] ? config[@"settings"] : nil;
+    return [settings[@"keyboardMode"] isKindOfClass:NSNumber.class] && [settings[@"keyboardMode"] boolValue];
+}
 static NSMutableDictionary *tana_accessible_configuration(NSDictionary *original)
 {
     NSMutableDictionary *decoded=[[original mutableCopy] autorelease];
     NSMutableDictionary *settings=[[decoded[@"settings"] mutableCopy] autorelease] ?: [NSMutableDictionary dictionary];
-    [settings addEntriesFromDictionary:@{@"autofocus":@"off",@"focusAfterScroll":@"center",@"showMenuBar":@YES,@"motionStrength":@0,@"haptics":@NO}]; decoded[@"settings"]=settings;
     NSMutableDictionary *shortcuts=[[decoded[@"shortcuts"] mutableCopy] autorelease] ?: [NSMutableDictionary dictionary];
-    /* Preserve Spotlight, app Quit, and VoiceOver's Control-Option-P. */
-    shortcuts[@"float-alt"]=@NO; shortcuts[@"utility"]=@"ctrl+cmd+u"; shortcuts[@"utility-mark"]=@"ctrl+shift+cmd+u"; shortcuts[@"float"]=@"alt+cmd+space"; shortcuts[@"close"]=@"alt+cmd+q"; shortcuts[@"commands"]=@"ctrl+cmd+p"; decoded[@"shortcuts"]=shortcuts;
+    if(!tana_keyboard_mode(original)) {
+        NSMutableDictionary *saved=[NSMutableDictionary dictionary],*savedShortcuts=[NSMutableDictionary dictionary];
+        for(NSString *key in tana_accessible_settings()) saved[key]=settings[key] ?: NSNull.null;
+        for(NSString *key in tana_accessible_shortcuts()) savedShortcuts[key]=shortcuts[key] ?: NSNull.null;
+        settings[@"keyboardModeRestore"]=@{@"settings":saved,@"shortcuts":savedShortcuts};
+    }
+    [settings addEntriesFromDictionary:tana_accessible_settings()]; settings[@"keyboardMode"]=@YES;
+    [shortcuts addEntriesFromDictionary:tana_accessible_shortcuts()];
+    decoded[@"settings"]=settings; decoded[@"shortcuts"]=shortcuts;
     return decoded;
+}
+/* Trackpad style: undo keyboard mode if it is on, and hover to focus. */
+static NSMutableDictionary *tana_trackpad_configuration(NSDictionary *original)
+{
+    NSMutableDictionary *decoded=[[original mutableCopy] autorelease];
+    NSMutableDictionary *settings=[[decoded[@"settings"] mutableCopy] autorelease] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *shortcuts=[[decoded[@"shortcuts"] mutableCopy] autorelease] ?: [NSMutableDictionary dictionary];
+    NSDictionary *restore=[settings[@"keyboardModeRestore"] isKindOfClass:NSDictionary.class] ? settings[@"keyboardModeRestore"] : nil;
+    if(tana_keyboard_mode(original)) {
+        NSDictionary *savedSettings=[restore[@"settings"] isKindOfClass:NSDictionary.class] ? restore[@"settings"] : @{};
+        NSDictionary *savedShortcuts=[restore[@"shortcuts"] isKindOfClass:NSDictionary.class] ? restore[@"shortcuts"] : @{};
+        for(NSString *key in tana_accessible_settings()) { id v=savedSettings[key]; if(v && v!=NSNull.null) settings[key]=v; else [settings removeObjectForKey:key]; }
+        for(NSString *key in tana_accessible_shortcuts()) { id v=savedShortcuts[key]; if(v && v!=NSNull.null) shortcuts[key]=v; else [shortcuts removeObjectForKey:key]; }
+    }
+    [settings removeObjectForKey:@"keyboardMode"]; [settings removeObjectForKey:@"keyboardModeRestore"];
+    settings[@"autofocus"]=@"pointer-movement";
+    decoded[@"settings"]=settings; decoded[@"shortcuts"]=shortcuts;
+    return decoded;
+}
+
+static NSDictionary *tana_read_configuration(void)
+{
+    NSData *data=[NSData dataWithContentsOfFile:tana_settings_path()];
+    id decoded=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    return [decoded isKindOfClass:NSDictionary.class] ? decoded : nil;
 }
 
 static void tana_setup_menu(void)
@@ -174,171 +320,376 @@ static void tana_setup_menu(void)
     window.submenu=windowMenu; [main addItem:window]; NSApp.mainMenu=main;
 }
 
-@interface TanaSetup : NSObject <NSWindowDelegate>
+static NSURL *tana_setup_page_url(void)
+{
+    NSURL *bundled=[NSBundle.mainBundle URLForResource:@"onboarding" withExtension:@"html"];
+    if(bundled) return bundled;
+    /* Development builds run outside a bundle; use the source tree's page. */
+    NSString *source=[[@(__FILE__) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"setup_ui/onboarding.html"];
+    if(!source.isAbsolutePath) source=[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:source];
+    source=source.stringByStandardizingPath;
+    return [NSFileManager.defaultManager fileExistsAtPath:source] ? [NSURL fileURLWithPath:source] : nil;
+}
+
+static NSString *const TanaSetupStartedKey=@"TanaSetupStarted";
+static NSString *const TanaSetupCompletedKey=@"TanaSetupCompleted";
+static NSString *const TanaSetupResumeLoginKey=@"TanaSetupResumeLoginItem";
+
+/* The page is drawn edge to edge; this strip keeps the title bar draggable. */
+@interface TanaSetupDragStrip : NSView
+@end
+@implementation TanaSetupDragStrip
+- (BOOL)mouseDownCanMoveWindow { return YES; }
+- (void)mouseDown:(NSEvent *)event { if(event.clickCount==2) [self.window performZoom:nil]; else [self.window performWindowDragWithEvent:event]; }
+@end
+
+@interface TanaSetup : NSObject <NSWindowDelegate,WKScriptMessageHandler,WKNavigationDelegate>
 @property(nonatomic,retain) NSWindow *window;
-@property(nonatomic,retain) NSTextField *status;
-@property(nonatomic,retain) NSTextField *detail;
-@property(nonatomic,retain) NSButton *start;
-@property(nonatomic,retain) NSButton *install;
-@property(nonatomic,retain) NSButton *login;
+@property(nonatomic,retain) WKWebView *web;
 @property(nonatomic,retain) NSTimer *timer;
-@property(nonatomic,retain) NSDictionary *lastStatus;
-@property(nonatomic) BOOL startup,accepted,busy,preview;
+@property(nonatomic,retain) NSDictionary *lastState;
+@property(nonatomic,copy) NSString *message;
+@property(nonatomic) BOOL startup,accepted,busy,preview,loaded,reinstallHelper,gathering,refreshAgain;
 + (instancetype)shared;
 - (void)showForStartup:(BOOL)startup preview:(BOOL)preview;
+- (NSDictionary *)state;
+- (void)close:(id)sender;
 @end
 
 @implementation TanaSetup
 + (instancetype)shared { static TanaSetup *instance; if(!instance) instance=[TanaSetup new]; return instance; }
-- (NSTextField *)label:(NSString *)text size:(CGFloat)size
-{
-    NSTextField *field=[NSTextField wrappingLabelWithString:text]; field.font=[NSFont systemFontOfSize:size];
-    field.textColor=NSColor.labelColor; field.selectable=YES; return field;
-}
-- (NSButton *)button:(NSString *)title action:(SEL)action
-{
-    NSButton *button=[NSButton buttonWithTitle:title target:self action:action];
-    button.bezelStyle=NSBezelStyleRounded; button.accessibilityLabel=title; return button;
-}
 - (void)build
 {
-    self.window=[[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,650) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO] autorelease];
+    self.window=[[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,920,640) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable|NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO] autorelease];
     self.window.title=@"Tana2D Setup & Settings"; self.window.delegate=self; self.window.releasedWhenClosed=NO;
-    self.window.minSize=NSMakeSize(500,500);
-    NSScrollView *scroll=[[[NSScrollView alloc] initWithFrame:self.window.contentView.bounds] autorelease];
-    scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable; scroll.hasVerticalScroller=YES; scroll.drawsBackground=NO;
-    NSStackView *stack=[NSStackView stackViewWithViews:@[]]; stack.orientation=NSUserInterfaceLayoutOrientationVertical;
-    stack.alignment=NSLayoutAttributeLeading; stack.spacing=14; stack.edgeInsets=NSEdgeInsetsMake(24,28,24,28);
-    scroll.documentView=stack; [self.window.contentView addSubview:scroll]; stack.translatesAutoresizingMaskIntoConstraints=NO;
-    [stack.widthAnchor constraintEqualToAnchor:scroll.contentView.widthAnchor].active=YES;
-    [stack addArrangedSubview:[self label:@"Welcome to Tana2D" size:26]];
-    [stack addArrangedSubview:[self label:@"Your windows on an infinite two-dimensional plane. Tana2D includes its own window engine and helper. No Homebrew, yabai, or terminal setup is needed for the app." size:14]];
-    self.status=[self label:@"Checking your Mac…" size:14]; self.status.accessibilityLabel=@"Setup requirements"; [stack addArrangedSubview:self.status];
-    NSButton *access=[self button:@"Allow Accessibility…" action:@selector(accessibility:)]; [stack addArrangedSubview:access];
-    self.install=[self button:@"Set Up Window Helper…" action:@selector(installHelper:)]; [stack addArrangedSubview:self.install];
-    [stack addArrangedSubview:[self button:@"Read macOS Setup Guide" action:@selector(guide:)]];
-    self.detail=[self label:@"" size:13]; self.detail.textColor=NSColor.secondaryLabelColor; self.detail.accessibilityLabel=@"Setup guidance"; [stack addArrangedSubview:self.detail];
-    [stack addArrangedSubview:[self label:@"Make it comfortable" size:18]];
-    self.login=[NSButton checkboxWithTitle:@"Open Tana2D when I log in" target:self action:@selector(loginChanged:)]; [stack addArrangedSubview:self.login];
-    [stack addArrangedSubview:[self button:@"Use Keyboard & Screen Reader Preferences" action:@selector(accessiblePreferences:)]];
-    [stack addArrangedSubview:[self button:@"Open Configuration File" action:@selector(configuration:)]];
-    [stack addArrangedSubview:[self label:@"The Tana2D menu lists your current shortcuts. The command palette defaults to Control + Option + P. Swipe with three fingers to move around the plane. Pinch to zoom. Control + Enter, Control + Up, or a four-finger swipe up zooms out to the whole workspace, where apps stay usable (below 50%, click a window to zoom in on it); press it again or swipe four fingers down to return to the active window at 100%. Tana2D follows macOS Reduce Motion." size:14]];
-    self.start=[self button:@"Start Tana2D" action:@selector(startTana:)]; self.start.keyEquivalent=@"\r"; [stack addArrangedSubview:self.start];
-    [stack addArrangedSubview:[self button:@"Close" action:@selector(close:)]];
-    for(NSView *view in stack.arrangedSubviews) [view.widthAnchor constraintLessThanOrEqualToAnchor:stack.widthAnchor constant:-56].active=YES;
+    self.window.titlebarAppearsTransparent=YES; self.window.titleVisibility=NSWindowTitleHidden;
+    self.window.minSize=NSMakeSize(760,560); self.window.backgroundColor=[NSColor colorWithSRGBRed:.04 green:.05 blue:.10 alpha:1];
+    WKWebViewConfiguration *configuration=[[[WKWebViewConfiguration alloc] init] autorelease];
+    [configuration.userContentController addScriptMessageHandler:self name:@"tana"];
+    NSView *content=self.window.contentView;
+    self.web=[[[WKWebView alloc] initWithFrame:content.bounds configuration:configuration] autorelease];
+    self.web.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable; self.web.navigationDelegate=self;
+    [self.web setValue:@NO forKey:@"drawsBackground"];
+    self.web.accessibilityLabel=@"Tana2D setup";
+    [content addSubview:self.web];
+    TanaSetupDragStrip *strip=[[[TanaSetupDragStrip alloc] initWithFrame:NSMakeRect(80,content.bounds.size.height-30,content.bounds.size.width-160,30)] autorelease];
+    strip.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin; [content addSubview:strip positioned:NSWindowAbove relativeTo:self.web];
+    NSURL *page=tana_setup_page_url();
+    if(page) [self.web loadFileURL:page allowingReadAccessToURL:page.URLByDeletingLastPathComponent];
+    else [self.web loadHTMLString:@"<body style='font:16px system-ui;color:#fff;padding:64px'><h1>Setup files are missing</h1><p>Reinstall Tana2D, then open it again.</p></body>" baseURL:nil];
     [self.window center];
 }
+- (NSDictionary *)stateWithStatus:(NSDictionary *)s login:(SMAppServiceStatus)login config:(NSDictionary *)config other:(NSString *)other
+{
+    NSArray *missing=tana_setup_missing(s);
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+#ifdef __arm64__
+    NSString *arch=@"arm64";
+#else
+    NSString *arch=@"x86_64";
+#endif
+    NSMutableDictionary *state=[[s mutableCopy] autorelease];
+    [state addEntriesFromDictionary:@{@"missing":missing,@"step":missing.firstObject ?: @"ready",@"canStart":@(tana_setup_can_start(s)),
+        @"startup":@(self.startup),@"preview":@(self.preview),@"busy":@(self.busy),@"message":self.message ?: @"",@"arch":arch,
+        @"otherManager":other ?: @"",@"loginEnabled":@(login==SMAppServiceStatusEnabled),@"loginNeedsApproval":@(login==SMAppServiceStatusRequiresApproval),
+        @"resumed":@([defaults boolForKey:TanaSetupStartedKey]),@"completed":@([defaults boolForKey:TanaSetupCompletedKey]),
+        @"keyboardMode":@(tana_keyboard_mode(config)),
+        @"configPath":[tana_settings_path() stringByAbbreviatingWithTildeInPath],
+        @"version":[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"dev"}];
+    return state;
+}
+static NSString *tana_other_manager_name(NSDictionary *s)
+{
+    pid_t pid=[s[@"otherManagerPID"] intValue];
+    return pid ? ([NSRunningApplication runningApplicationWithProcessIdentifier:pid].localizedName ?: @"another window manager") : @"";
+}
+- (NSDictionary *)state
+{
+    NSDictionary *s=tana_setup_status();
+    return [self stateWithStatus:s login:SMAppService.mainAppService.status config:tana_read_configuration() other:tana_other_manager_name(s)];
+}
+- (void)push:(NSDictionary *)state force:(BOOL)force
+{
+    if(!self.loaded) return;
+    if(!force && [state isEqual:self.lastState]) return;
+    self.lastState=state;
+    NSData *json=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
+    NSString *script=[NSString stringWithFormat:@"window.tanaUpdate&&window.tanaUpdate(%@)",[[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] autorelease]];
+    [self.web evaluateJavaScript:script completionHandler:nil];
+}
+/* The status check forks, makes XPC calls and opens the helper socket. Gather
+ * it off the main thread so the page never hitches while someone waits on it. */
 - (void)refresh:(id)sender
 {
-    (void)sender; if(self.busy) return;
-    NSDictionary *s=tana_setup_status();
-    self.status.stringValue=[NSString stringWithFormat:@"%@ Accessibility permission\n%@ Window helper\n%@ One connected display\n%@ Displays have separate Spaces\n%@ Window manager available",
-        [s[@"accessibility"] boolValue]?@"Ready:":@"Needed:",[s[@"backend"] boolValue]?@"Ready:":@"Needed:",
-        [s[@"singleDisplay"] boolValue]?@"Ready:":@"Needed:",[s[@"separateSpaces"] boolValue]?@"Ready:":@"Needed:",
-        [s[@"otherManagerPID"] intValue]?@"Blocked:":@"Ready:"];
-    self.start.enabled=!self.preview && (!self.startup || tana_setup_can_start(s));
-    self.install.enabled=!self.preview && [s[@"security"] boolValue] && ![s[@"backend"] boolValue];
-    self.login.enabled=!self.preview;
-    self.login.state=SMAppService.mainAppService.status==SMAppServiceStatusEnabled ? NSControlStateValueOn:NSControlStateValueOff;
-    if([self.lastStatus isEqual:s]) return;
-    self.lastStatus=s;
-    if(self.preview) self.detail.stringValue=@"Preview only. Window management and privileged setup are disabled.";
-    else if(![s[@"security"] boolValue] && ![s[@"backend"] boolValue]) self.detail.stringValue=@"macOS currently blocks the window helper. Keeping live off-screen windows and all animations requires a one-time change in macOS Recovery. Read the guide before deciding; Tana2D never changes these security settings for you.";
-    else if([s[@"otherManagerPID"] intValue]) {
-        pid_t pid=[s[@"otherManagerPID"] intValue];
-        NSString *name=[NSRunningApplication runningApplicationWithProcessIdentifier:pid].localizedName ?: @"Another window manager";
-        self.detail.stringValue=[NSString stringWithFormat:@"%@ is still managing your windows (PID %d). Quit %@ to enable Start Tana2D. Your permissions are ready when the checks above say Ready.",name,pid,name];
-    }
-    else if(![s[@"singleDisplay"] boolValue]) self.detail.stringValue=@"This version supports one display. Disconnect additional displays before starting.";
-    else if(![s[@"separateSpaces"] boolValue]) self.detail.stringValue=@"Enable Displays have separate Spaces in System Settings → Desktop & Dock → Mission Control, then log out and back in.";
-    else if(![s[@"normalDesktop"] boolValue]) self.detail.stringValue=@"Leave the full-screen app and switch to an ordinary desktop before starting Tana2D.";
-    else if(![s[@"sessionUnlocked"] boolValue]) self.detail.stringValue=@"Unlock your Mac to start Tana2D.";
-    else if(![s[@"accessibility"] boolValue]) self.detail.stringValue=@"Allow Tana2D in Privacy & Security → Accessibility. This lets Tana2D move and resize your windows. This page checks again automatically.";
-    else if(![s[@"backend"] boolValue]) self.detail.stringValue=@"Set Up Window Helper asks macOS for administrator approval once. It installs Tana2D’s own helper and allows only that helper to reload after login or a Dock restart.";
-    else self.detail.stringValue=@"Ready. Start Tana2D to arrange your windows. Quit Tana2D from its menu to restore the windows it still tracks.";
+    if(!self.loaded) return;
+    BOOL force=sender==self;
+    if(self.gathering) { if(force) self.refreshAgain=YES; return; }
+    self.gathering=YES;
+    NSUInteger screens=[NSScreen screens].count;
+    [self retain];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        @autoreleasepool {
+            NSDictionary *s=[tana_setup_status_with_screens(screens) retain];
+            SMAppServiceStatus login=SMAppService.mainAppService.status;
+            NSDictionary *config=[tana_read_configuration() retain];
+            NSString *other=[tana_other_manager_name(s) retain];
+            dispatch_async(dispatch_get_main_queue(),^{
+                self.gathering=NO;
+                [self push:[self stateWithStatus:s login:login config:config other:other] force:force || self.refreshAgain];
+                BOOL again=self.refreshAgain; self.refreshAgain=NO;
+                [s release]; [config release]; [other release];
+                if(again) [self refresh:self];
+                [self release];
+            });
+        }
+    });
 }
+- (void)say:(NSString *)message { self.message=message; [self refresh:self]; }
 - (void)showForStartup:(BOOL)startup preview:(BOOL)preview
 {
-    self.startup=startup; self.preview=preview; self.accepted=NO; self.lastStatus=nil;
+    BOOL reopen=self.window && (self.startup!=startup || self.preview!=preview);
+    self.startup=startup; self.preview=preview; self.accepted=NO; self.lastState=nil; self.message=nil;
     tana_setup_menu();
     if(!self.window) [self build];
-    self.start.title=startup?@"Start Tana2D":@"Done";
-    [self refresh:nil]; [self.timer invalidate];
+    else if(reopen) [self.web evaluateJavaScript:@"window.tanaReset&&window.tanaReset()" completionHandler:nil];
+    [self refresh:self]; [self.timer invalidate];
     self.timer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(refresh:) userInfo:nil repeats:YES];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
 }
-- (void)accessibility:(id)sender
+
+#pragma mark Page bridge
+
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message
 {
-    (void)sender; if(self.preview) return;
-    NSDictionary *options=@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES};
-    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
+    (void)controller;
+    NSDictionary *body=[message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
+    NSString *action=[body[@"action"] isKindOfClass:NSString.class] ? body[@"action"] : nil; id value=body[@"value"];
+    if(!action) return;
+    if([action isEqual:@"ready"]) { self.loaded=YES; [self refresh:self]; return; }
+    if([action isEqual:@"guide"]) { [self guide]; return; }
+    if([action isEqual:@"print"]) { [self print]; return; }
+    if([action isEqual:@"close"]) { [self close:nil]; return; }
+    if(self.preview) { [self say:@"Preview only. This button does nothing here."]; return; }
+    if(self.busy) return;
+    self.message=nil;
+    if([action isEqual:@"began"]) [NSUserDefaults.standardUserDefaults setBool:YES forKey:TanaSetupStartedKey];
+    else if([action isEqual:@"accessibility"]) [self accessibility];
+    else if([action isEqual:@"move"]) [self moveToApplications];
+    else if([action isEqual:@"shutDownForRecovery"]) [self powerForRecovery];
+    else if([action isEqual:@"enableBootArgs"]) [self enableBootArgs];
+    else if([action isEqual:@"restart"]) [self power:@"rrst" resume:YES];
+    else if([action isEqual:@"installHelper"]) [self installHelper];
+    else if([action isEqual:@"openSpaces"]) [self openSettings:@"x-apple.systempreferences:com.apple.Desktop-Settings.extension"];
+    else if([action isEqual:@"logOut"]) [self power:@"rlgo" resume:YES];
+    else if([action isEqual:@"quitOther"]) [self quitOtherManager];
+    else if([action isEqual:@"login"]) [self setLogin:[value boolValue]];
+    else if([action isEqual:@"style"]) [self applyStyle:[value isEqual:@"keyboard"]];
+    else if([action isEqual:@"openConfig"]) [self configuration];
+    else if([action isEqual:@"start"]) [self startTana];
+    [self refresh:self];
 }
-- (void)guide:(id)sender
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
 {
-    (void)sender; NSURL *url=[NSBundle.mainBundle URLForResource:@"SETUP" withExtension:@"html"];
-    if(url) [[NSWorkspace sharedWorkspace] openURL:url];
-    else self.detail.stringValue=@"See docs/SETUP.html in the source folder, or install the packaged Tana2D app to read the offline guide.";
+    (void)webView; NSURL *url=action.request.URL;
+    if(url.isFileURL || [url.scheme isEqual:@"about"]) { decisionHandler(WKNavigationActionPolicyAllow); return; }
+    if([url.scheme isEqual:@"https"]) [[NSWorkspace sharedWorkspace] openURL:url];
+    decisionHandler(WKNavigationActionPolicyCancel);
 }
-- (void)installHelper:(id)sender
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { self.loaded=NO; [webView reload]; }
+
+#pragma mark Actions
+
+/* Shows the admin prompt after the page has drawn its waiting state. */
+- (void)runAdministrator:(NSArray *)arguments waiting:(NSString *)waiting then:(void (^)(BOOL ok,BOOL cancelled,int status))then
 {
-    (void)sender; if(self.preview || self.busy) return;
-    self.busy=YES; self.install.enabled=NO; self.start.enabled=NO;
-    self.detail.stringValue=@"Waiting for macOS administrator approval…";
-    NSString *command=[NSString stringWithFormat:@"%@ --install-helper %u",tana_shell_quote(NSBundle.mainBundle.executablePath),getuid()];
+    self.busy=YES; [self say:waiting];
+    NSMutableArray *quoted=[NSMutableArray arrayWithObject:tana_shell_quote(NSBundle.mainBundle.executablePath)];
+    for(NSString *argument in arguments) [quoted addObject:tana_shell_quote(argument)];
+    NSString *command=[quoted componentsJoinedByString:@" "];
     NSString *escaped=[[command stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"] stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-    NSAppleScript *script=[[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges",escaped]] autorelease];
-    NSDictionary *error=nil; NSAppleEventDescriptor *result=[script executeAndReturnError:&error];
-    if(!result) { self.busy=NO; [self refresh:nil]; self.detail.stringValue=[NSString stringWithFormat:@"Setup was not completed. %@",error[NSAppleScriptErrorMessage] ?: @"You can retry when ready."]; return; }
-    self.detail.stringValue=@"Connecting the window helper…";
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
-        @autoreleasepool { tana_run(@"/usr/bin/sudo",@[@"-n",TanaHelperPath,@"--load-sa"]); }
-        dispatch_async(dispatch_get_main_queue(),^{ self.busy=NO; [self refresh:nil];
-            if(!tana_backend_ready()) self.detail.stringValue=@"The helper was installed but did not connect. Restart your Mac and reopen Tana2D. If this continues, the helper may not support this macOS version. No windows were moved.";
-        });
+    void (^done)(BOOL,BOOL,int)=[[then copy] autorelease];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.15*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        NSAppleScript *script=[[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges",escaped]] autorelease];
+        NSDictionary *error=nil; BOOL ok=[script executeAndReturnError:&error]!=nil;
+        // "do shell script" reports the command's exit status as the error number.
+        int status=[error[NSAppleScriptErrorNumber] intValue];
+        self.busy=NO; done(ok,status==-128,status);
+        [self refresh:self];
     });
 }
-- (void)loginChanged:(NSButton *)sender
+- (void)accessibility
 {
-    if(self.preview) return; NSError *error=nil;
-    BOOL ok=sender.state==NSControlStateValueOn ? [SMAppService.mainAppService registerAndReturnError:&error] : [SMAppService.mainAppService unregisterAndReturnError:&error];
-    [self refresh:nil]; if(!ok) self.detail.stringValue=error.localizedDescription ?: @"Could not change login startup.";
-    else if(SMAppService.mainAppService.status==SMAppServiceStatusRequiresApproval) { [SMAppService openSystemSettingsLoginItems]; self.detail.stringValue=@"Approve Tana2D in Login Items to finish enabling startup."; }
+    NSDictionary *options=@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES};
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    [self openSettings:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
 }
-- (void)configuration:(id)sender
+- (void)openSettings:(NSString *)url { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]]; }
+- (void)guide
 {
-    (void)sender; if(self.preview) return;
+    NSURL *url=[NSBundle.mainBundle URLForResource:@"SETUP" withExtension:@"html"];
+    if(url) [[NSWorkspace sharedWorkspace] openURL:url];
+    else [self say:@"The full guide is in docs/SETUP.html in the source folder."];
+}
+- (void)print
+{
+    NSPrintOperation *operation=[self.web printOperationWithPrintInfo:NSPrintInfo.sharedPrintInfo];
+    operation.view.frame=self.web.bounds;
+    [operation runOperationModalForWindow:self.window delegate:nil didRunSelector:NULL contextInfo:NULL];
+}
+- (void)moveToApplications
+{
+    NSFileManager *fm=NSFileManager.defaultManager; NSString *source=NSBundle.mainBundle.bundlePath;
+    NSString *destination=@"/Applications/Tana2D.app";
+    if(![fm isWritableFileAtPath:@"/Applications"]) destination=[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Tana2D.app"];
+    [fm createDirectoryAtPath:destination.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:NULL];
+    if([fm fileExistsAtPath:destination]) {
+        NSString *identifier=[NSBundle bundleWithPath:destination].bundleIdentifier;
+        if(![identifier isEqual:NSBundle.mainBundle.bundleIdentifier]) { [self say:[NSString stringWithFormat:@"Another app is already at %@. Move it away, then try again.",destination]]; return; }
+        NSError *error=nil;
+        if(![fm trashItemAtURL:[NSURL fileURLWithPath:destination] resultingItemURL:NULL error:&error]) { [self say:@"The older Tana2D in Applications could not be replaced. Drag it to the Trash, then try again."]; return; }
+    }
+    NSError *error=nil;
+    if(![fm copyItemAtPath:source toPath:destination error:&error]) { [self say:@"Tana2D could not copy itself. Drag Tana2D into your Applications folder in Finder instead."]; return; }
+    /* Moving by hand clears quarantine; this copy needs the same so it is not translocated again. */
+    tana_run(@"/usr/bin/xattr",@[@"-dr",@"com.apple.quarantine",destination]);
+    NSWorkspaceOpenConfiguration *configuration=[NSWorkspaceOpenConfiguration configuration]; configuration.createsNewApplicationInstance=YES;
+    [[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:destination] configuration:configuration completionHandler:^(NSRunningApplication *app,NSError *openError) {
+        dispatch_async(dispatch_get_main_queue(),^{
+            if(app && !openError) [NSApp terminate:nil];
+            else [self say:@"Tana2D is now in Applications. Open it from there to continue."];
+        });
+    }];
+}
+/* Setup reopens after the restart only because the person asked to continue. */
+- (void)registerResume
+{
+    if(SMAppService.mainAppService.status==SMAppServiceStatusEnabled) return;
+    if([SMAppService.mainAppService registerAndReturnError:NULL]) [NSUserDefaults.standardUserDefaults setBool:YES forKey:TanaSetupResumeLoginKey];
+}
+- (void)power:(NSString *)event resume:(BOOL)resume
+{
+    if(resume) [self registerResume];
+    NSAppleScript *script=[[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"tell application \"loginwindow\" to «event aevt%@»",event]] autorelease];
+    NSDictionary *error=nil;
+    if(![script executeAndReturnError:&error]) {
+        NSString *menu=[event isEqual:@"rlgo"] ? @"Log Out" : [event isEqual:@"rsdn"] ? @"Shut Down" : @"Restart";
+        [self say:[NSString stringWithFormat:@"Choose Apple menu → %@ (top-left corner) to continue.",menu]];
+    }
+}
+- (void)powerForRecovery
+{
+#ifdef __arm64__
+    [self power:@"rsdn" resume:YES];
+#else
+    [self power:@"rrst" resume:YES];
+#endif
+}
+- (void)enableBootArgs
+{
+    [self runAdministrator:@[@"--enable-arm64e-boot-arg"] waiting:@"Waiting for your password…" then:^(BOOL ok,BOOL cancelled,int status) {
+        tana_boot_args_invalidate();
+        if(ok) return;
+        if(cancelled) self.message=@"No changes were made. Try again when you are ready.";
+        else if(status==3) self.message=@"macOS refused the startup setting. Make sure the Recovery step finished (System Integrity Protection partly off), then try again.";
+        else self.message=@"macOS did not accept the change. Make sure the Recovery step finished, then try again.";
+    }];
+}
+- (void)installHelper
+{
+    void (^connect)(void)=^{
+        self.busy=YES; [self say:@"Connecting the window helper…"];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+            @autoreleasepool { tana_run(@"/usr/bin/sudo",@[@"-n",TanaHelperPath,@"--load-sa"]); }
+            BOOL ready=tana_backend_probe();
+            dispatch_async(dispatch_get_main_queue(),^{
+                self.busy=NO;
+                /* An app update leaves the older helper pinned; the next press replaces it. */
+                self.reinstallHelper=!ready;
+                self.message=ready ? nil : @"The helper did not connect. Press the button again to reinstall it. If that does not work, restart your Mac. No windows were moved.";
+                [self refresh:self];
+            });
+        });
+    };
+    if([NSFileManager.defaultManager isExecutableFileAtPath:TanaHelperPath] && !self.reinstallHelper) { connect(); return; }
+    NSString *uid=[NSString stringWithFormat:@"%u",getuid()];
+    [self runAdministrator:@[@"--install-helper",uid] waiting:@"Waiting for your password…" then:^(BOOL ok,BOOL cancelled,int status) {
+        if(ok) { connect(); return; }
+        switch(cancelled ? -128 : status) {
+        case -128: self.message=@"No changes were made. Try again when you are ready."; break;
+        case 2: self.message=@"The helper can only be set up for a standard macOS user account. Sign in to your own account and try again."; break;
+        case 3: self.message=@"A system folder for helpers has unexpected permissions, so nothing was installed. See Troubleshooting in the full guide."; break;
+        case 4: self.message=@"This copy of Tana2D is missing its window helper. Download Tana2D again, replace this copy, and try again."; break;
+        case 5: self.message=@"The helper could not be verified or installed, so nothing was changed. Restart your Mac, then try again."; break;
+        default: self.message=@"The helper could not be installed. Try again."; break;
+        }
+    }];
+}
+- (void)quitOtherManager
+{
+    pid_t pid=[tana_setup_status()[@"otherManagerPID"] intValue]; if(!pid) return;
+    NSRunningApplication *app=[NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    if(!(app && [app terminate])) kill(pid,SIGTERM);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        if(tana_other_manager()==pid) [self say:@"It is still running. Quit it from its own menu, or turn off its Open at Login setting and restart."];
+    });
+}
+- (void)setLogin:(BOOL)enabled
+{
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:TanaSetupResumeLoginKey];
+    SMAppService *service=SMAppService.mainAppService; NSError *error=nil;
+    BOOL already=service.status==SMAppServiceStatusEnabled;
+    BOOL ok=enabled ? (already || [service registerAndReturnError:&error]) : (!already || [service unregisterAndReturnError:&error]);
+    if(!ok) self.message=error.localizedDescription ?: @"Could not change login startup.";
+    else if(service.status==SMAppServiceStatusRequiresApproval) { [SMAppService openSystemSettingsLoginItems]; self.message=@"Turn on Tana2D in Login Items to finish."; }
+}
+- (void)configuration
+{
     NSString *path=tana_settings_path(); NSFileManager *fm=NSFileManager.defaultManager;
     if(![fm fileExistsAtPath:path]) {
         [fm createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL];
         [@"{\n  \"settings\": {},\n  \"shortcuts\": {}\n}\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL]; chmod(path.fileSystemRepresentation,0600);
     }
-    NSURL *editor=[[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:@"com.apple.TextEdit"];
-    if(editor) [[NSWorkspace sharedWorkspace] openURLs:@[[NSURL fileURLWithPath:path]] withApplicationAtURL:editor configuration:[NSWorkspaceOpenConfiguration configuration] completionHandler:nil];
+    /* Use the editor chosen for JSON files. TextEdit (the fallback for an
+     * unknown type) turns straight quotes into curly ones and breaks the file,
+     * so when it is the only choice, show the file in Finder instead. */
+    NSURL *file=[NSURL fileURLWithPath:path];
+    NSURL *editor=[[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:file];
+    if(editor && ![[NSBundle bundleWithURL:editor].bundleIdentifier isEqual:@"com.apple.TextEdit"]) [[NSWorkspace sharedWorkspace] openURL:file];
+    else {
+        [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[file]];
+        self.message=@"Shown in Finder. Open it in a code editor; TextEdit's smart quotes break the file. Changes apply when you save.";
+    }
 }
-- (void)accessiblePreferences:(id)sender
+- (void)applyStyle:(BOOL)keyboard
 {
-    (void)sender; if(self.preview) return;
     NSString *path=tana_settings_path(); NSData *data=[NSData dataWithContentsOfFile:path];
     id decoded=data ? [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:NULL] : [NSMutableDictionary dictionary];
-    if(![decoded isKindOfClass:NSMutableDictionary.class] || (decoded[@"settings"] && ![decoded[@"settings"] isKindOfClass:NSDictionary.class]) || (decoded[@"shortcuts"] && ![decoded[@"shortcuts"] isKindOfClass:NSDictionary.class])) { self.detail.stringValue=@"The configuration contains invalid JSON or settings. Fix it before applying preferences; your file has not been replaced."; return; }
-    decoded=tana_accessible_configuration(decoded);
+    if(![decoded isKindOfClass:NSMutableDictionary.class] || (decoded[@"settings"] && ![decoded[@"settings"] isKindOfClass:NSDictionary.class]) || (decoded[@"shortcuts"] && ![decoded[@"shortcuts"] isKindOfClass:NSDictionary.class])) { self.message=@"Your settings file has a mistake in it, so it was left unchanged. Fix it in Edit Settings File."; return; }
+    decoded=keyboard ? tana_accessible_configuration(decoded) : tana_trackpad_configuration(decoded);
     NSError *error=nil; NSData *output=[NSJSONSerialization dataWithJSONObject:decoded options:NSJSONWritingPrettyPrinted error:&error];
     [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error];
-    if(!output || ![output writeToFile:path options:NSDataWritingAtomic error:&error]) { self.detail.stringValue=error.localizedDescription ?: @"Could not save preferences."; return; }
+    if(!output || ![output writeToFile:path options:NSDataWritingAtomic error:&error]) { self.message=error.localizedDescription ?: @"Could not save preferences."; return; }
     chmod(path.fileSystemRepresentation,0600);
-    self.detail.stringValue=@"Saved: reduced motion, keyboard focus, visible menu bar, no haptics. Spotlight and app Quit keep their usual keys. Command palette: Control + Command + P. Other shortcuts remain configurable.";
-    NSAccessibilityPostNotificationWithUserInfo(self.window,NSAccessibilityAnnouncementRequestedNotification,@{NSAccessibilityAnnouncementKey:self.detail.stringValue,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityHigh)});
 }
-- (void)startTana:(id)sender
+- (void)startTana
 {
-    (void)sender; if(self.preview || (self.startup && !tana_setup_can_start(tana_setup_status()))) { [self refresh:nil]; return; }
+    if(self.startup && !tana_setup_can_start(tana_setup_status())) { self.message=@"Something changed. Tana2D needs one more step first."; return; }
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:TanaSetupCompletedKey];
     self.accepted=YES; [self close:nil];
 }
 - (void)close:(id)sender
 {
-    (void)sender; [self.timer invalidate]; self.timer=nil; [self.window orderOut:nil];
+    (void)sender;
+    /* Setup registers itself as a login item only to come back after a
+     * restart. Once it is closed without anyone choosing Open at Login,
+     * take that registration back. */
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    if(!self.preview && [defaults boolForKey:TanaSetupResumeLoginKey] && tana_setup_can_start(tana_setup_status())) {
+        [SMAppService.mainAppService unregisterAndReturnError:NULL];
+        [defaults removeObjectForKey:TanaSetupResumeLoginKey];
+    }
+    [self.timer invalidate]; self.timer=nil; [self.window orderOut:nil];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     if(self.startup) { [NSApp stop:nil]; [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO]; }
 }

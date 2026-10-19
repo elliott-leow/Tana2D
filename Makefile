@@ -1,6 +1,8 @@
 CC = xcrun clang
 CFLAGS = -std=c11 -Wall -Wextra -O2 -g -fno-objc-arc -fvisibility=hidden -mmacosx-version-min=14.0
-FRAMEWORKS = -F/System/Library/PrivateFrameworks -framework Carbon -framework Cocoa -framework CoreServices -framework CoreVideo -framework QuartzCore -framework SkyLight -framework ServiceManagement -framework Security
+# Private frameworks are a link-time search path only: as a header path, the
+# headerless private Network.framework shadows the public one WebKit imports.
+FRAMEWORKS = -Wl,-F/System/Library/PrivateFrameworks -framework Carbon -framework Cocoa -framework CoreServices -framework CoreVideo -framework QuartzCore -framework SkyLight -framework ServiceManagement -framework Security -framework WebKit
 SOURCES = vendor/yabai/src/manifest.m vendor/yabai/src/osax/payload_bin.c vendor/yabai/src/osax/loader_bin.c
 HEADERS = $(shell find src vendor/yabai/src -name '*.h' -o -name '*.c' -o -name '*.m')
 OSAX_DEPS = $(wildcard vendor/yabai/src/osax/*.m vendor/yabai/src/osax/*.h vendor/yabai/src/misc/*.h)
@@ -44,6 +46,8 @@ test:
 	./build/plane_geometry_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_gesture_test.c -o build/plane_gesture_test
 	./build/plane_gesture_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_pinch_test.c -o build/plane_pinch_test
+	./build/plane_pinch_test
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_transform_test.m -framework Cocoa -o build/plane_transform_test
 	./build/plane_transform_test
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_presentation_test.m -framework Cocoa -o build/plane_presentation_test
@@ -87,7 +91,7 @@ test:
 	./build/strip_workflow_runtime_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/accessibility_test.m -framework Cocoa -framework QuartzCore -o build/accessibility_test
 	./build/accessibility_test
-	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/setup_test.m -framework Cocoa -framework ServiceManagement -o build/setup_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/setup_test.m -framework Cocoa -framework ServiceManagement -framework WebKit -o build/setup_test
 	./build/setup_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fblocks tests/plane_controls_test.m -framework Cocoa -framework QuartzCore -o build/plane_controls_test
 	./build/plane_controls_test

@@ -3,6 +3,83 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
+## Natural pinch — October 19, 2026
+
+The pinch is now read from the two fingers' separation in the raw trackpad
+contacts rather than from the system's magnify events, which only reported a
+pinch when the fingers moved against each other. Unit tests
+(`tests/plane_pinch_test.c`) cover the opposing pinch, a thumb-anchored
+pinch, both fingers moving the same way at different speeds, a scroll with
+drift that must never zoom (and stays locked as a scroll until it lifts), a
+third finger, a replaced finger, a stale pair, another device, and the sensor
+aspect. `make all` builds clean; a replayed magnify with no fingers down still
+drives the zoom, so the existing live pinch checks apply unchanged. Feel on
+the trackpad is pending the user's own use.
+
+## Autofocus under load — October 18, 2026
+
+Measured on the installed build at load averages of 270–855. A pointer move
+cost 4.7 ms on the event loop on average (max 92 ms); a sample attributed most
+of it to the popup guard's full window-list copy (3.5 ms each at that load,
+max 21.6 ms), run on every move. An application switch after a hover focus
+averaged 96–190 ms (max 755 ms): hover never recorded the window it asked
+for, so the switch handler asked the application over Accessibility, a
+synchronous wait on a loaded app that stalled frames and further hovers.
+
+Now the popup and menu guards run only when a hover can change focus (or when
+zoomed out, where anchoring moves the hovered window's native frame), and at
+camera rest only after another window was found. The hit test walks the
+displayed stack first and falls back to yabai's lookup only when that walk
+finds nothing. Hover records the requested window, so the switch handler
+skips the Accessibility query, and moves the focus border at once, as keyboard
+navigation does. Pointer moves no longer wait for the last frame's helper
+reply. `make all test` passes; live after-figures are pending pointer use on
+the new build.
+
+## Pan and pinch smoothness — October 17, 2026
+
+Pinch zoom is now resampled at each frame's vsync, as the three-finger pan
+already was: reports integrate onto the latest report, and each frame is drawn
+where the fingers are at that frame (log scale, at most 12 ms ahead, bounded
+by the measured rate). When reports stop the camera stays where it was last
+drawn. A simulation with reports every 11 ± 4 ms at 120 Hz cut the
+frame-to-frame zoom step deviation from 63% to 6% of the step. Pinch samples
+use the event timestamp; three-finger reports use the trackpad's own clock,
+mapped onto this process's clock by the smallest observed delay.
+
+The event loop no longer waits for the last frame's helper reply before
+every event. Touch frames, pinch samples and move echoes skip that wait; the
+paths that go on to read window geometry (gesture release, four-finger
+selection, a move echo at rest) settle explicitly. A reply collected after the
+clock slept is still read rather than reported as a lost helper. At most one
+move notification per window waits in the queue.
+
+Helper payload 0.5.7 accepts alpha records (`OSAX_ATTRIB_PLANE_ALPHA`) in the
+plane transform transaction, using `SLSTransactionSetWindowAlpha`; a running
+fade still takes the value, as `do_window_opacity` does. With it, a window
+coming on screen during a pan or zoom is revealed in the frame that moves it
+there, without suspending screen updates. Older helpers (0.5.5, 0.5.6) remain
+compatible and keep the deferred reveal. Fades now follow the clock with a
+fixed 120 Hz cadence instead of counting 8 ms sleeps.
+
+After a gesture at 100%, the clock sleeps while only AX placements are in
+flight; each placement already wakes it on completion. Placements poll every
+2 ms (same total wait), and the focus ring keeps its stretched outline for up
+to 0.5 s while windows land. `frame-log` frames now end with camera y and zoom.
+
+Measured and not changed: `SLSGetWindowBounds` costs about 9 µs per window
+and a per-message socket connection about 4 µs, so neither the helper's
+per-record bounds read nor a persistent connection was worth a protocol
+change. The event tap stays on the main thread: its decisions read
+`NSApp.keyWindow` and the main run loop's tracking mode.
+
+`make all test` passes, including new tests for alpha records on the wire,
+in-frame reveals without update suspension, move echoes that skip the wait
+only in motion, and the waiting-only native handoff. The transaction alpha
+call was verified against `SLSGetWindowAlpha` on a test window. Physical
+trackpad feel and the 0.5.7 helper in Dock are not yet verified on the
+installed build.
+
 ## Auto-centering, pan glide, and camera paths — October 16, 2026
 
 At 100%, a three-finger pan release now centers a window whose centered view

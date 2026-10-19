@@ -14,6 +14,44 @@ static bool hwm_snap_free;
 static uint64_t hwm_snap_engagements,hwm_snap_commits;
 /* Engage within 12 screen points; once engaged, hold until 20. */
 static const double HWMSnapEngage=12,HWMSnapRelease=20;
+/* The magnet eases the window onto its landing rather than leaping there,
+ * and eases it back to the pointer when it lets go, with this time constant:
+ * an engagement is over in about a tenth of a second and reads as a settle,
+ * not a jump. The pointer's own movement is never lagged: what is shown is
+ * the pointer position plus the magnet's displacement, and only that
+ * displacement eases. While held the window stays exactly on the landing,
+ * however the pointer moves inside the magnet's reach. The seams and the
+ * commit use the landing itself. */
+#define HWM_SNAP_EASE_TAU .04
+static CGPoint hwm_snap_shown,hwm_snap_offset; // Shown position; shown less the pointer's position.
+static uint32_t hwm_snap_shown_for; static double hwm_snap_eased_time; static bool hwm_snap_easing,hwm_snap_was_snapped;
+static CGPoint hwm_snap_ease(uint32_t wid,CGPoint raw,bool snapped,CGPoint landing,double now)
+{
+    double dt=fmax(0,now-hwm_snap_eased_time); hwm_snap_eased_time=now;
+    if(hwm_snap_shown_for!=wid) { hwm_snap_offset=CGPointZero; hwm_snap_shown_for=wid; }
+    double k=hwm_motion_scale<=0 ? 1 : 1-exp(-dt/HWM_SNAP_EASE_TAU), px=hwm_plane_scale*hwm_surface_scale;
+    if(snapped) {
+        // From where it is shown: held on the landing it stays there; just
+        // engaged (or the landing moved) it eases over.
+        if(!hwm_snap_was_snapped) hwm_snap_shown=CGPointMake(raw.x+hwm_snap_offset.x,raw.y+hwm_snap_offset.y);
+        if(!CGPointEqualToPoint(hwm_snap_shown,landing)) {
+            hwm_snap_shown.x+=(landing.x-hwm_snap_shown.x)*k; hwm_snap_shown.y+=(landing.y-hwm_snap_shown.y)*k;
+            if(hypot(landing.x-hwm_snap_shown.x,landing.y-hwm_snap_shown.y)*px<.5) hwm_snap_shown=landing;
+        }
+        hwm_snap_easing=!CGPointEqualToPoint(hwm_snap_shown,landing);
+        hwm_snap_offset=CGPointMake(hwm_snap_shown.x-raw.x,hwm_snap_shown.y-raw.y);
+    } else {
+        hwm_snap_offset.x*=1-k; hwm_snap_offset.y*=1-k;
+        if(hypot(hwm_snap_offset.x,hwm_snap_offset.y)*px<.5) hwm_snap_offset=CGPointZero;
+        hwm_snap_easing=!CGPointEqualToPoint(hwm_snap_offset,CGPointZero);
+        hwm_snap_shown=CGPointMake(raw.x+hwm_snap_offset.x,raw.y+hwm_snap_offset.y);
+    }
+    hwm_snap_was_snapped=snapped;
+    return hwm_snap_shown;
+}
+/* At a drag's start and end only: the magnet letting go mid-drag keeps the
+ * shown position, which then eases back to the pointer. */
+static void hwm_snap_ease_reset(void) { hwm_snap_shown_for=0; hwm_snap_offset=CGPointZero; hwm_snap_eased_time=hwm_now(); hwm_snap_easing=hwm_snap_was_snapped=false; }
 static void hwm_drag_snap_reset(void)
 {
     hwm_snap_window=0; hwm_snap_neighbor=0; hwm_snap_contact_count=0;

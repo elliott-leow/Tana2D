@@ -5,7 +5,12 @@
 #define SA_SOCKET_BUFF_LEN 0x1000
 
 // Tana2D owns this payload and socket independently of installed yabai helpers.
-#define OSAX_VERSION                "0.5.5"
+#define OSAX_VERSION                "0.5.10"
+/* The oldest payload the manager still drives. Newer features are gated on
+ * the attributes it reports, so an older Dock helper keeps the manager
+ * running until the loader next replaces it. */
+#define OSAX_COMPATIBLE_VERSION     "0.5.5"
+#define OSAX_VERSION_COMPATIBLE(v)  (!strcmp((v), OSAX_VERSION) || !strcmp((v), "0.5.9") || !strcmp((v), "0.5.8") || !strcmp((v), "0.5.7") || !strcmp((v), "0.5.6") || !strcmp((v), OSAX_COMPATIBLE_VERSION))
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02
@@ -16,6 +21,8 @@
 #define OSAX_ATTRIB_ANIM_TIME       0x40
 #define OSAX_ATTRIB_PLANE_TRANSFORM 0x80
 #define OSAX_ATTRIB_INPUT_SHAPE     0x100
+#define OSAX_ATTRIB_PLANE_NATIVE    0x200
+#define OSAX_ATTRIB_PLANE_ALPHA     0x400
 
 #define OSAX_ATTRIB_ALL             (OSAX_ATTRIB_DOCK_SPACES | \
                                      OSAX_ATTRIB_DPPM | \
@@ -25,7 +32,9 @@
                                      OSAX_ATTRIB_SET_WINDOW | \
                                      OSAX_ATTRIB_ANIM_TIME | \
                                      OSAX_ATTRIB_PLANE_TRANSFORM | \
-                                     OSAX_ATTRIB_INPUT_SHAPE)
+                                     OSAX_ATTRIB_INPUT_SHAPE | \
+                                     OSAX_ATTRIB_PLANE_NATIVE | \
+                                     OSAX_ATTRIB_PLANE_ALPHA)
 
 enum sa_opcode
 {

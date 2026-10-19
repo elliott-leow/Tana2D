@@ -339,7 +339,8 @@ static void hwm_overview_tick(void)
         if(hwm_overview_closing) { horizontal_overview_done(); return; }
     }
     bool preview_active=hwm_preview_render(hwm_now());
-    __atomic_store_n(&hwm_active,hwm_overview_animating || hwm_overview_gesture_active || preview_active || hwm_overview_motion,__ATOMIC_RELEASE);
+    if(hwm_overview_animating || hwm_overview_gesture_active || preview_active || hwm_overview_motion) __atomic_store_n(&hwm_active,true,__ATOMIC_RELEASE);
+    else hwm_tick_idle(hwm_tick_wake_generation);
 }
 
 static void hwm_overview_set_progress(double progress)

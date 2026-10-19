@@ -1,14 +1,17 @@
 /* Serialized rendering and delayed-notification handling. */
 #include "plane_geometry.h"
 static bool hwm_view_in_motion(struct view *view,double now);
-static double hwm_rendered_offset; // Camera position of the frame last drawn.
+static void horizontal_event_settle(void);
+static double hwm_rendered_offset, hwm_rendered_camera_y; // The camera of the frame last drawn.
 static bool hwm_render(struct view *view, double now)
 {
 #ifdef HWM_NATIVE_ZOOM
     if(hwm_plane_scale==1 && !hwm_camera_animating && !view->strip_scrolling && !hwm_plane_y_scrolling && !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED)) {
         hwm_zoom_workspace=false;
         hwm_zoom_rest_focus(view);
-        return hwm_zoom_render_native(view,now);
+        bool pending=hwm_zoom_render_native(view,now);
+        hwm_zoom_landing=pending;
+        return pending && !hwm_zoom_waiting_only;
     }
     // Zoomed-out windows stay interactive: no input cover, no card chooser.
     // Any motion re-arms focus of the window left under the pointer.
@@ -17,7 +20,7 @@ static bool hwm_render(struct view *view, double now)
     CGRect bounds = hwm_bounds(view);
     double offset = hwm_offset(view, now);
     double camera_y=hwm_plane_camera_y(now), plane_scale=hwm_plane_scale;
-    hwm_rendered_offset = offset;
+    hwm_rendered_offset = offset; hwm_rendered_camera_y = camera_y;
     bool active = hwm_camera_animating || view->strip_scrolling || hwm_plane_y_scrolling;
     bool batched=false;
     // While the strip is travelling, a window that is off screen before and
@@ -39,6 +42,7 @@ static bool hwm_render(struct view *view, double now)
             if(window->strip_native_move_pending) {
                 CGRect shown=CGRectNull,native=CGRectNull;
                 double old_scale=window->strip_last_plane_scale;
+                horizontal_event_settle(); // The displayed frame must reflect the last camera sent.
                 if(!(old_scale>0) || !hwm_plane_displayed_frame(window->id,&shown) ||
                    SLSGetWindowBounds(g_connection,window->id,&native)!=kCGErrorSuccess) { active=true; continue; }
                 window->strip_world_x=window->strip_from_x=(shown.origin.x-bounds.origin.x)/old_scale+window->strip_last_offset;
@@ -74,6 +78,7 @@ static bool hwm_render(struct view *view, double now)
                     (fabs(window->strip_width-window->strip_from_width)>.5 || fabs(window->strip_height-window->strip_from_height)>.5);
                 if(!size_animation && !window->strip_size_pending && !hwm_resize_busy(window)) {
                     CGRect measured=CGRectNull;
+                    horizontal_event_settle();
                     if(SLSGetWindowBounds(g_connection,window->id,&measured)==kCGErrorSuccess &&
                        measured.size.width>=100 && measured.size.height>=100) {
                         window->frame=measured;
@@ -86,6 +91,7 @@ static bool hwm_render(struct view *view, double now)
                     window->strip_native_resize_pending=now<window->strip_native_resize_until;
                 }
             }
+            window->strip_native_failures=0; // The next resting placement starts afresh.
             double elapsed = now-window->strip_start, t = elapsed/hwm_duration, unused;
             double x = hwm_window_sample(window->strip_from_x,window->strip_world_x,window->strip_vel_x,elapsed,hwm_window_zeta,&unused);
             double y = hwm_window_sample(window->strip_from_y,window->strip_world_y,window->strip_vel_y,elapsed,hwm_window_zeta,&unused);
@@ -97,22 +103,32 @@ static bool hwm_render(struct view *view, double now)
              * pan back onto the menu-bar edge. strip_last_frame stores displayed
              * origin and unscaled size; it is never a native bounds cache. */
             double own_offset=offset, shift=0, own_y=camera_y;
-            /* At 100%, round world and camera separately so every window
-             * shifts by the same whole number of points each frame. Rounding
-             * each projected origin let the gaps between windows wobble by a
-             * point during a pan. hwm_zoom_render_native uses the same rule,
-             * so the native handoff cannot jump either. */
-            if(plane_scale==1) { x=round(x); y=round(y); own_offset=round(own_offset); own_y=round(own_y); }
+            /* Snap the world and camera terms to the device-pixel grid
+             * separately, at every zoom, so every window shifts by the same
+             * whole number of pixels each frame: gaps between windows never
+             * wobble during a pan, and slow motion moves a pixel at a time
+             * rather than a whole (two-pixel) point. hwm_zoom_render_native
+             * places native frames with the same rule in whole points. */
+            x=hwm_pixel(x*plane_scale)/plane_scale; y=hwm_pixel(y*plane_scale)/plane_scale;
+            own_offset=hwm_pixel(own_offset*plane_scale)/plane_scale; own_y=hwm_pixel(own_y*plane_scale)/plane_scale;
             CGRect base=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
                                    round(hwm_plane_project_physical(y,own_y,bounds.origin.y,plane_scale)),
                                    round(hwm_plane_physical_size(width)),round(hwm_plane_physical_size(height)));
-            CGRect frame=CGRectMake(round(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
-                                    round(hwm_plane_project_physical(y,own_y,bounds.origin.y,plane_scale)),
+            CGRect frame=CGRectMake(hwm_pixel(hwm_plane_project_physical(x,own_offset,bounds.origin.x,plane_scale)),
+                                    hwm_pixel(hwm_plane_project_physical(y,own_y,bounds.origin.y,plane_scale)),
                                     round(hwm_plane_physical_size(width*plane_scale)),round(hwm_plane_physical_size(height*plane_scale)));
+            /* The shown origin is the pixel-snapped one. Keep base on it too,
+             * so "did it move", the focus ring and layout restarts all see
+             * exactly where the window is drawn. Its size stays whole points. */
+            base.origin=frame.origin;
             CGRect last = window->strip_last_frame;
             bool hidden=!CGRectIntersectsRect(frame,screen);
             bool revealing=window->strip_offscreen && !hidden;
-            if(hidden && (!window->strip_offscreen || hwm_visibility_companions.count)) {
+            // Drawn off screen it is already out of sight. Hiding it waits
+            // for rest, so a window that the camera sweeps out of view and
+            // back costs no helper command in the middle of the motion.
+            if(hidden && travelling && !window->strip_offscreen) active=true;
+            else if(hidden && (!window->strip_offscreen || hwm_visibility_companions.count)) {
                 if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 hwm_visibility_set(window,true,frame);
             }
@@ -140,20 +156,35 @@ static bool hwm_render(struct view *view, double now)
                 node->area = (struct area) { frame.origin.x, frame.origin.y, frame.size.width, frame.size.height };
                 continue;
             }
-            if(move || window->strip_transform_dirty || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale) {
+            /* At 100% the native frame itself rides with the camera, in the
+             * same transaction. Drawn over a still native frame, a window's
+             * frosted backdrop slid along with it and popped back into place
+             * when the pan ended, and its menus opened behind it. Above the
+             * menu bar AppKit would push the frame back down, and a window
+             * completely off screen is pulled back to the edge: those, and
+             * any resize, keep the presentation transform. */
+            bool ride=plane_scale==1 && !resize && !anchor_moved && !hidden && !window->strip_size_pending &&
+                      !window->strip_native_resize_pending && frame.origin.y>=screen.origin.y-.5 &&
+                      scripting_addition_plane_native_supported();
+            bool send=ride ? move || window->strip_transform_dirty || !window->strip_native_riding :
+                             move || window->strip_transform_dirty || !window->strip_plane_scaled || window->strip_last_plane_scale!=plane_scale;
+            if(send) {
                 if(!batched) { hwm_batch_begin_plane(); batched=true; }
-                if(!scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) {
+                if(ride ? !scripting_addition_set_plane_native(window->id,frame.origin.x,frame.origin.y) :
+                          !scripting_addition_set_plane_transform(window->id,frame.origin.x,frame.origin.y,plane_scale)) {
                     ++hwm_move_failures; hwm_backend_ok=false;
                     hwm_batch_end(); return false;
                 }
-                window->strip_plane_scaled=true; window->strip_transform_dirty=false;
+                if(ride) window->frame.origin=frame.origin;
+                window->strip_plane_scaled=!ride; window->strip_native_riding=ride; window->strip_transform_dirty=false;
                 window->strip_last_frame=base;
                 window->strip_last_offset=own_offset;
                 window->strip_last_camera_y=own_y;
                 window->strip_last_shift=shift;
             }
             window->strip_last_plane_scale=plane_scale;
-            if(!hidden && (window->strip_offscreen || hwm_visibility_companions.count)) {
+            if(!hidden && (window->strip_offscreen || hwm_visibility_companions.count) &&
+               !(travelling && hwm_visibility_defer_reveal(window))) {
                 if(!batched) { hwm_batch_begin_plane(); batched=true; }
                 hwm_visibility_set(window,false,frame);
             }
@@ -293,6 +324,7 @@ static bool horizontal_window_moved(struct window *window)
     if (hwm_ready && !view && window->id==hwm_feedback_focus_id) hwm_wake();
     if (!hwm_ready || !view || view->layout != VIEW_STRIP) return false;
     if(hwm_view_in_motion(view,hwm_now())) return true;
+    horizontal_event_settle(); // The event loop leaves this to the handler.
     CGRect actual = CGRectNull;
     if (SLSGetWindowBounds(g_connection,window->id,&actual) == kCGErrorSuccess)
         window->frame.origin = actual.origin;

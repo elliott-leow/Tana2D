@@ -15,23 +15,19 @@
 static double preview_clock=1;
 static double hwm_now(void) { return preview_clock; }
 static double horizontal_ease(double t) { return hstrip_ease(t); }
-static void hwm_wake(void) {}
 static double hwm_motion_scale=1;
-static uint32_t hwm_preview_id;
-static CGContextRef hwm_preview_context;
 static CGRect hwm_preview_from,hwm_preview_target,hwm_preview_current;
 static double hwm_preview_start,hwm_preview_alpha,hwm_preview_alpha_from,hwm_preview_alpha_start;
 static bool hwm_preview_visible,hwm_preview_hiding;
-static int mouse_disable_calls,move_calls;
-static bool move_ok=true;
-static CGError SLSMoveWindow(int cid,uint32_t wid,CGPoint *point)
-{ (void)cid; (void)wid; (void)point; ++move_calls; return move_ok?kCGErrorSuccess:kCGErrorFailure; }
-static CGError SLSSetWindowAlpha(int cid,uint32_t wid,float alpha)
-{ (void)cid; (void)wid; assert(alpha>=0 && alpha<=1); return kCGErrorSuccess; }
-static CGError SLSSetWindowResolution(int cid,uint32_t wid,double scale)
-{ (void)cid; (void)wid; (void)scale; return kCGErrorSuccess; }
+static int mouse_disable_calls;
+#define move_calls transform_calls
+#define move_ok transform_result
 static CGError SLSSetMouseEventEnableFlags(int cid,uint32_t wid,bool enabled)
 { (void)cid; (void)wid; assert(!enabled); ++mouse_disable_calls; return kCGErrorSuccess; }
+/* Paints run in place; a deferred mode holds one to test the frame in between. */
+static bool defer_preview; static void (*held_preview)(void *);
+static void preview_schedule(void (*work)(void *)) { if(defer_preview) held_preview=work; else work(NULL); }
+#define HWM_PREVIEW_SCHEDULE(work) preview_schedule(work)
 #include "../src/plane_preview.m"
 
 static CGRect outset(CGRect frame) { double m=hwm_preview_margin(12); return CGRectInset(frame,-m,-m); }
@@ -53,11 +49,23 @@ int main(void) { @autoreleasepool {
     /* A stationary preview does not issue more movement or raster work. */
     for(int i=0;i<120;i++) { preview_clock+=1.0/120; hwm_preview_render(preview_clock); }
     assert(move_calls==241 && hwm_preview_draws==draws);
-    /* Gaining a contact redraws once; the same contacts translated do not. */
+    /* Gaining a contact paints the other surface off the frame thread. Until
+     * that lands the surface on screen keeps following the pointer. */
+    uint32_t first=hwm_preview_id;
+    defer_preview=true;
     hwm_preview_snap_show(frame,corner,2,12);
-    assert(hwm_preview_draws==draws+1 && mouse_disable_calls==2);
+    assert(held_preview && hwm_preview_draws==draws && hwm_preview_id==first && hwm_preview_visible);
+    frame.origin.x+=3; preview_clock+=1.0/120; hwm_preview_snap_show(frame,corner,2,12);
+    assert(hwm_preview_id==first && CGRectEqualToRect(hwm_preview_current,outset(frame)));
+    held_preview(NULL); held_preview=NULL; defer_preview=false;
+    preview_clock+=1.0/120; hwm_preview_render(preview_clock);
+    assert(hwm_preview_draws==draws+1 && hwm_preview_id!=first && mouse_disable_calls==2);
+    // The same contacts translated paint nothing.
     frame.origin.x+=3; hwm_preview_snap_show(frame,corner,2,12);
     assert(hwm_preview_draws==draws+1);
+    /* Returning to the first contacts reuses the surface that still has them. */
+    hwm_preview_snap_show(frame,right,1,12);
+    assert(hwm_preview_draws==draws+1 && hwm_preview_id==first);
     move_ok=false; frame.origin.x+=10; hwm_preview_snap_show(frame,corner,2,12);
     assert(!hwm_preview_visible && !hwm_preview_ordered);
     move_ok=true; hwm_preview_snap_show(frame,corner,2,12);
@@ -73,7 +81,7 @@ int main(void) { @autoreleasepool {
     CGColorSpaceRef colors=CGColorSpaceCreateDeviceRGB();
     CGContextRef canvas=CGBitmapContextCreate(NULL,(size_t)size.width,(size_t)size.height,8,0,colors,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
     CGColorSpaceRelease(colors); assert(canvas);
-    hwm_preview_draw_seams(canvas,size,corner,2,12);
+    hwm_preview_draw_seams(canvas,size,corner,2,12,true);
     CGImageRef rendered=CGBitmapContextCreateImage(canvas);
     NSBitmapImageRep *bitmap=[[NSBitmapImageRep alloc]initWithCGImage:rendered];
     // NSBitmapImageRep is top-down. Right seam: x=m+400+6. Bottom seam: y=m+300+6.
@@ -86,6 +94,6 @@ int main(void) { @autoreleasepool {
         assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
                 writeToFile:@"build/snap-preview-seams.png" atomically:YES]);
     [bitmap release]; CGImageRelease(rendered); CGContextRelease(canvas);
-    CGContextRelease(hwm_preview_context);
+    for(int i=0;i<2;i++) if(hwm_preview_surfaces[i].context) CGContextRelease(hwm_preview_surfaces[i].context);
     puts("preview translation cache, multi-contact seams, click-through, retry, and fade tests passed");
 } return 0; }

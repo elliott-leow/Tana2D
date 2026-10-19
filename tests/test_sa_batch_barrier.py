@@ -36,11 +36,13 @@ static int hwm_sa_connect(const char *s,long long t) { (void)s;(void)t; return d
 static bool hwm_sa_send_all(int f,const unsigned char *b,size_t n,long long t)
 { (void)f;(void)t; if(require_guard) assert(barriers); int16_t length=0; assert(n>=3); memcpy(&length,b,2); assert(length>0 && (size_t)length==n-2); if(b[2]==SA_OPCODE_WINDOW_INPUT_SHAPE){ bool clear; HwmInputShapeRequest request; assert(hwm_input_shape_packet_decode(b+3,n-3,&clear,&request)); shapes++; } packets++; return !failed; }
 static bool hwm_sa_receive_byte(int f,unsigned char *b,long long t) { (void)f;(void)t; receives++; *b=bad_ack?0:1; return !receive_failed; }
+static bool ready; // Whether the helper's reply to an in-flight frame has arrived.
+static bool hwm_sa_ready(int f) { (void)f; return ready; }
 static int SLSMainConnectionID(void) { return 0; }
 static CGError SLSGetWindowBounds(int c,uint32_t w,CGRect *r) { (void)c;(void)w; *r=CGRectMake(1,2,300,200); return kCGErrorSuccess; }
 '''
         checks = r'''
-static void reset(void) { assert(!hwm_sa_batch_depth && !hwm_sa_plane_transform_count && hwm_sa_plane_pending_fd<0); barriers=packets=ordinary=shapes=pipeline_flushes=receives=0; require_guard=failed=receive_failed=bad_ack=false; scripting_addition_batch_set_barrier(barrier); }
+static void reset(void) { assert(!hwm_sa_batch_depth && !hwm_sa_plane_transform_count && !hwm_sa_plane_carried && !hwm_sa_plane_pending_count); barriers=packets=ordinary=shapes=pipeline_flushes=receives=0; require_guard=failed=receive_failed=bad_ack=ready=false; scripting_addition_batch_set_barrier(barrier); }
 static void transform(int i) { assert(scripting_addition_set_plane_transform(i+1,i,20,.7)); }
 int main(void) {
     reset(); scripting_addition_batch_begin(); transform(1);
@@ -77,9 +79,40 @@ int main(void) {
     assert(scripting_addition_batch_end());
     /* A deferred frame is sent at once; its reply is read on the next settle. */
     reset(); scripting_addition_batch_begin(); transform(1); transform(2);
-    assert(scripting_addition_batch_end_deferred() && packets==1 && !receives && hwm_sa_plane_pending_fd>=0);
-    assert(scripting_addition_settle() && receives==1 && hwm_sa_plane_pending_fd<0);
+    assert(scripting_addition_batch_end_deferred() && packets==1 && !receives && hwm_sa_plane_pending_count==1);
+    assert(scripting_addition_settle() && receives==1 && !hwm_sa_plane_pending_count);
     assert(scripting_addition_settle() && receives==1);
+    /* A second frame goes out while the first's reply is outstanding; a third
+     * is held, its records carried, with the newest record for a window
+     * replacing the one carried. Replies that have arrived are read without
+     * waiting; the held records go with the next frame once there is room. */
+    reset(); scripting_addition_batch_begin(); transform(1);
+    assert(scripting_addition_batch_end_deferred() && packets==1 && hwm_sa_plane_pending_count==1);
+    scripting_addition_batch_begin(); transform(2);
+    assert(scripting_addition_batch_end_deferred() && packets==2 && !receives && hwm_sa_plane_pending_count==2);
+    scripting_addition_batch_begin(); transform(3); assert(scripting_addition_set_plane_transform(7,0,0,.5));
+    assert(scripting_addition_batch_end_deferred() && packets==2 && hwm_sa_plane_transform_count==2 && hwm_sa_plane_carried==2);
+    scripting_addition_batch_begin(); assert(scripting_addition_set_plane_transform(7,9,9,.6)); transform(5);
+    assert(hwm_sa_plane_transform_count==3 && hwm_sa_plane_transforms[1].x==9 && hwm_sa_plane_transforms[1].scale_x==.6);
+    assert(scripting_addition_batch_end_deferred() && packets==2 && hwm_sa_plane_carried==3 && !receives);
+    ready=true; scripting_addition_batch_begin(); transform(6);
+    assert(scripting_addition_batch_end_deferred() && receives==2 && packets==3 && !hwm_sa_plane_transform_count && !hwm_sa_plane_carried && hwm_sa_plane_pending_count==1);
+    assert(scripting_addition_settle() && receives==3 && !hwm_sa_plane_pending_count);
+    /* Held records are applied, and waited for, before anything reads geometry. */
+    reset(); scripting_addition_batch_begin(); transform(1); assert(scripting_addition_batch_end_deferred());
+    scripting_addition_batch_begin(); transform(2); assert(scripting_addition_batch_end_deferred());
+    scripting_addition_batch_begin(); transform(3); assert(scripting_addition_batch_end_deferred() && packets==2 && hwm_sa_plane_carried==1);
+    assert(scripting_addition_settle() && packets==3 && receives==3 && !hwm_sa_plane_carried && !hwm_sa_plane_pending_count);
+    reset(); scripting_addition_batch_begin(); transform(1); assert(scripting_addition_batch_end_deferred());
+    scripting_addition_batch_begin(); transform(2); assert(scripting_addition_batch_end_deferred());
+    scripting_addition_batch_begin(); transform(3); assert(scripting_addition_batch_end_deferred() && hwm_sa_plane_carried==1);
+    assert(scripting_addition_send_bytes(&command,1) && packets==3 && receives==3 && ordinary==1 && !hwm_sa_plane_carried);
+    /* A refused frame among those in flight surfaces at the next deferred end. */
+    reset(); scripting_addition_batch_begin(); transform(1); assert(scripting_addition_batch_end_deferred());
+    scripting_addition_batch_begin(); transform(2); assert(scripting_addition_batch_end_deferred());
+    ready=bad_ack=true; scripting_addition_batch_begin(); transform(3);
+    assert(!scripting_addition_batch_end_deferred()); bad_ack=false;
+    assert(scripting_addition_settle());
     /* A failed reply surfaces at the next settle. */
     reset(); scripting_addition_batch_begin(); transform(1);
     assert(scripting_addition_batch_end_deferred()); bad_ack=true;
@@ -89,9 +122,9 @@ int main(void) {
     assert(scripting_addition_batch_end_deferred() && !receives);
     assert(scripting_addition_send_bytes(&command,1) && receives==1 && ordinary==1);
     reset(); scripting_addition_batch_begin(); transform(1);
-    assert(scripting_addition_batch_end_deferred()); bad_ack=true;
+    assert(scripting_addition_batch_end_deferred()); bad_ack=ready=true;
     scripting_addition_batch_begin(); transform(2);
-    assert(!scripting_addition_batch_end_deferred()); bad_ack=false;
+    assert(!scripting_addition_batch_end_deferred()); bad_ack=ready=false;
     assert(scripting_addition_settle());
     /* Nested deferred ends only close the batch. */
     reset(); scripting_addition_batch_begin(); scripting_addition_batch_begin(); transform(1);

@@ -6,10 +6,14 @@ A macOS window manager with an unbounded two-dimensional workspace. Derived from
 Experimental. See the [verification record](docs/VERIFICATION.md) for tested
 behavior and remaining limits.
 
-Pinch to zoom, swipe to pan. Zoom stays anchored at the pointer all the way
+Pinch to zoom, swipe to pan. The pinch is read from the fingers' separation,
+so the thumb may rest or both fingers drift while they part; the fingers need
+not move against each other. Zoom stays anchored at the pointer all the way
 back to **100%** and preserves every window's size. A pinch toward 100% that
 comes to rest at 90% or more finishes the zoom to exactly 100% about the same
-point. There are no workspace walls.
+point. There are no workspace walls. A pinch zooms out until every window
+fits on screen (or to 20%, whichever is further) and no further, and it comes
+to rest exactly where the fingers stopped.
 
 Applications stay usable while zoomed out. From 50% up, clicks, drags,
 scrolling, and typing go to the window under the pointer. Below 50%, clicking
@@ -21,8 +25,11 @@ changes display configuration. Some applications track hover by polling the
 cursor position themselves (Firefox, for example). Their in-app hover effects,
 and menus they open at the pointer, can appear offset while zoomed out.
 
-At 100%, hover focuses immediately without changing zoom or moving the
-camera. Hover never steers the camera: while it moves, hovering does nothing,
+Hover focuses the window the pointer settles on: once it slows over a window
+or stops (within a few hundredths of a second), not every window a quick
+sweep passes over, and at most every 150 ms. Each focus change makes macOS
+switch the front application, which costs every process involved. At 100%,
+hover focus never changes zoom or moves the camera. Hover never steers the camera: while it moves, hovering does nothing,
 and the window under the pointer is focused once the camera rests. All windows
 move together in one compositor transaction per frame, and windows above the
 top edge stay visible. Native windows keep accepting clicks during panning.
@@ -81,7 +88,7 @@ window to fill the screen. macOS Reduce Motion disables camera transitions.
 A three-finger pan that is still moving when the fingers lift carries on
 briefly and eases to rest; a pan that stops before lifting stays exactly where
 it is. At 100%, when a pan brings a window close to the center of the screen
-(within 120 points of its centered view, moving toward it), the camera finishes
+(within 180 points of its centered view, moving toward it), the camera finishes
 centering it. Panning away from a centered window is never pulled back. Set
 `"autoCenter": false` or `"panMomentum": false` to turn either off, and
 `"autoCenterDistance"` (20–400 points) to change the reach. The optional

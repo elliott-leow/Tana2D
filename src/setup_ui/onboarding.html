@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>Tana2D Setup</title>
+<style>
+:root{
+  --ink:#f4f6fb; --ink-2:rgba(236,240,250,.74); --ink-3:rgba(236,240,250,.52);
+  --glass:rgba(13,16,28,.86); --glass-line:rgba(255,255,255,.14);
+  --accent:#4b8bff; --accent-2:#7aa8ff; --good:#3ddc97; --warn:#ffbd5c;
+  --night:#070a14; --r:22px;
+  --ease:cubic-bezier(.2,.8,.2,1);
+  color-scheme:dark;
+}
+@media (prefers-contrast:more){ :root{ --glass:rgba(8,10,18,.94); --ink-2:#fff; --ink-3:#e6e6e6; --glass-line:#fff; } }
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--night);color:var(--ink);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased;user-select:none;-webkit-user-select:none}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent-2);outline-offset:3px;border-radius:12px}
+
+/* ---------- full-bleed scenes ---------- */
+#stage{position:fixed;inset:0;overflow:hidden}
+.scene{position:absolute;inset:0;opacity:0;transition:opacity .7s var(--ease),transform .9s var(--ease);transform:scale(1.03)}
+.scene.on{opacity:1;transform:none}
+.sky{position:absolute;inset:-10%;background:
+  radial-gradient(60% 50% at var(--ax,20%) var(--ay,15%),hsla(var(--h1,222),90%,58%,.55),transparent 70%),
+  radial-gradient(55% 45% at var(--bx,85%) var(--by,25%),hsla(var(--h2,280),85%,60%,.42),transparent 70%),
+  radial-gradient(70% 60% at 60% 110%,hsla(var(--h3,190),90%,45%,.45),transparent 70%),
+  linear-gradient(180deg,#0b1024,#070a14 70%);
+  animation:drift 26s ease-in-out infinite alternate}
+@keyframes drift{to{transform:translate3d(-3%,2%,0) scale(1.06)}}
+.grain{position:absolute;inset:0;opacity:.08;mix-blend-mode:overlay;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
+.art{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:70px 48px 180px 48px}
+.art.right{justify-content:center;padding:64px 40px 40px 480px}
+.art>*{flex:none;transform-origin:center}
+
+/* ---------- top bar ---------- */
+#progress{position:fixed;top:16px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:5;transition:opacity .4s}
+#progress i{width:7px;height:7px;border-radius:9px;background:rgba(255,255,255,.22);transition:all .5s var(--ease)}
+#progress i.done{background:rgba(255,255,255,.62)}
+#progress i.now{width:26px;background:#fff}
+#preview{position:fixed;top:12px;right:16px;z-index:6;font-size:12px;padding:4px 10px;border-radius:99px;background:rgba(255,189,92,.18);color:var(--warn);border:1px solid rgba(255,189,92,.35);display:none}
+
+/* ---------- glass panel ---------- */
+#panel{position:fixed;left:32px;bottom:32px;width:min(420px,calc(100vw - 64px));z-index:4;
+  background:var(--glass);border:1px solid var(--glass-line);border-radius:var(--r);
+  backdrop-filter:blur(28px) saturate(170%);-webkit-backdrop-filter:blur(28px) saturate(170%);
+  box-shadow:0 30px 80px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.08);padding:26px 26px 22px;
+  transition:transform .55s var(--ease),opacity .4s var(--ease)}
+#panel.out{transform:translateY(14px);opacity:0}
+#panel.wide{width:min(560px,calc(100vw - 64px))}
+#panel.center{left:50%;transform:translateX(-50%)}
+#panel.center.out{transform:translate(-50%,14px)}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px;display:flex;gap:8px;align-items:center}
+h1{font-size:27px;line-height:1.15;letter-spacing:-.02em;margin:0 0 10px;font-weight:700;outline:none}
+.body{color:var(--ink-2);margin:0}
+.body b{color:var(--ink);font-weight:600}
+.extra{margin-top:14px}
+.actions{display:flex;gap:10px;margin-top:22px;align-items:center}
+.btn{appearance:none;border:0;border-radius:13px;height:46px;padding:0 22px;font-weight:600;font-size:15px;cursor:pointer;
+  transition:transform .15s,background .2s,box-shadow .2s,opacity .2s;display:inline-flex;align-items:center;gap:9px;white-space:nowrap}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:linear-gradient(180deg,#5b96ff,#3a74f0);color:#fff;box-shadow:0 8px 24px rgba(58,116,240,.45),inset 0 1px 0 rgba(255,255,255,.25);flex:1;justify-content:center}
+.btn.primary:hover{box-shadow:0 10px 30px rgba(58,116,240,.6),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn.secondary{background:rgba(255,255,255,.1);color:var(--ink)}
+.btn.secondary:hover{background:rgba(255,255,255,.16)}
+.btn[disabled]{opacity:.5;cursor:default;box-shadow:none}
+.btn.pulse{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 8px 34px rgba(91,150,255,.95),0 0 0 6px rgba(91,150,255,.18)}}
+.spinner{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.note{margin-top:14px;padding:10px 12px;border-radius:12px;background:rgba(255,189,92,.12);border:1px solid rgba(255,189,92,.28);color:#ffe2b5;font-size:13.5px}
+.note.good{background:rgba(61,220,151,.12);border-color:rgba(61,220,151,.3);color:#c6f6df}
+.wait{display:flex;align-items:center;gap:10px;color:var(--ink-3);font-size:13px;margin-top:18px}
+.wait .dot{width:8px;height:8px;border-radius:50%;background:var(--accent-2);animation:breathe 1.6s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.25;transform:scale(.7)}}
+.link{background:none;border:0;padding:0;color:var(--ink-3);text-decoration:underline;text-underline-offset:3px;cursor:pointer;font-size:13px}
+.link:hover{color:var(--ink)}
+kbd{font:600 12.5px -apple-system,sans-serif;display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 7px;border-radius:7px;
+  background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.1));border:1px solid rgba(255,255,255,.2);border-bottom-width:2px;color:#fff;margin:0 1px}
+.cmd{font:600 15px/1.45 ui-monospace,"SF Mono",Menlo,monospace;background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:12px 14px;
+  color:#b6ffd8;user-select:text;-webkit-user-select:text;word-spacing:.18em;letter-spacing:.01em}
+.steps{margin:0;padding:0;list-style:none;counter-reset:s}
+.steps li{counter-increment:s;display:flex;gap:10px;align-items:flex-start;color:var(--ink-2);font-size:13.5px;margin:7px 0}
+.steps li::before{content:counter(s);flex:none;width:21px;height:21px;border-radius:50%;background:rgba(255,255,255,.14);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.steps code{font:600 12px ui-monospace,Menlo,monospace;color:#b6ffd8;user-select:text;-webkit-user-select:text}
+.check{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--good);color:#04110a;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+
+/* ---------- choice cards (style step) ---------- */
+.choices{position:fixed;inset:0;display:flex;gap:26px;align-items:center;justify-content:center;padding:60px 40px 210px;z-index:3}
+.choice{appearance:none;cursor:pointer;width:250px;height:260px;border-radius:26px;border:1px solid var(--glass-line);background:var(--glass);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding:22px;gap:6px;
+  transition:transform .3s var(--ease),border-color .3s,box-shadow .3s;color:var(--ink)}
+.choice:hover,.choice:focus-visible{transform:translateY(-6px);border-color:rgba(122,168,255,.8);box-shadow:0 24px 60px rgba(58,116,240,.35)}
+.choice svg{flex:1;width:100%}
+.choice strong{font-size:17px}
+.choice span{font-size:13px;color:var(--ink-3)}
+
+/* ---------- settings rows (opened from the menu) ---------- */
+.rows{margin-top:14px;border-radius:14px;background:rgba(255,255,255,.06);overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid rgba(255,255,255,.07)}
+.row:first-child{border-top:0}
+.row div{flex:1}
+.row small{display:block;color:var(--ink-3);font-size:12.5px}
+.switch{appearance:none;width:42px;height:25px;border-radius:99px;background:rgba(255,255,255,.2);position:relative;cursor:pointer;border:0;transition:background .25s;flex:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;background:#fff;transition:transform .25s var(--ease);box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.switch[aria-checked=true]{background:var(--good)}
+.switch[aria-checked=true]::after{transform:translateX(17px)}
+.mini{appearance:none;border:0;border-radius:9px;padding:6px 12px;background:rgba(255,255,255,.12);cursor:pointer;font-size:13px;font-weight:600}
+.mini:hover{background:rgba(255,255,255,.2)}
+
+/* ---------- mock macOS chrome used in illustrations ---------- */
+.mac{background:rgba(30,32,40,.92);border:1px solid rgba(255,255,255,.12);border-radius:14px;box-shadow:0 40px 90px rgba(0,0,0,.55),0 0 0 .5px rgba(0,0,0,.6);overflow:hidden;color:#e9ebf2;font-size:13px}
+.mac .bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 13px;background:rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.07)}
+.lights{display:flex;gap:7px}.lights i{width:11px;height:11px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.mac .title{flex:1;text-align:center;font-weight:600;color:#c9cbd6;margin-right:44px}
+.set{display:flex;height:100%}
+.set aside{width:170px;padding:12px 8px;background:rgba(255,255,255,.03);border-right:1px solid rgba(255,255,255,.06)}
+.set aside p{margin:2px 0;padding:5px 9px;border-radius:7px;display:flex;align-items:center;gap:8px;color:#c3c6d2}
+.set aside p.sel{background:#3a6fe8;color:#fff}
+.set aside i{width:18px;height:18px;border-radius:5px;display:inline-block;flex:none}
+.set main{flex:1;padding:16px 20px}
+.set h4{margin:0 0 12px;font-size:15px}
+.card{background:rgba(255,255,255,.05);border-radius:10px;border:1px solid rgba(255,255,255,.06)}
+.item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.06)}
+.item:first-child{border-top:0}
+.item .ico{width:24px;height:24px;border-radius:6px;flex:none}
+.item span{flex:1}
+.tog{width:34px;height:20px;border-radius:20px;background:rgba(255,255,255,.18);position:relative;flex:none}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.tog.on{background:#2fbf71}.tog.on::after{left:16px}
+.tog.flip{animation:togbg 4.2s infinite}.tog.flip::after{animation:togknob 4.2s infinite}
+@keyframes togbg{0%,52%{background:rgba(255,255,255,.18)}58%,100%{background:#2fbf71}}
+@keyframes togknob{0%,52%{left:2px}58%,100%{left:16px}}
+.hl{box-shadow:0 0 0 2px rgba(122,168,255,.9),0 0 0 7px rgba(122,168,255,.18);border-radius:8px;animation:hl 2.4s ease-in-out infinite}
+@keyframes hl{50%{box-shadow:0 0 0 2px rgba(122,168,255,.5),0 0 0 12px rgba(122,168,255,.06)}}
+.cursor{position:absolute;width:22px;height:22px;pointer-events:none;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))}
+.app-icon{width:76px;height:76px;border-radius:19px;background:linear-gradient(145deg,#6aa5ff,#3557e0 55%,#7b3fe4);position:relative;box-shadow:0 14px 34px rgba(54,92,230,.55),inset 0 1px 0 rgba(255,255,255,.4)}
+.app-icon::before,.app-icon::after{content:"";position:absolute;border-radius:5px;background:rgba(255,255,255,.92)}
+.app-icon::before{left:20%;top:26%;width:35%;height:29%}
+.app-icon::after{left:60%;top:26%;width:20%;height:48%;background:rgba(255,255,255,.55)}
+.app-icon i{position:absolute;left:20%;top:60%;width:35%;height:14%;border-radius:4px;background:rgba(255,255,255,.55)}
+.app-icon::before,.app-icon::after,.app-icon i{border-radius:12%}
+
+/* ---------- Tana plane simulation ---------- */
+.plane{position:absolute;inset:0;overflow:hidden;cursor:grab;touch-action:none}
+.plane.dragging{cursor:grabbing}
+.plane .world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+.win{position:absolute;border-radius:12px;background:#1b1e27;border:1px solid rgba(255,255,255,.1);box-shadow:0 22px 50px rgba(0,0,0,.5);overflow:hidden;transition:box-shadow .2s}
+.win.focus{box-shadow:0 0 0 3px #4b8bff,0 22px 60px rgba(40,90,220,.45)}
+.win .bar{height:28px;display:flex;align-items:center;padding:0 11px;gap:6px;background:rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.06)}
+.win .bar .lights i{width:10px;height:10px}
+.win .bar b{flex:1;text-align:center;font-size:12px;color:#aeb2c0;font-weight:600;margin-right:40px}
+.win .content{position:absolute;inset:28px 0 0 0;padding:14px}
+.plane-hint{position:absolute;top:58px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center;padding:9px 16px;border-radius:99px;background:rgba(10,14,26,.72);
+  border:1px solid var(--glass-line);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);font-size:13.5px;color:var(--ink-2);white-space:nowrap;z-index:2;transition:all .4s var(--ease)}
+.plane-hint.done{border-color:rgba(61,220,151,.6);color:#c6f6df}
+.zoom-badge{position:absolute;right:20px;bottom:20px;font:600 12px ui-monospace,Menlo,monospace;color:var(--ink-3);background:rgba(10,14,26,.6);padding:4px 9px;border-radius:8px;z-index:2}
+
+@media (prefers-reduced-motion:reduce){ *,*::before,*::after{animation-duration:.001s!important;animation-iteration-count:1!important;transition-duration:.001s!important} }
+@media (max-width:820px){ .art.right{padding-left:48px;justify-content:center;padding-bottom:300px} }
+
+/* ---------- print: the Recovery steps on one sheet ---------- */
+#print{display:none}
+@media print{
+  html,body{overflow:visible;background:#fff;color:#000;height:auto}
+  #stage,#panel,#progress,#preview,.choices{display:none!important}
+  #print{display:block;font:14pt/1.5 -apple-system,sans-serif;padding:24pt}
+  #print code{font:600 13pt Menlo,monospace;background:#eee;padding:2pt 5pt}
+}
+</style>
+</head>
+<body>
+<div id="stage" aria-hidden="true"></div>
+<div id="progress" aria-hidden="true"></div>
+<div id="preview">Preview — buttons do nothing</div>
+<section id="panel" role="main" aria-labelledby="title">
+  <div class="eyebrow" id="eyebrow"></div>
+  <h1 id="title" tabindex="-1"></h1>
+  <p class="body" id="body"></p>
+  <div class="extra" id="extra"></div>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <div class="actions" id="actions"></div>
+</section>
+<div id="print"></div>
+
+<script>
+"use strict";
+/* ======================================================================
+   Bridge. Native code owns every check and every privileged action; this
+   page only presents them. Opened in a browser, it runs on mock state.
+   ====================================================================== */
+const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tana;
+const send = (action, value) => native ? native.postMessage({action, value}) : mock.act(action, value);
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const $ = id => document.getElementById(id);
+const h = (strings, ...values) => strings.reduce((out, s, i) => out + s + (i < values.length ? values[i] : ""), "");
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+let st = null;            // latest state from native
+let screen = null;        // current screen id
+let plan = [];            // progress groups for the dots
+let shownFor = null;      // requirement the current screen addresses
+let advancing = false;
+
+/* ======================================================================
+   Illustrations. Every scene is a full-window picture; the panel sits on top.
+   ====================================================================== */
+const cursorSVG = `<svg viewBox="0 0 24 24"><path d="M5 2l14 11.5-6.3.6 3.8 7.4-2.7 1.4-3.8-7.5L5 20z" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+function sky(h1, h2, h3, extra = "") {
+  return `<div class="sky" style="--h1:${h1};--h2:${h2};--h3:${h3};${extra}"></div><div class="grain"></div>`;
+}
+function settingsWindow(title, side, sel, main, w = 560, ht = 360) {
+  const colors = ["#8e8e93","#0a84ff","#5e5ce6","#30d158","#ff9f0a","#ff375f","#64d2ff","#bf5af2"];
+  return `<div class="mac" style="width:${w}px;height:${ht}px"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="title">${title}</div></div>
+    <div class="set" style="height:calc(100% - 34px)"><aside>${side.map((s, i) => `<p class="${i === sel ? "sel" : ""}"><i style="background:${colors[i % colors.length]}"></i>${s}</p>`).join("")}</aside><main>${main}</main></div></div>`;
+}
+const scenes = {
+  welcome: () => sky(222, 268, 190) + `<div class="plane" id="heroPlane"></div>`,
+  move: () => sky(205, 160, 230) + `<div class="art right"><div style="position:relative;width:440px;height:300px">
+      <div class="mac" style="position:absolute;inset:0"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="title">Applications</div></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:26px">
+          ${["#ff9f0a","#30d158","#0a84ff","#bf5af2","#ff375f","#64d2ff","#8e8e93"].map(c => `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;opacity:.55"><div style="width:48px;height:48px;border-radius:12px;background:${c}"></div><div style="width:44px;height:6px;border-radius:3px;background:rgba(255,255,255,.2)"></div></div>`).join("")}
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:52px;height:52px;border-radius:13px;border:2px dashed rgba(122,168,255,.8);animation:hl 2s infinite"></div></div>
+        </div></div>
+      <div id="flyIcon" style="position:absolute;left:-150px;top:120px;animation:fly 3.4s var(--ease) infinite"><div class="app-icon" style="transform:scale(.7)"><i></i></div></div>
+    </div></div>
+    <style>@keyframes fly{0%,12%{transform:translate(0,0) scale(1);opacity:0}20%{opacity:1}62%,80%{transform:translate(497px,30px) scale(.72);opacity:1}100%{transform:translate(497px,30px) scale(.72);opacity:0}}</style>`,
+  accessibility: () => sky(215, 290, 180) + `<div class="art right"><div style="position:relative">
+      ${settingsWindow("Accessibility", ["Wi‑Fi","Bluetooth","Notifications","General","Appearance","Privacy & Security","Desktop & Dock","Displays"], 5,
+        `<h4>‹ &nbsp;Accessibility</h4><p style="margin:-6px 0 12px;color:#9a9db0;font-size:12px">Allow the apps below to control your computer.</p>
+         <div class="card"><div class="item"><div class="ico" style="background:#8e8e93"></div><span>Calendar Helper</span><div class="tog on"></div></div>
+         <div class="item hl"><div class="app-icon" style="width:24px;height:24px;border-radius:6px;box-shadow:none"></div><span><b>Tana2D</b></span><div class="tog flip"></div></div>
+         <div class="item"><div class="ico" style="background:#30d158"></div><span>Screen Reader Tools</span><div class="tog"></div></div></div>`)}
+      <div class="cursor" style="animation:clickTog 4.2s var(--ease) infinite">${cursorSVG}</div></div></div>
+    <style>@keyframes clickTog{0%{left:200px;top:330px}45%,60%{left:525px;top:177px}50%{transform:scale(.85)}55%{transform:none}100%{left:525px;top:177px}}</style>`,
+  recoveryWhy: () => sky(250, 300, 205) + `<div class="art right">${shieldArt()}</div>`,
+  rec1: () => sky(230, 260, 200) + `<div class="art right">${laptopArt(arch() === "arm64")}</div>`,
+  rec2: () => sky(235, 255, 210) + `<div class="art right"><div class="mac" style="width:470px;height:300px;background:#05060a;border-color:rgba(255,255,255,.08)">
+      <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px">
+        <div style="color:#c9cbd6;font-size:13px">Continue holding for startup options…</div>
+        <div style="display:flex;gap:56px;align-items:flex-end">
+          <div style="text-align:center;opacity:.6"><div style="width:76px;height:58px;border-radius:9px;background:linear-gradient(#c9ccd6,#8c909e);margin:0 auto"></div><div style="margin-top:8px;font-size:12px">Macintosh HD</div></div>
+          <div class="hl" style="text-align:center;padding:10px 14px"><svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="#2a2d38"/><g fill="#d6d9e3"><path d="M32 18a14 14 0 1 0 0 28 14 14 0 0 0 0-28zm0 8a6 6 0 1 1 0 12 6 6 0 0 1 0-12z"/>${[0,45,90,135,180,225,270,315].map(a => `<rect x="29" y="11" width="6" height="9" rx="2" transform="rotate(${a} 32 32)"/>`).join("")}</g></svg><div style="margin-top:6px;font-size:12px;font-weight:600">Options</div></div>
+        </div>
+        <div style="padding:6px 22px;border-radius:8px;background:#3a6fe8;color:#fff;font-weight:600;font-size:13px">Continue</div>
+      </div></div></div>`,
+  rec3: () => sky(220, 250, 190) + `<div class="art right"><div class="mac" style="width:480px;height:310px;background:linear-gradient(160deg,#1c2a4a,#0c1222)">
+      <div style="height:26px;display:flex;gap:18px;align-items:center;padding:0 14px;background:rgba(0,0,0,.35);font-size:12.5px"><b style="display:flex"><svg width="11" height="13" viewBox="0 0 22 26"><path d="M11 7c2-3 6-3 8 0-3 2-3 7 1 9-1 3-3 7-6 7-2 0-2-1-4-1s-2 1-4 1C3 23 0 17 0 13c0-5 4-7 6-7 2 0 3 1 5 1zm0-1c0-3 2-5 5-6 0 3-2 5-5 6z" fill="#fff"/></svg></b><b>Recovery</b><span>File</span><span>Edit</span><span class="hl" style="padding:1px 7px;background:#3a6fe8">Utilities</span><span>Window</span></div>
+      <div style="position:relative">
+        <div style="position:absolute;left:150px;top:2px;width:210px;background:rgba(40,42,52,.96);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:5px;box-shadow:0 18px 40px rgba(0,0,0,.5)">
+          <div style="padding:5px 10px;color:#aaa">Startup Security Utility</div>
+          <div style="padding:5px 10px;border-radius:5px;background:#3a6fe8;color:#fff;font-weight:600">Terminal</div>
+          <div style="padding:5px 10px;color:#aaa">Share Disk…</div>
+        </div>
+        <div style="position:absolute;left:62px;top:150px;width:330px;height:100px;border-radius:12px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;color:#9ba;font-size:12px;opacity:.6">macOS Recovery</div>
+      </div></div></div>`,
+  rec4: () => sky(160, 200, 140) + `<div class="art right"><div class="mac" style="width:500px;height:270px;background:#0d0f14">
+      <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="title">Terminal</div></div>
+      <div style="padding:16px;font:13px/1.7 ui-monospace,Menlo,monospace;color:#d8dbe6">
+        <div><span style="color:#7d8">-bash-3.2#</span> <span id="typed" style="color:#b6ffd8"></span><span style="background:#b6ffd8;animation:breathe 1s steps(1) infinite">&nbsp;</span></div>
+        <div id="typedAfter" style="color:#9aa0b3;margin-top:6px;opacity:0;transition:opacity .4s">Enter password for user you:  <span style="color:#666">(nothing appears as you type)</span><br>System Integrity Protection is changed.<br>Restart the machine for the changes to take effect.</div>
+      </div></div></div>`,
+  rec5: () => sky(240, 210, 260) + `<div class="art right"><div class="mac" style="width:440px;height:280px;background:linear-gradient(160deg,#1c2a4a,#0c1222)">
+      <div style="height:26px;display:flex;gap:18px;align-items:center;padding:0 14px;background:rgba(0,0,0,.35);font-size:12.5px"><b class="hl" style="padding:0 7px;background:#3a6fe8;display:flex"><svg width="11" height="13" viewBox="0 0 22 26"><path d="M11 7c2-3 6-3 8 0-3 2-3 7 1 9-1 3-3 7-6 7-2 0-2-1-4-1s-2 1-4 1C3 23 0 17 0 13c0-5 4-7 6-7 2 0 3 1 5 1zm0-1c0-3 2-5 5-6 0 3-2 5-5 6z" fill="#fff"/></svg></b><b>Recovery</b><span>Utilities</span></div>
+      <div style="margin:2px 0 0 6px;width:190px;background:rgba(40,42,52,.96);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:5px;box-shadow:0 18px 40px rgba(0,0,0,.5)">
+        <div style="padding:5px 10px;color:#aaa">Startup Disk…</div>
+        <div style="padding:5px 10px;border-radius:5px;background:#3a6fe8;color:#fff;font-weight:600">Restart</div>
+        <div style="padding:5px 10px;color:#aaa">Shut Down</div>
+      </div></div></div>`,
+  recReady: () => sky(222, 268, 190),
+  bootArgs: () => sky(200, 250, 170) + `<div class="art right">${chipArt()}</div>`,
+  restart: () => sky(210, 240, 180) + `<div class="art right"><svg width="230" height="230" viewBox="0 0 100 100" style="filter:drop-shadow(0 20px 40px rgba(60,120,255,.45))">
+      <circle cx="50" cy="50" r="46" fill="rgba(255,255,255,.06)" stroke="rgba(255,255,255,.18)"/>
+      <g style="transform-origin:50px 50px;animation:spin 5s linear infinite"><path d="M50 22a28 28 0 1 1-26.6 19.3" fill="none" stroke="#7aa8ff" stroke-width="7" stroke-linecap="round"/><path d="M16 36l8 6 5-9" fill="none" stroke="#7aa8ff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>`,
+  helper: () => sky(222, 200, 260) + `<div class="art right">${dockArt()}</div>`,
+  spaces: () => sky(195, 240, 215) + `<div class="art right"><div style="position:relative">
+      ${settingsWindow("Desktop & Dock", ["Appearance","Control Centre","Desktop & Dock","Displays","Wallpaper","Screen Saver"], 2,
+        `<h4>Desktop &amp; Dock</h4><p style="margin:-6px 0 10px;color:#9a9db0;font-size:12px">Scroll down to Mission Control</p>
+         <div class="card"><div class="item"><span>Automatically rearrange Spaces</span><div class="tog"></div></div>
+         <div class="item"><span>When switching to an app, switch to a Space…</span><div class="tog on"></div></div>
+         <div class="item"><span>Group windows by application</span><div class="tog"></div></div>
+         <div class="item hl"><span><b>Displays have separate Spaces</b></span><div class="tog flip"></div></div></div>`)}
+      <div class="cursor" style="animation:clickSp 4.2s var(--ease) infinite">${cursorSVG}</div></div></div>
+    <style>@keyframes clickSp{0%{left:230px;top:330px}45%,60%{left:530px;top:263px}50%{transform:scale(.85)}55%{transform:none}100%{left:530px;top:263px}}</style>`,
+  otherManager: () => sky(10, 330, 220) + `<div class="art right"><div style="display:flex;gap:30px;align-items:center">
+      <div class="app-icon"><i></i></div><svg width="70" height="40"><path d="M5 20h60M50 6l14 14-14 14" stroke="rgba(255,255,255,.4)" stroke-width="3" fill="none" stroke-linecap="round"/></svg>
+      <div style="width:76px;height:76px;border-radius:19px;background:#2a2d38;border:1px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:30px;opacity:.7">⧉</div></div></div>`,
+  display: () => sky(215, 250, 200) + `<div class="art right"><div style="display:flex;gap:36px;align-items:flex-end">
+      ${monitor(1)}${monitor(.35, true)}</div></div>`,
+  fullscreen: () => sky(225, 280, 195) + `<div class="art right"><div class="mac" style="width:420px;height:270px;display:flex;align-items:flex-start;justify-content:flex-start;padding:14px">
+      <div class="lights" style="transform:scale(1.6);transform-origin:0 0"><i></i><i></i><i class="hl" style="border-radius:50%"></i></div></div></div>`,
+  locked: () => sky(230, 260, 210) + `<div class="art right"><div style="font-size:90px;opacity:.8">🔒</div></div>`,
+  style: () => sky(222, 268, 190),
+  login: () => sky(205, 280, 185) + `<div class="art right"><div style="position:relative;width:440px">
+      <div style="height:30px;border-radius:10px;background:rgba(20,22,30,.7);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:flex-end;gap:16px;padding:0 14px;font-size:12.5px;color:#ccd">
+        <span>Wi‑Fi</span><span class="hl" style="padding:1px 6px;display:flex;align-items:center"><div class="app-icon" style="width:16px;height:16px;border-radius:4px;box-shadow:none;transform:none"></div></span><span>Mon 9:41</span></div>
+      <div class="mac" style="margin-top:26px;padding:18px;display:flex;gap:14px;align-items:center;animation:rise 3s var(--ease) infinite">
+        <div class="app-icon" style="width:44px;height:44px;border-radius:11px"><i style="display:none"></i></div>
+        <div><b>Tana2D is ready</b><div style="color:#9a9db0">Your windows are where you left them.</div></div></div></div></div>
+    <style>@keyframes rise{0%{opacity:0;transform:translateY(14px)}18%,82%{opacity:1;transform:none}100%{opacity:0}}</style>`,
+  tour: () => sky(222, 268, 190) + `<div class="plane" id="tourPlane"></div>`,
+  done: () => sky(222, 268, 190, "--h3:150") + `<div class="plane" id="donePlane"></div>`,
+  settings: () => sky(222, 268, 190) + `<div class="plane" id="setPlane"></div>`,
+};
+function arch() { return st ? st.arch : "arm64"; }
+function laptopArt(appleSilicon) {
+  /* Seen from above: screen hinge at the top, keyboard below. */
+  const keys = [];
+  [14, 14, 14, 13, 12].forEach((n, r) => { const kw = (540 - (n - 1) * 4) / n;
+    for (let c = 0; c < n; c++) keys.push({x: 30 + c * (kw + 4), y: 64 + r * 32, w: kw, h: r === 0 ? 18 : 28, r, c}); });
+  const top = keys.filter(k => k.r === 0); const tid = top[top.length - 1];
+  const cmd = keys.find(k => k.r === 4 && k.c === 2), rkey = keys.find(k => k.r === 2 && k.c === 4);
+  const hot = appleSilicon ? [tid] : [cmd, rkey];
+  const label = k => appleSilicon ? "" : k === cmd ? "⌘" : k === rkey ? "R" : "";
+  return `<svg width="600" height="300" viewBox="0 0 600 300" style="overflow:visible;filter:drop-shadow(0 30px 50px rgba(0,0,0,.5))">
+    <style>@keyframes hold{to{stroke-dashoffset:0}}</style>
+    <rect x="10" y="0" width="580" height="18" rx="6" fill="#1a1c23"/>
+    <rect x="0" y="18" width="600" height="282" rx="22" fill="#2b2e37" stroke="rgba(255,255,255,.14)"/>
+    <rect x="18" y="52" width="564" height="172" rx="10" fill="#1d1f26"/>
+    ${keys.map(k => `<rect x="${k.x}" y="${k.y}" width="${k.w}" height="${k.h}" rx="5" fill="${hot.includes(k) ? "#3a74f0" : "#121318"}" ${hot.includes(k) ? 'style="animation:hl 2s infinite"' : ""}/>${label(k) ? `<text x="${k.x + k.w / 2}" y="${k.y + 19}" text-anchor="middle" fill="#fff" font-weight="700" font-size="15">${label(k)}</text>` : ""}`).join("")}
+    <rect x="${keys.find(k => k.r === 4 && k.c === 3).x}" y="192" width="190" height="28" rx="5" fill="#121318"/>
+    <rect x="200" y="236" width="200" height="54" rx="10" fill="rgba(0,0,0,.18)"/>
+    ${appleSilicon ? `<circle cx="${tid.x + tid.w / 2}" cy="${tid.y + tid.h / 2}" r="26" fill="none" stroke="#7aa8ff" stroke-width="4" stroke-dasharray="164" stroke-dashoffset="164" transform="rotate(-90 ${tid.x + tid.w / 2} ${tid.y + tid.h / 2})" style="animation:hold 3s linear infinite"/>
+      <text x="${tid.x + tid.w / 2}" y="38" text-anchor="middle" fill="#cfd6ff" font-size="15" font-weight="700">Hold</text>` :
+      `<text x="300" y="40" text-anchor="middle" fill="#cfd6ff" font-size="15" font-weight="700">Hold both while restarting</text>`}
+  </svg>`;
+}
+function shieldArt() {
+  return `<svg width="270" height="290" viewBox="0 0 100 108" style="filter:drop-shadow(0 25px 50px rgba(110,90,255,.45))">
+    <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8ab4ff"/><stop offset="1" stop-color="#6d43e8"/></linearGradient></defs>
+    <path d="M50 4l38 14v30c0 26-17 46-38 56C29 94 12 74 12 48V18z" fill="url(#sg)" opacity=".9"/>
+    <path d="M50 4l38 14v30c0 26-17 46-38 56" fill="rgba(0,0,0,.18)"/>
+    <g transform="translate(50 54)"><rect x="-15" y="-4" width="30" height="24" rx="4" fill="#fff"/><path d="M-9-4v-7a9 9 0 0 1 18 0" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" style="transform-origin:9px -4px;animation:unlatch 3.4s var(--ease) infinite"/><circle cy="8" r="3" fill="#6d43e8"/></g>
+    <style>@keyframes unlatch{0%,30%{transform:none}55%,85%{transform:rotate(28deg)}100%{transform:none}}</style></svg>`;
+}
+function chipArt() {
+  return `<svg width="260" height="260" viewBox="0 0 100 100" style="filter:drop-shadow(0 20px 46px rgba(60,200,180,.4))">
+    <defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a3f52"/><stop offset="1" stop-color="#1a1d27"/></linearGradient></defs>
+    ${[22,34,46,58,70].map(p => `<rect x="${p}" y="6" width="5" height="12" rx="2" fill="#7c8299"/><rect x="${p}" y="82" width="5" height="12" rx="2" fill="#7c8299"/><rect x="6" y="${p}" width="12" height="5" rx="2" fill="#7c8299"/><rect x="82" y="${p}" width="12" height="5" rx="2" fill="#7c8299"/>`).join("")}
+    <rect x="16" y="16" width="68" height="68" rx="12" fill="url(#cg)" stroke="rgba(255,255,255,.2)"/>
+    <rect x="31" y="42" width="38" height="18" rx="9" fill="rgba(255,255,255,.18)"/><circle cx="40" cy="51" r="7" fill="#fff" style="animation:chipOn 3s var(--ease) infinite"/>
+    <style>@keyframes chipOn{0%,35%{transform:none;fill:#fff}55%,100%{transform:translateX(20px);fill:#3ddc97}}</style></svg>`;
+}
+function dockArt() {
+  const icons = ["#ff9f0a","#30d158","#0a84ff","#bf5af2","#ff375f"].map(c => `<div style="width:46px;height:46px;border-radius:12px;background:${c};opacity:.75"></div>`).join("");
+  return `<div style="display:flex;flex-direction:column;align-items:center;gap:40px">
+    <div style="position:relative;width:120px;height:120px;display:flex;align-items:center;justify-content:center">
+      <div class="app-icon" style="transform:scale(1.25)"><i></i></div>
+      <div style="position:absolute;inset:-14px;border-radius:40px;border:2px solid rgba(122,168,255,.5);animation:ring 2.4s ease-out infinite"></div></div>
+    <svg width="20" height="60"><line x1="10" y1="0" x2="10" y2="60" stroke="#7aa8ff" stroke-width="3" stroke-dasharray="4 7" style="animation:flow 1s linear infinite"/></svg>
+    <div style="display:flex;gap:12px;padding:10px 14px;border-radius:20px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(10px)">${icons}</div>
+    <style>@keyframes ring{from{transform:scale(.85);opacity:1}to{transform:scale(1.35);opacity:0}}@keyframes flow{to{stroke-dashoffset:-11}}</style></div>`;
+}
+function monitor(opacity, unplug = false) {
+  return `<div style="opacity:${opacity};display:flex;flex-direction:column;align-items:center;${unplug ? "animation:fade 3s infinite" : ""}">
+    <div style="width:${unplug ? 180 : 230}px;height:${unplug ? 115 : 145}px;border-radius:10px;background:linear-gradient(160deg,#26355e,#0b0f1d);border:6px solid #1a1c24;box-shadow:0 20px 40px rgba(0,0,0,.5)"></div>
+    <div style="width:16px;height:30px;background:#2a2d36"></div><div style="width:80px;height:6px;border-radius:3px;background:#2a2d36"></div></div>
+    <style>@keyframes fade{50%{opacity:.08;transform:translateY(8px)}}</style>`;
+}
+
+/* ======================================================================
+   Tana plane simulation: windows on an endless canvas, a camera that pans
+   and zooms, hover focus, overview, and click-to-zoom below 50%.
+   ====================================================================== */
+const APPS = [
+  {t:"Browser", x:0, y:0, w:640, h:420, c:"browser"},
+  {t:"Notes", x:680, y:-40, w:360, h:460, c:"notes"},
+  {t:"Terminal", x:-460, y:40, w:420, h:300, c:"term"},
+  {t:"Music", x:1080, y:60, w:380, h:300, c:"music"},
+  {t:"Messages", x:200, y:470, w:420, h:340, c:"chat"},
+  {t:"Photos", x:-470, y:380, w:620, h:400, c:"photos"},
+  {t:"Calendar", x:660, y:460, w:470, h:330, c:"cal"},
+  {t:"Editor", x:-940, y:-60, w:440, h:520, c:"code"},
+];
+function appContent(kind) {
+  const line = (w, c = "rgba(255,255,255,.14)", m = 9) => `<div style="height:8px;width:${w}%;border-radius:4px;background:${c};margin-bottom:${m}px"></div>`;
+  switch (kind) {
+    case "browser": return `<div style="height:22px;border-radius:7px;background:rgba(255,255,255,.08);margin-bottom:14px"></div><div style="height:150px;border-radius:10px;background:linear-gradient(120deg,#ff8a5c,#d9468c 50%,#5a4fe0);margin-bottom:14px"></div>${line(70)}${line(90)}${line(55)}`;
+    case "notes": return `<div style="font-weight:700;font-size:17px;color:#ffd66b;margin-bottom:12px">Ideas</div>${line(85,"rgba(255,214,107,.3)")}${line(60,"rgba(255,214,107,.3)")}${line(75,"rgba(255,214,107,.3)")}${line(40,"rgba(255,214,107,.3)",18)}${line(80)}${line(65)}${line(90)}${line(50)}`;
+    case "term": return `<div style="font:12px/1.7 ui-monospace,Menlo,monospace;color:#8ef0b5">~ % make all test<br><span style="color:#9aa0b3">compiling… ok<br>142 tests passed</span><br>~ % <span style="background:#8ef0b5">&nbsp;</span></div>`;
+    case "music": return `<div style="display:flex;gap:14px"><div style="width:120px;height:120px;border-radius:10px;background:conic-gradient(from 40deg,#ff5f9e,#ffc35c,#5ce1ff,#a35cff,#ff5f9e)"></div><div style="flex:1;padding-top:10px">${line(80,"#fff")}${line(55)}</div></div><div style="margin-top:22px;height:5px;border-radius:3px;background:rgba(255,255,255,.15)"><div style="width:42%;height:100%;border-radius:3px;background:#ff5f9e"></div></div>`;
+    case "chat": return [["68%","#3a74f0","auto"],["54%","rgba(255,255,255,.12)","0"],["40%","#3a74f0","auto"],["62%","rgba(255,255,255,.12)","0"]].map(([w,c,ml]) => `<div style="width:${w};height:34px;border-radius:17px;background:${c};margin:0 0 12px ${ml}"></div>`).join("");
+    case "photos": return `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${["#f6a","#6cf","#fc6","#8e8","#c8f","#f96","#6fc","#99f","#fd7","#7cf","#f7a","#ae6"].map(c => `<div style="aspect-ratio:1;border-radius:6px;background:linear-gradient(135deg,${c},rgba(0,0,0,.3))"></div>`).join("")}</div>`;
+    case "cal": return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">${Array.from({length:28},(_,i) => `<div style="height:38px;border-radius:6px;background:rgba(255,255,255,${i===16?".0":".05"});${i===16?"background:#ff5f57;":""}${[3,9,12,20].includes(i)?"box-shadow:inset 0 -6px 0 #5b96ff;":""}"></div>`).join("")}</div>`;
+    case "code": return `<div style="font:12px/1.75 ui-monospace,Menlo,monospace">${[["#c792ea","func"],["#82aaff","  let"],["#c3e88d","  return"],["#89ddff","}"],["#c792ea","struct"],["#82aaff","  var"],["#f78c6c","  case"],["#89ddff","}"],["#c792ea","func"],["#c3e88d","  print"]].map(([c,k]) => `<div><span style="color:${c}">${k}</span> <span style="display:inline-block;width:${60 + (k.length*37)%120}px;height:7px;border-radius:4px;background:rgba(255,255,255,.12)"></span></div>`).join("")}</div>`;
+  }
+  return "";
+}
+class Plane {
+  constructor(el, {interactive = true, onEvent = () => {}, scale = 1} = {}) {
+    this.el = el; this.scale = scale; this.onEvent = onEvent; this.interactive = interactive;
+    this.world = document.createElement("div"); this.world.className = "world"; el.appendChild(this.world);
+    this.wins = APPS.map((a, i) => {
+      const w = document.createElement("div"); w.className = "win"; w.dataset.i = i;
+      Object.assign(w.style, {left: a.x + "px", top: a.y + "px", width: a.w + "px", height: a.h + "px"});
+      w.innerHTML = `<div class="bar"><div class="lights"><i></i><i></i><i></i></div><b>${a.t}</b></div><div class="content">${appContent(a.c)}</div>`;
+      this.world.appendChild(w); return w;
+    });
+    this.badge = document.createElement("div"); this.badge.className = "zoom-badge"; el.appendChild(this.badge);
+    this.cam = this.camFor(0);
+    this.target = null; this.focus = 0; this.vel = {x: 0, y: 0}; this.alive = true;
+    this.wins[0].classList.add("focus");
+    if (interactive) this.bind();
+    this.loop = this.loop.bind(this); requestAnimationFrame(this.loop);
+  }
+  get W() { return this.el.clientWidth; } get H() { return this.el.clientHeight; }
+  /* "100%" in the miniature: the focused window fills most of the screen. */
+  fitZ(i) { const a = APPS[i]; return Math.min((this.W - 160) / a.w, (this.H - 190) / a.h, 1.15) * this.scale; }
+  /* Focused windows sit up and to the right, clear of the panel. */
+  camFor(i) { const a = APPS[i], z = this.fitZ(i), ox = this.W > 760 ? Math.min(210, (this.W - a.w * z) / 2 - 20) : 0, oy = -Math.min(70, Math.max(0, (this.H - a.h * z) / 2 - 50));
+    return {x: a.x + a.w / 2 - Math.max(0, ox) / z, y: a.y + a.h / 2 - oy / z, z}; }
+  bounds() { const xs = APPS.flatMap(a => [a.x, a.x + a.w]), ys = APPS.flatMap(a => [a.y, a.y + a.h]); return {x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys)}; }
+  overviewCam() { const b = this.bounds(); return {x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 + 30, z: Math.min((this.W - 80) / (b.x1 - b.x0), (this.H - 200) / (b.y1 - b.y0))}; }
+  get zoomPct() { return this.cam.z / this.fitZ(this.focus) * this.scale; }
+  isOverview() { return this.zoomPct < .62; }
+  toWorld(px, py) { return {x: (px - this.W / 2) / this.cam.z + this.cam.x, y: (py - this.H / 2) / this.cam.z + this.cam.y}; }
+  flyTo(cam, ms = 700) { this.target = {from: {...this.cam}, to: cam, t0: performance.now(), ms: reduceMotion ? 1 : ms}; this.vel = {x: 0, y: 0}; }
+  focusWin(i, zoom = true) {
+    this.wins[this.focus].classList.remove("focus"); this.focus = i; this.wins[i].classList.add("focus");
+    if (zoom) this.flyTo(this.camFor(i));
+  }
+  toggleOverview() {
+    if (this.isOverview()) { this.focusWin(this.focus); this.onEvent("return"); }
+    else { this.flyTo(this.overviewCam(), 650); this.onEvent("overview"); }
+  }
+  zoomAt(px, py, factor) {
+    const before = this.toWorld(px, py), ov = this.overviewCam(), full = this.fitZ(this.focus);
+    this.cam.z = Math.max(ov.z * .8, Math.min(full, this.cam.z * factor));
+    const after = this.toWorld(px, py); this.cam.x += before.x - after.x; this.cam.y += before.y - after.y; this.target = null;
+    if (this.isOverview()) this.onEvent("overview");
+  }
+  hitWin(px, py) {
+    const p = this.toWorld(px, py);
+    for (let i = APPS.length - 1; i >= 0; i--) { const a = APPS[i]; if (p.x >= a.x && p.x <= a.x + a.w && p.y >= a.y && p.y <= a.y + a.h) return i; }
+    return -1;
+  }
+  bind() {
+    const el = this.el; let drag = null, gestureZ = 1, moved = 0;
+    el.addEventListener("wheel", e => {
+      e.preventDefault(); const r = el.getBoundingClientRect();
+      if (e.ctrlKey) { this.zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * .012)); return; }
+      this.target = null; this.cam.x += e.deltaX / this.cam.z; this.cam.y += e.deltaY / this.cam.z;
+      this.onEvent("pan", Math.hypot(e.deltaX, e.deltaY) / this.cam.z);
+    }, {passive: false});
+    el.addEventListener("gesturestart", e => { e.preventDefault(); gestureZ = 1; });
+    el.addEventListener("gesturechange", e => { e.preventDefault(); const r = el.getBoundingClientRect(); this.zoomAt(e.clientX - r.left, e.clientY - r.top, e.scale / gestureZ); gestureZ = e.scale; });
+    el.addEventListener("pointerdown", e => { if (e.button !== 0) return; drag = {x: e.clientX, y: e.clientY, t: performance.now()}; moved = 0; el.setPointerCapture(e.pointerId); this.target = null; this.vel = {x: 0, y: 0}; });
+    el.addEventListener("pointermove", e => {
+      const r = el.getBoundingClientRect();
+      if (!drag) { const i = this.hitWin(e.clientX - r.left, e.clientY - r.top); if (i >= 0 && i !== this.focus && !this.target) this.focusWin(i, false); return; }
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y, now = performance.now(), dt = Math.max(8, now - drag.t);
+      moved += Math.hypot(dx, dy); if (moved > 4) el.classList.add("dragging");
+      this.cam.x -= dx / this.cam.z; this.cam.y -= dy / this.cam.z;
+      this.vel = {x: -dx / this.cam.z / dt * 16, y: -dy / this.cam.z / dt * 16};
+      drag = {x: e.clientX, y: e.clientY, t: now}; this.onEvent("pan", Math.hypot(dx, dy) / this.cam.z);
+    });
+    el.addEventListener("pointerup", e => {
+      el.classList.remove("dragging"); const was = drag; drag = null; if (!was) return;
+      if (moved < 5) {
+        const r = el.getBoundingClientRect(), i = this.hitWin(e.clientX - r.left, e.clientY - r.top);
+        if (i >= 0 && this.isOverview()) { this.focusWin(i); this.onEvent("jump", i); }
+        else if (i >= 0) this.focusWin(i, false);
+      }
+      if (performance.now() - was.t > 60) this.vel = {x: 0, y: 0};
+    });
+  }
+  loop(now) {
+    if (!this.alive) return;
+    /* Time-based, so a fling travels the same distance at 60 Hz and 120 Hz. */
+    const dt = this.lastT ? Math.min(50, now - this.lastT) : 1000 / 60; this.lastT = now;
+    if (this.target) {
+      const {from, to, t0, ms} = this.target, k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      /* Interpolate zoom geometrically so the trip feels even. */
+      this.cam.z = from.z * Math.pow(to.z / from.z, e); this.cam.x = from.x + (to.x - from.x) * e; this.cam.y = from.y + (to.y - from.y) * e;
+      if (k >= 1) this.target = null;
+    } else if (Math.abs(this.vel.x) + Math.abs(this.vel.y) > .02) {
+      const f = dt / 16, decay = Math.pow(.92, dt / (1000 / 60));
+      this.cam.x += this.vel.x * f; this.cam.y += this.vel.y * f; this.vel.x *= decay; this.vel.y *= decay;
+    }
+    const z = this.cam.z, tx = this.W / 2 - this.cam.x * z, ty = this.H / 2 - this.cam.y * z;
+    /* Only touch the DOM when something moved: an idle preview restyles nothing. */
+    const transform = `translate3d(${tx}px,${ty}px,0) scale(${z})`;
+    if (transform !== this.lastTransform) { this.world.style.transform = transform; this.lastTransform = transform; }
+    const badge = Math.round(Math.min(1, this.zoomPct) * 100) + "%";
+    if (badge !== this.lastBadge) { this.badge.textContent = badge; this.lastBadge = badge; }
+    requestAnimationFrame(this.loop);
+  }
+  destroy() { this.alive = false; clearTimeout(this.story); }
+  /* The welcome screen's self-playing demonstration. */
+  autoplay() {
+    if (reduceMotion) { this.flyTo(this.overviewCam(), 1); return; }
+    const beats = [() => this.focusWin(1), () => this.focusWin(3), () => this.flyTo(this.overviewCam(), 1100), () => this.focusWin(6), () => this.focusWin(5), () => this.focusWin(0)];
+    let n = 0; const step = () => { if (!this.alive) return; beats[n++ % beats.length](); this.story = setTimeout(step, n % beats.length === 3 ? 2800 : 2200); };
+    this.story = setTimeout(step, 1400);
+  }
+}
+let plane = null;
+function mountPlane(id, opts, init) {
+  if (plane) plane.destroy();
+  const el = $(id); if (!el) { plane = null; return; }
+  plane = new Plane(el, opts); if (init) init(plane);
+}
+
+/* ======================================================================
+   Screens. Each one: a scene, one sentence of purpose, at most two buttons.
+   ====================================================================== */
+const GROUP = {move:"install", accessibility:"permission", recovery:"security", bootArgs:"security", restart:"security", helper:"helper",
+  spaces:"system", otherManager:"system", display:"system", fullscreen:"system", locked:"system", style:"style", login:"login", tour:"tour", done:"done"};
+const isAS = () => arch() === "arm64";
+const recSteps = () => isAS() ? [
+  {scene:"rec1", title:"Shut down, then hold the power button", body:"After your Mac is fully off, press and <b>keep holding</b> the power button (Touch ID) until you see <b>Loading startup options</b>."},
+  {scene:"rec2", title:"Choose Options, then Continue", body:"Click <b>Options</b>, then <b>Continue</b>. If asked, pick your user and enter your Mac password."},
+  {scene:"rec3", title:"Open Terminal", body:"In the menu bar at the top of the screen, choose <b>Utilities → Terminal</b>."},
+  {scene:"rec4", title:"Type this, then press Return", body:"Type it exactly, with the spaces. If asked, type <b>y</b>, then your password. The password stays invisible while you type. That is normal.",
+    extra:() => cmdBlock("csrutil enable --without fs --without debug --without nvram"), typed:"csrutil enable --without fs --without debug --without nvram"},
+  {scene:"rec5", title:"Restart", body:"Choose <b>Apple menu → Restart</b> (top-left corner). When you log in, Tana2D opens by itself to finish."},
+] : [
+  {scene:"rec1", title:"Restart while holding ⌘ and R", body:"As your Mac restarts, press and <b>keep holding Command (⌘) and R</b> until you see the Apple logo."},
+  {scene:"rec3", title:"Open Terminal", body:"If asked, choose your language and log in. Then, in the menu bar, choose <b>Utilities → Terminal</b>."},
+  {scene:"rec4", title:"Type this, then press Return", body:"Type it exactly, with the spaces, then press Return.",
+    extra:() => cmdBlock("csrutil disable --with kext --with dtrace --with nvram --with basesystem"), typed:"csrutil disable --with kext --with dtrace --with nvram --with basesystem"},
+  {scene:"rec5", title:"Restart", body:"Choose <b>Apple menu → Restart</b> (top-left corner). When you log in, Tana2D opens by itself to finish."},
+];
+let recIndex = 0;
+const cmdBlock = text => `<div class="cmd" aria-label="${text}">${text.split(" ").map(w => `<span style="white-space:nowrap">${w}</span>`).join(" ")}</div>`;
+
+function screens() {
+  const s = st || {};
+  const busy = !!s.busy;
+  const waitingBtn = (label) => busy ? {label: "Waiting…", busy: true} : label;
+  return {
+    welcome: () => {
+      const remaining = (s.missing || []).length;
+      const needsRecovery = (s.missing || []).includes("recovery");
+      if (s.completed && s.step !== "ready") return {scene:"welcome", center:false, eyebrow:"Tana2D",
+        title:"One thing needs attention", body:"Something on your Mac changed since Tana2D last ran. It takes a minute to fix.",
+        primary:{label:"Fix It", go:"next"}};
+      if (s.resumed && !s.completed) return {scene:"welcome", eyebrow:"Welcome back",
+        title:"Let's finish setting up", body: remaining ? `You're almost there. ${remaining === 1 ? "One step" : remaining + " short steps"} to go.` : "Everything is in place. A few quick choices and you're done.",
+        primary:{label:"Continue", go:"next"}};
+      return {scene:"welcome", eyebrow:"Welcome to Tana2D",
+        title:"Your windows, on an endless canvas", body:"Glide between windows, zoom out to see everything, and click to jump straight in. Setup takes " + (needsRecovery ? "about 15 minutes, including one restart." : "about two minutes."),
+        primary:{label:"Get Started", go:"next"}};
+    },
+    move: () => ({scene:"move", eyebrow:"Install",
+      title:"Put Tana2D in Applications", body:"That way your Mac remembers the permissions you give it, and you can always find it in Launchpad.",
+      primary:{label: waitingBtn("Move to Applications"), act:"move"}}),
+    accessibility: () => ({scene:"accessibility", eyebrow:"Permission",
+      title:"Let Tana2D arrange your windows", body:"Click the button, then switch on <b>Tana2D</b> in the list. You may need to enter your password. This page moves on by itself.",
+      primary:{label:"Open Settings", act:"accessibility"}, wait:"Waiting for the switch"}),
+    recoveryWhy: () => ({scene:"recoveryWhy", eyebrow:"Unlock window effects · one-time",
+      title:"Tana2D needs one change in macOS Recovery", body:"To keep windows live off screen and animate them smoothly, macOS must allow Tana2D's helper. This relaxes part of a built-in protection called <b>System Integrity Protection</b>. You can undo it any time. Managed work Macs may not allow it.",
+      primary:{label:"Show Me How", go:"rec"}, secondary:{label:"Learn More", act:"guide"}}),
+    rec: () => {
+      const r = recSteps()[recIndex], n = recSteps().length;
+      return {scene:r.scene, eyebrow:`Recovery · ${recIndex + 1} of ${n}`, title:r.title, body:r.body, extra:r.extra && r.extra(),
+        primary:{label: recIndex === n - 1 ? "Got It" : "Next", go: recIndex === n - 1 ? "recReady" : "recNext"}, secondary:{label:"Back", go:"recBack"}, typed:r.typed};
+    },
+    recReady: () => ({scene:"recReady", wide:true, eyebrow:"Ready when you are",
+      title: isAS() ? "Shut down to start" : "Restart to start", body:"Your Mac's screen will be off for a few minutes, so keep these steps nearby. Taking a photo of this screen with your phone works well.",
+      extra:`<ol class="steps">${recSteps().map(r => `<li><span>${r.title}${r.typed ? `<br><code>${r.typed}</code>` : ""}</span></li>`).join("")}</ol>`,
+      primary:{label: isAS() ? "Shut Down" : "Restart", act:"shutDownForRecovery"}, secondary:{label:"Print Steps", act:"print"}}),
+    bootArgs: () => ({scene:"bootArgs", eyebrow:"Security · almost done",
+      title:"Turn on helper support", body:"The Recovery change worked. One more setting lets the helper run on Apple silicon. macOS will ask for your password.",
+      primary:{label: waitingBtn("Turn On"), act:"enableBootArgs"}}),
+    restart: () => ({scene:"restart", eyebrow:"Security · last restart",
+      title:"Restart to finish", body:"Save your work first. Tana2D opens again after you log in.",
+      primary:{label:"Restart Now", act:"restart"}}),
+    helper: () => ({scene:"helper", eyebrow:"Helper",
+      title: s.helperInstalled ? "Reconnect the window helper" : "Install the window helper", body:"The helper is how Tana2D moves and animates windows. macOS asks for your password once. It installs only Tana2D's own helper.",
+      primary:{label: waitingBtn(s.helperInstalled ? "Reconnect" : "Install Helper"), act:"installHelper"}}),
+    spaces: () => ({scene:"spaces", eyebrow:"System setting",
+      title:"Turn on separate Spaces", body:"In <b>Desktop &amp; Dock</b>, scroll to Mission Control and switch on <b>Displays have separate Spaces</b>. Then log out and back in. Tana2D reopens.",
+      primary:{label:"Open Settings", act:"openSpaces"}, secondary:{label:"Log Out", act:"logOut"}}),
+    otherManager: () => ({scene:"otherManager", eyebrow:"One at a time",
+      title:`Quit ${esc(s.otherManager || "the other window manager")}`, body:"Only one app can arrange your windows at a time.",
+      primary:{label:`Quit ${esc(s.otherManager || "It")}`, act:"quitOther"}, wait:"Checking"}),
+    display: () => ({scene:"display", eyebrow:"Displays",
+      title:"Use one display for now", body:"This version of Tana2D works with one screen. Disconnect the other display, or close your laptop's lid if you use an external one.",
+      wait:"Checking automatically"}),
+    fullscreen: () => ({scene:"fullscreen", eyebrow:"Desktop",
+      title:"Leave full screen", body:"Switch to a regular desktop. Click the green button on the full-screen app, or press <kbd>Fn</kbd> <kbd>F</kbd>.",
+      wait:"Checking automatically"}),
+    locked: () => ({scene:"locked", eyebrow:"Desktop", title:"Unlock your Mac", body:"Setup continues when you're back.", wait:"Waiting"}),
+    style: () => ({scene:"style", eyebrow:"Make it yours", center:true, choices:true,
+      title:"How do you like to work?", body:"You can change this later in Settings."}),
+    login: () => ({scene:"login", eyebrow:"Startup",
+      title:"Open Tana2D when you log in?", body:"Your windows are arranged and ready the moment you sign in.",
+      primary:{label:"Open at Login", act:"login", value:true, then:"tour1"}, secondary:{label:"Not Now", act:"login", value:false, then:"tour1"}}),
+    tour1: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 1 of 3",
+      title:"Move around", body: style === "keyboard" ? "Press <kbd>⌥</kbd><kbd>⌘</kbd> and an arrow key to go to the next window. Try it here, or drag the background." : "In Tana2D, <b>swipe with three fingers</b>. In this preview, scroll with two fingers or drag the background.",
+      primary:{label:"Next", go:"tour2", pulse:tourDone.pan}, secondary:{label:"Skip Tour", go:"done"}}),
+    tour2: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 2 of 3",
+      title:"See everything at once", body:"<b>Pinch</b> with two fingers, or press <kbd>⌃</kbd><kbd>↩</kbd> (Control + Return). Press it again to come back.",
+      primary:{label:"Next", go:"tour3", pulse:tourDone.overview}, secondary:{label:"Skip Tour", go:"done"}}),
+    tour3: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 3 of 3",
+      title:"Jump to any window", body:"While zoomed out, <b>click a window</b>. Tana2D flies you straight into it.",
+      primary:{label:"Next", go:"done", pulse:tourDone.jump}, secondary:{label:"Back", go:"tour2"}}),
+    done: () => ({scene:"done", eyebrow: s.step === "ready" ? `<span class="check">✓</span> All set` : "Almost",
+      title: s.step === "ready" ? "Tana2D is ready" : "One step left",
+      body: s.step === "ready" ? "Your windows will spread out onto the canvas. Choose <b>Quit Tana2D</b> from its menu bar icon any time to put them back." : "Something still needs your attention before Tana2D can start.",
+      extra: s.step === "ready" ? cheatSheet() : "",
+      primary: s.step === "ready" ? {label: s.startup ? "Start Tana2D" : "Done", act: s.startup ? "start" : "close"} : {label:"Fix It", go:"next"}}),
+    settings: () => ({scene:"settings", wide:true, eyebrow:`Tana2D ${esc(s.version || "")}`, title:"Settings",
+      body: s.canStart ? "Tana2D is set up and running." : "Tana2D needs a setup step.",
+      extra:`<div class="rows">
+        <div class="row"><div>Open at login<small>Start Tana2D when you sign in</small></div><button class="switch" role="switch" aria-checked="${!!s.loginEnabled}" aria-label="Open at login" data-act="login" data-toggle="${!s.loginEnabled}"></button></div>
+        <div class="row"><div>Keyboard &amp; screen reader mode<small>${s.keyboardMode ? "On: no hover focus, reduced motion, palette on ⌃⌘P" : "Off: hover to focus. Turn on for no hover focus, reduced motion, screen-reader-safe shortcuts"}</small></div>${s.keyboardMode ? `<button class="mini" data-act="style" data-value="trackpad" aria-label="Turn off keyboard and screen reader mode">Turn Off</button>` : `<button class="mini" data-act="style" data-value="keyboard" aria-label="Turn on keyboard and screen reader mode">Turn On</button>`}</div>
+        <div class="row"><div>Shortcuts and rules<small>${s.configPath ? esc(s.configPath) : "Edit the settings file"}</small></div><button class="mini" data-act="openConfig" aria-label="Open the settings file">Open</button></div>
+        <div class="row"><div>Quick tour<small>Learn the gestures again</small></div><button class="mini" data-go="tour1">Start</button></div></div>`,
+      primary: s.canStart ? {label:"Done", act:"close"} : {label:"Fix Setup", go:"next"}}),
+  };
+}
+function cheatSheet() {
+  const row = (keys, what) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0;font-size:13.5px;color:var(--ink-2)"><span>${what}</span><span>${keys}</span></div>`;
+  return `<div style="margin-top:2px;padding:10px 14px;border-radius:14px;background:rgba(255,255,255,.06)">
+    ${row("three-finger swipe", "Move around")}${row("pinch · <kbd>⌃</kbd><kbd>↩</kbd>", "See everything")}${row("<kbd>⌥</kbd><kbd>⌘</kbd><kbd>←</kbd>", "Next window")}${row(`<kbd>⌃</kbd><kbd>${style === "keyboard" || (st && st.keyboardMode) ? "⌘" : "⌥"}</kbd><kbd>P</kbd>`, "All commands")}</div>`;
+}
+let style = "trackpad";
+let tourDone = {pan: false, overview: false, jump: false};
+let panTotal = 0;
+
+/* ======================================================================
+   Flow
+   ====================================================================== */
+const reqScreen = step => step === "recovery" ? "recoveryWhy" : step;
+function nextScreen() {
+  if (!st.startup && st.canStart) return "settings";
+  if (st.step !== "ready") return reqScreen(st.step);
+  return st.completed || !st.startup ? "done" : "style";
+}
+function buildPlan() {
+  const groups = [];
+  for (const m of st.missing || []) { const g = GROUP[m]; if (!groups.includes(g)) groups.push(g); }
+  if (st.startup && !st.completed) groups.push("style", "login", "tour");
+  groups.push("done"); plan = groups;
+}
+function drawProgress() {
+  const p = $("progress");
+  const group = screen && (GROUP[screen] || (screen.startsWith("rec") ? "security" : screen.startsWith("tour") ? "tour" : null));
+  const idx = plan.indexOf(group);
+  if (screen === "welcome" || screen === "settings" || idx < 0) { p.style.opacity = 0; return; }
+  p.style.opacity = 1; p.innerHTML = plan.map((_, i) => `<i class="${i < idx ? "done" : i === idx ? "now" : ""}"></i>`).join("");
+}
+function go(target) {
+  if (target === "next") { if (screen === "welcome") send("began"); buildPlanIfNeeded(); target = nextScreen(); }
+  if (target === "rec") { recIndex = 0; target = "rec"; }
+  if (target === "recNext") { recIndex++; target = "rec"; }
+  if (target === "recBack") { if (recIndex === 0) target = "recoveryWhy"; else { recIndex--; target = "rec"; } }
+  show(target);
+}
+function buildPlanIfNeeded() { if (!plan.length || screen === "welcome") buildPlan(); }
+
+let currentScene = null;
+function setScene(name) {
+  if (currentScene === name && name !== "rec") return false;
+  currentScene = name;
+  const stage = $("stage"), old = [...stage.children];
+  const el = document.createElement("div"); el.className = "scene"; el.innerHTML = scenes[name]();
+  stage.appendChild(el); fitArt(el); setTimeout(() => el.classList.add("on"), 30);
+  old.forEach(o => { o.classList.remove("on"); setTimeout(() => o.remove(), 800); });
+  return true;
+}
+/* Illustrations are drawn at a natural size and scaled down to their box. */
+function fitArt(scene) {
+  const art = scene.querySelector(".art"), child = art && art.firstElementChild; if (!child) return;
+  const cs = getComputedStyle(art);
+  const boxW = art.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const boxH = art.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  child.style.transform = ""; const r = child.getBoundingClientRect();
+  const k = Math.min(1, boxW / r.width, boxH / r.height);
+  child.style.transform = k < 1 ? `scale(${k})` : "";
+}
+addEventListener("resize", () => document.querySelectorAll("#stage .scene").forEach(fitArt));
+function show(id, {soft = false} = {}) {
+  const def = screens()[id](); const changed = id !== screen;
+  const req = /^(recoveryWhy|rec|recReady)$/.test(id) ? "recovery" : id;
+  screen = id; shownFor = st && st.missing && st.missing.includes(req) ? req : null;
+  const sceneChanged = setScene(def.scene);
+  if (sceneChanged) mountScenePlane(def.scene);
+  const panel = $("panel");
+  const render = () => {
+    const focused = !changed && document.activeElement && panel.contains(document.activeElement) ? [...panel.querySelectorAll("button")].indexOf(document.activeElement) : -1;
+    panel.className = (def.wide ? "wide " : "") + (def.center ? "center" : "");
+    $("eyebrow").innerHTML = def.eyebrow || ""; $("title").textContent = def.title; $("body").innerHTML = def.body || "";
+    $("extra").innerHTML = def.extra || ""; $("extra").style.display = def.extra ? "" : "none";
+    const msg = st && st.message ? `<div class="note">${esc(st.message)}</div>` : "";
+    $("msg").innerHTML = msg + (def.wait ? `<div class="wait"><span class="dot"></span>${def.wait}…</div>` : "");
+    $("actions").innerHTML = ""; $("actions").style.display = def.primary || def.secondary ? "" : "none";
+    for (const [kind, b] of [["secondary", def.secondary], ["primary", def.primary]]) {
+      if (!b) continue;
+      const label = typeof b.label === "object" ? b.label : {label: b.label};
+      const btn = document.createElement("button"); btn.className = `btn ${kind}` + (b.pulse ? " pulse" : "");
+      btn.innerHTML = (label.busy ? `<span class="spinner"></span>` : "") + esc(label.label); btn.disabled = !!label.busy;
+      btn.onclick = () => { if (b.act) send(b.act, b.value); if (b.then) go(b.then); else if (b.go) go(b.go); };
+      $("actions").appendChild(btn);
+    }
+    panel.querySelectorAll("[data-act],[data-go]").forEach(el => el.onclick = () => {
+      if (el.dataset.go) return go(el.dataset.go);
+      send(el.dataset.act, el.dataset.toggle !== undefined ? el.dataset.toggle === "true" : el.dataset.value);
+    });
+    drawChoices(def.choices);
+    if (def.typed) typeOut(def.typed);
+    if (changed) $("title").focus({preventScroll: true});
+    else if (focused >= 0) { const again = panel.querySelectorAll("button")[focused]; if (again) again.focus({preventScroll: true}); }
+  };
+  if (changed && !soft) { panel.classList.add("out"); setTimeout(() => { render(); panel.classList.remove("out"); }, reduceMotion ? 0 : 220); }
+  else render();
+  drawProgress();
+  if (id.startsWith("tour") && (changed || sceneChanged)) placeHint(id);
+  if (id === "tour3" && changed && plane && !plane.isOverview()) plane.flyTo(plane.overviewCam(), 900);
+  if (id === "recReady") $("print").innerHTML = `<h1>Tana2D: Recovery steps</h1><ol>${recSteps().map(r => `<li><b>${r.title}</b><br>${r.body}${r.typed ? `<p><code>${r.typed}</code></p>` : ""}</li>`).join("")}</ol><p>Afterwards, Tana2D opens by itself to finish setup.</p>`;
+}
+function drawChoices(on) {
+  document.querySelectorAll(".choices").forEach(c => c.remove());
+  if (!on) return;
+  const wrap = document.createElement("div"); wrap.className = "choices";
+  wrap.innerHTML = `
+    <button class="choice" data-style="trackpad"><svg viewBox="0 0 200 130"><rect x="30" y="18" width="140" height="94" rx="14" fill="rgba(255,255,255,.1)" stroke="rgba(255,255,255,.3)"/>
+      ${[0,1,2].map(i => `<circle cx="${82 + i*18}" cy="64" r="7" fill="#7aa8ff"><animate attributeName="cx" values="${82+i*18};${102+i*18};${82+i*18}" dur="2.2s" repeatCount="indefinite"/></circle>`).join("")}</svg>
+      <strong>Trackpad</strong><span>Swipe and pinch, hover to focus</span></button>
+    <button class="choice" data-style="keyboard"><svg viewBox="0 0 200 130"><rect x="18" y="30" width="164" height="72" rx="10" fill="rgba(255,255,255,.1)" stroke="rgba(255,255,255,.3)"/>
+      ${Array.from({length:3},(_,r)=>Array.from({length:9},(_,c)=>`<rect x="${28+c*17}" y="${40+r*17}" width="13" height="12" rx="3" fill="rgba(255,255,255,${(r===2&&c>2&&c<6)?".55":".22"})"/>`).join("")).join("")}</svg>
+      <strong>Keyboard</strong><span>Shortcuts, less motion, works with VoiceOver</span></button>`;
+  wrap.querySelectorAll(".choice").forEach(b => b.onclick = () => { style = b.dataset.style; send("style", style); go("login"); });
+  document.body.appendChild(wrap);
+}
+function mountScenePlane(scene) {
+  if (scene === "welcome") mountPlane("heroPlane", {interactive: false, scale: .62}, p => p.autoplay());
+  else if (scene === "tour") mountPlane("tourPlane", {onEvent: tourEvent});
+  else if (scene === "done") mountPlane("donePlane", {interactive: false}, p => p.flyTo(p.overviewCam(), 1600));
+  else if (scene === "settings") mountPlane("setPlane", {interactive: false, scale: .62}, p => p.autoplay());
+  else if (plane) { plane.destroy(); plane = null; }
+}
+function tourEvent(kind, amount) {
+  if (kind === "pan") { panTotal += amount; if (panTotal > 500 && !tourDone.pan) { tourDone.pan = true; celebrate("tour1", "Nice. That's how you move."); } }
+  if (kind === "overview" && !tourDone.overview) { tourDone.overview = true; celebrate("tour2", "That's your whole workspace."); }
+  if (kind === "jump" && !tourDone.jump) { tourDone.jump = true; celebrate("tour3", "Straight in. You've got it."); }
+}
+function celebrate(forScreen, text) {
+  if (screen !== forScreen) return;
+  show(screen, {soft: true});
+  const hint = document.createElement("div"); hint.className = "plane-hint done"; hint.innerHTML = `<span class="check">✓</span>${esc(text)}`;
+  const sc = document.querySelector("#stage .scene:last-child"); if (sc) { sc.querySelectorAll(".plane-hint").forEach(x => x.remove()); sc.appendChild(hint); }
+}
+const TOUR_GOAL = {tour1:"pan", tour2:"overview", tour3:"jump"};
+function placeHint(id) {
+  const sc = document.querySelector("#stage .scene:last-child"); if (!sc) return;
+  sc.querySelectorAll(".plane-hint").forEach(x => x.remove());
+  if (tourDone[TOUR_GOAL[id]]) return;
+  const text = {tour1: style === "keyboard" ? "Try <kbd>⌥</kbd><kbd>⌘</kbd><kbd>→</kbd>, or drag" : "Scroll or drag to move",
+    tour2: "Pinch, or press <kbd>⌃</kbd><kbd>↩</kbd>", tour3: "Click any window"}[id];
+  const hint = document.createElement("div"); hint.className = "plane-hint"; hint.innerHTML = text; sc.appendChild(hint);
+}
+let typeTimer = null;
+function typeOut(text) {
+  clearTimeout(typeTimer);
+  const run = () => {
+    const el = document.getElementById("typed"), after = document.getElementById("typedAfter"); if (!el) return;
+    if (reduceMotion) { el.textContent = text; after.style.opacity = 1; return; }
+    let i = 0; el.textContent = ""; after.style.opacity = 0;
+    const tick = () => { if (!document.getElementById("typed")) return; el.textContent = text.slice(0, ++i);
+      if (i < text.length) typeTimer = setTimeout(tick, 45 + Math.random() * 60); else { after.style.opacity = 1; typeTimer = setTimeout(run, 4200); } };
+    typeTimer = setTimeout(tick, 700);
+  };
+  setTimeout(run, 50);
+}
+
+/* Native state arrives once a second, and immediately after any action. */
+window.tanaUpdate = next => {
+  const first = !st; const prevMissing = st ? st.missing.join() : ""; st = next;
+  document.getElementById("preview").style.display = st.preview ? "block" : "none";
+  if (first) { show(st.startup ? "welcome" : (st.canStart ? "settings" : "welcome")); return; }
+  /* A requirement the current screen addresses is now satisfied: confirm, then move on. */
+  if (shownFor && !st.missing.includes(shownFor) && !advancing) {
+    advancing = true; const doneFor = shownFor;
+    $("eyebrow").innerHTML = `<span class="check">✓</span> Done`; $("actions").innerHTML = ""; $("msg").innerHTML = "";
+    setTimeout(() => { advancing = false; if (shownFor === doneFor) go(nextScreen()); }, reduceMotion ? 300 : 1100);
+    return;
+  }
+  if (advancing) return;
+  /* A requirement that regressed while later screens were open sends the person back to it. */
+  const inReq = shownFor || /^(rec|recoveryWhy|recReady)$/.test(screen);
+  if (!inReq && prevMissing !== st.missing.join() && st.step !== "ready" && /^(style|login|tour\d)$/.test(screen)) { buildPlan(); go(nextScreen()); return; }
+  show(screen, {soft: true});
+};
+window.tanaReset = () => { plan = []; screen = null; currentScene = null; tourDone = {pan:false, overview:false, jump:false}; panTotal = 0; if (st) show(st.startup ? "welcome" : "settings"); };
+
+/* Return activates the main button; Escape goes back. */
+addEventListener("keydown", e => {
+  if (screen && screen.startsWith("tour") && plane) {
+    if (e.ctrlKey && (e.key === "Enter" || e.key === "ArrowUp")) { e.preventDefault(); plane.toggleOverview(); return; }
+    if (e.altKey && e.metaKey && e.key.startsWith("Arrow")) {
+      e.preventDefault(); const a = APPS[plane.focus], cx = a.x + a.w / 2, cy = a.y + a.h / 2;
+      const dir = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]}[e.key];
+      let best = -1, bestD = Infinity;
+      APPS.forEach((b, i) => { if (i === plane.focus) return; const dx = b.x + b.w / 2 - cx, dy = b.y + b.h / 2 - cy, along = dx * dir[0] + dy * dir[1];
+        if (along <= 0) return; const d = along + Math.abs(dx * dir[1] + dy * dir[0]) * 2; if (d < bestD) { bestD = d; best = i; } });
+      if (best >= 0) { plane.focusWin(best); tourEvent("pan", 600); }
+      return;
+    }
+  }
+  if (e.key === "Enter" && !e.ctrlKey && !(document.activeElement && document.activeElement.tagName === "BUTTON")) {
+    const p = document.querySelector("#actions .btn.primary"); if (p && !p.disabled) { e.preventDefault(); p.click(); }
+  }
+  if (e.key === "Escape") { const s = [...document.querySelectorAll("#actions .btn.secondary")].find(b => /Back/.test(b.textContent)); if (s) s.click(); }
+});
+/* ======================================================================
+   Mock state, so the page can be opened and reviewed in any browser.
+   ?mock=fresh | intel | ready | settings | preview
+   ====================================================================== */
+const mock = {
+  s: null,
+  init() {
+    const kind = new URLSearchParams(location.search).get("mock") || "fresh";
+    const base = {accessibility:false, security:false, backend:false, sip:false, arm64e:false, bootArgsPending:false, inApplications:false, helperInstalled:false,
+      sessionUnlocked:true, separateSpaces:true, otherManagerPID:0, normalDesktop:true, singleDisplay:true, startup:true, preview:false, busy:false, message:"",
+      arch:"arm64", otherManager:"", loginEnabled:false, loginNeedsApproval:false, resumed:false, completed:false, keyboardMode:false, version:"0.6.5"};
+    if (kind === "intel") base.arch = "x86_64";
+    if (kind === "ready" || kind === "settings") Object.assign(base, {accessibility:true, security:true, backend:true, sip:true, arm64e:true, inApplications:true, helperInstalled:true});
+    if (kind === "settings") base.startup = false;
+    if (kind === "preview") base.preview = true;
+    this.s = base; this.push();
+  },
+  missing(s) {
+    const m = [];
+    if (!s.inApplications) m.push("move"); if (!s.accessibility) m.push("accessibility");
+    if (!s.backend) { if (!s.sip) m.push("recovery"); if (!s.arm64e) m.push(s.bootArgsPending ? "restart" : "bootArgs"); m.push("helper"); }
+    if (!s.separateSpaces) m.push("spaces"); if (s.otherManagerPID) m.push("otherManager"); if (!s.singleDisplay) m.push("display");
+    if (!s.normalDesktop) m.push("fullscreen"); return m;
+  },
+  push() { const s = this.s; s.missing = this.missing(s); s.step = s.missing[0] || "ready"; s.canStart = !s.missing.filter(x => x !== "move").length; window.tanaUpdate(JSON.parse(JSON.stringify(s))); },
+  act(a, v) {
+    const s = this.s, later = (fn, ms = 1500) => setTimeout(() => { fn(); this.push(); }, ms);
+    if (s.preview) { s.message = "Preview only. This button does nothing here."; return this.push(); }
+    if (a === "move") later(() => s.inApplications = true, 600);
+    if (a === "accessibility") later(() => s.accessibility = true, 2500);
+    if (a === "shutDownForRecovery") later(() => { s.sip = true; s.resumed = true; if (s.arch !== "arm64") s.arm64e = true; }, 1200);
+    if (a === "enableBootArgs") { s.busy = true; this.push(); later(() => { s.busy = false; s.bootArgsPending = true; }); }
+    if (a === "restart") later(() => { s.arm64e = true; s.bootArgsPending = false; s.security = true; });
+    if (a === "installHelper") { s.busy = true; this.push(); later(() => { s.busy = false; s.helperInstalled = true; s.backend = true; }); }
+    if (a === "login") { s.loginEnabled = !!v; this.push(); }
+    if (a === "style") { s.keyboardMode = v === "keyboard"; this.push(); }
+    if (a === "start") { s.completed = true; document.body.style.transition = "opacity .6s"; document.body.style.opacity = 0; }
+    if (a === "print") window.print();
+  },
+};
+if (native) send("ready"); else addEventListener("DOMContentLoaded", () => mock.init());
+</script>
+</body>
+</html>

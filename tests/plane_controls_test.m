@@ -26,14 +26,23 @@ int main(void) { @autoreleasepool {
         [button performClick:nil];
         assert(last_action && !strcmp(last_action,actions[i]));
     }
+    /* A hidden panel is not relabelled at every percent of a pinch; it
+     * shows the current zoom whenever it is shown. */
     hwm_plane_controls_update(false,.42);
     NSDate *until=[NSDate dateWithTimeIntervalSinceNow:.05];
     while(until.timeIntervalSinceNow>0) [[NSRunLoop mainRunLoop] runUntilDate:until];
-    assert([hwm_camera_controls.actualSize.title isEqual:@"42%"]);
     assert(!hwm_camera_controls.panel.visible);
-    hwm_plane_controls_update(false,NAN);
+    hwm_plane_controls_update(true,.42);
+    until=[NSDate dateWithTimeIntervalSinceNow:.05];
+    while(until.timeIntervalSinceNow>0) [[NSRunLoop mainRunLoop] runUntilDate:until];
+    assert([hwm_camera_controls.actualSize.title isEqual:@"42%"] && hwm_camera_controls.panel.visible);
+    hwm_plane_controls_update(true,NAN);
     until=[NSDate dateWithTimeIntervalSinceNow:.05];
     while(until.timeIntervalSinceNow>0) [[NSRunLoop mainRunLoop] runUntilDate:until];
     assert([hwm_camera_controls.actualSize.title isEqual:@"100%"]);
+    hwm_plane_controls_update(false,1);
+    until=[NSDate dateWithTimeIntervalSinceNow:.05];
+    while(until.timeIntervalSinceNow>0) [[NSRunLoop mainRunLoop] runUntilDate:until];
+    assert(!hwm_camera_controls.panel.visible);
     puts("plane controls tests passed");
 } return 0; }

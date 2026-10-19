@@ -1,9 +1,10 @@
 // Firefox tab tear-offs can omit AXCreated. Recover references from AXWindows
 // after a left drag, without restarting the daemon or changing window rules.
-// All state and AX reads below run on the serialized yabai event thread.
+// Click state runs on the serialized yabai event thread; the AX scan does not.
 extern struct window_manager g_window_manager;
 static pid_t firefox_discovery_pid;
 static bool firefox_discovery_dragged;
+static void firefox_discovery_scan(pid_t pid);
 
 static bool firefox_discovery_is_application(struct application *application)
 {
@@ -33,34 +34,32 @@ static void firefox_discovery_end(void)
 
     // The native drag-end event can precede creation of the accessible window.
     // Retain only the pid across timers: the app may exit before they fire.
+    // The Accessibility round trip runs off the event thread. A busy Firefox
+    // took up to seconds to answer, and every frame on that thread waited.
     const double delays[] = {0.0, 0.05, 0.1, 0.15, 0.2};
     for (unsigned i = 0; i < sizeof(delays) / sizeof(delays[0]); ++i) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays[i] * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            event_loop_post(&g_event_loop, FIREFOX_WINDOWS_DISCOVER, (void *)(intptr_t) pid, 0);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays[i] * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            firefox_discovery_scan(pid);
         });
     }
 }
 
-static void firefox_discovery_rescan(pid_t pid)
+/* Runs on a utility queue and touches no manager state. WINDOW_CREATED
+ * rejects windows that are already tracked, stale refs and other apps. */
+static void firefox_discovery_scan(pid_t pid)
 {
-    struct application *application = window_manager_find_application(&g_window_manager, pid);
-    if (!firefox_discovery_is_application(application)) return;
-
-    CFArrayRef windows = application_window_list(application);
-    debug("firefox-window-discovery: scan pid=%d AXWindows=%ld\n", pid, windows ? (long) CFArrayGetCount(windows) : -1L);
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if (!application) return;
+    AXUIElementSetMessagingTimeout(application, 0.5f);
+    CFTypeRef windows = NULL;
+    AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windows);
+    CFRelease(application);
     if (!windows) return;
-
-    for (CFIndex i = 0; i < CFArrayGetCount(windows); ++i) {
-        AXUIElementRef ref = (AXUIElementRef) CFArrayGetValueAtIndex(windows, i);
-        uint32_t wid = ax_window_id(ref);
-        debug("firefox-window-discovery: AX window %u tracked=%d\n", wid, wid ? window_manager_find_window(&g_window_manager, wid) != NULL : 0);
-        if (!wid || window_manager_find_window(&g_window_manager, wid)) continue;
-
-        debug("firefox-window-discovery: recovering %u after drag\n", wid);
-        // Reuse normal creation handling for observation, rules, tiling and
-        // signals. It also rejects stale refs and deduplicates racing events.
-        event_loop_post(&g_event_loop, WINDOW_CREATED, (void *) CFRetain(ref), 0);
+    if (CFGetTypeID(windows) == CFArrayGetTypeID()) {
+        for (CFIndex i = 0; i < CFArrayGetCount(windows); ++i) {
+            AXUIElementRef ref = (AXUIElementRef) CFArrayGetValueAtIndex(windows, i);
+            if (ax_window_id(ref)) event_loop_post(&g_event_loop, WINDOW_CREATED, (void *) CFRetain(ref), 0);
+        }
     }
-
     CFRelease(windows);
 }

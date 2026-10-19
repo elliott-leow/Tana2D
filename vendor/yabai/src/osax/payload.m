@@ -3,6 +3,7 @@
 #include <mach-o/getsect.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/mach_vm.h>
 #include <mach/vm_map.h>
 #include <mach/vm_page_size.h>
@@ -23,6 +24,7 @@
 #include <time.h>
 
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -71,11 +73,18 @@ extern void SLSHideSpaces(int cid, CFArrayRef space_list);
 extern CFTypeRef SLSTransactionCreate(int cid);
 extern void SLSTransactionCommit(CFTypeRef transaction, int synchronous);
 extern void SLSTransactionSetWindowLockedBounds(CFTypeRef,uint32_t,CGRect);
+extern void SLSTransactionMoveWindowWithGroup(CFTypeRef transaction, uint32_t wid, CGPoint point);
+extern CFTypeRef SLSWindowQueryWindows(int cid, CFArrayRef windows, int count);
+extern CFTypeRef SLSWindowQueryResultCopyWindows(CFTypeRef query);
+extern bool SLSWindowIteratorAdvance(CFTypeRef iterator);
+extern uint32_t SLSWindowIteratorGetWindowID(CFTypeRef iterator);
+extern CGRect SLSWindowIteratorGetBounds(CFTypeRef iterator);
 extern void SLSTransactionClearWindowLockedBounds(CFTypeRef,uint32_t);
 extern void SLSTransactionSetWindowTransform(CFTypeRef transaction, uint32_t wid, int unknown, int unknown2, CGAffineTransform transform);
 extern void SLSTransactionSetWindowEventShape(CFTypeRef transaction, uint32_t wid, CFTypeRef region);
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
+extern CGError SLSTransactionSetWindowAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
 extern CGError SLSSetWindowSubLevel(int cid, uint32_t wid, int level);
 
 struct window_fade_context
@@ -642,8 +651,11 @@ static void do_window_scale(char *message)
     }
 }
 
-/* One packet is one compositor transaction. It never observes or moves the
- * app's native frame, so AppKit's offscreen clamping cannot fight camera pan. */
+/* One packet is one compositor transaction. A transform record never moves
+ * the app's native frame, so AppKit's offscreen clamping cannot fight camera
+ * pan. A native record moves the frame itself, in the same transaction: the
+ * window is then really where it is drawn, for its backdrop blur, its child
+ * windows and hit testing alike. */
 static bool do_window_plane_transform(const unsigned char *message, size_t length)
 {
     HwmPlaneTransform transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
@@ -658,9 +670,41 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
      * whether native input is observed or needs a presentation update. A
      * window that closed after the frame was built is skipped: it must not
      * cost every other window its frame, nor read as a lost helper. */
+    /* Every window's native bounds in one WindowServer query. A request per
+     * record was a synchronous round trip for each moving window on every
+     * frame: twelve windows at 60 Hz asked WindowServer 720 times a second.
+     * Only a scaled record needs the native size. A frame of native moves
+     * and alphas (a pan at 100%) skips the query altogether: WindowServer
+     * ignores a transaction entry for a window that has closed, so nothing
+     * is lost by not checking which records still name a live window. */
+    bool need_bounds = false;
     for (uint16_t index = 0; index < count; ++index) {
-        present[index] = SLSGetWindowBounds(cid, transforms[index].wid, &native[index]) == kCGErrorSuccess;
-        if (present[index] &&
+        present[index] = hwm_plane_transform_native(transforms[index]) || hwm_plane_transform_alpha(transforms[index]);
+        if (!present[index]) need_bounds = true;
+    }
+    if (need_bounds) {
+        CFNumberRef numbers[SA_PLANE_TRANSFORM_MAX_RECORDS];
+        for (uint16_t index = 0; index < count; ++index) {
+            uint32_t wid = hwm_plane_transform_wid(transforms[index]);
+            numbers[index] = CFNumberCreate(NULL, kCFNumberSInt32Type, &wid);
+        }
+        CFArrayRef list = CFArrayCreate(NULL, (const void **) numbers, count, &kCFTypeArrayCallBacks);
+        for (uint16_t index = 0; index < count; ++index) CFRelease(numbers[index]);
+        CFTypeRef query = list ? SLSWindowQueryWindows(cid, list, count) : NULL;
+        CFTypeRef iterator = query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+        while (iterator && SLSWindowIteratorAdvance(iterator)) {
+            uint32_t wid = SLSWindowIteratorGetWindowID(iterator);
+            CGRect bounds = SLSWindowIteratorGetBounds(iterator);
+            // A window can appear in several records (alpha and a move); fill each.
+            for (uint16_t index = 0; index < count; ++index)
+                if (!present[index] && hwm_plane_transform_wid(transforms[index]) == wid) { native[index] = bounds; present[index] = true; }
+        }
+        if (iterator) CFRelease(iterator);
+        if (query) CFRelease(query);
+        if (list) CFRelease(list);
+    }
+    for (uint16_t index = 0; index < count; ++index) {
+        if (present[index] && !hwm_plane_transform_native(transforms[index]) && !hwm_plane_transform_alpha(transforms[index]) &&
             !hwm_plane_transform_bounds(transforms[index], native[index], &displayed[index], &reset[index])) return false;
     }
     CFTypeRef transaction = SLSTransactionCreate(cid);
@@ -668,8 +712,28 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     // These transaction functions return void on current macOS.
     for (uint16_t index = 0; index < count; ++index) {
         if (!present[index]) continue;
-        uint32_t wid = transforms[index].wid;
-        if (reset[index]) {
+        uint32_t wid = hwm_plane_transform_wid(transforms[index]);
+        if (hwm_plane_transform_alpha(transforms[index])) {
+            /* As do_window_opacity: a running fade owns this window's alpha
+             * and lands on the new value itself. */
+            float alpha = (float) transforms[index].x;
+            pthread_mutex_lock(&window_fade_lock);
+            struct window_fade_context *context = table_find(&window_fade_table, &wid);
+            if (context) {
+                context->alpha = alpha;
+                context->duration = 0.0f;
+                __asm__ __volatile__ ("" ::: "memory");
+                context->skip = true;
+            } else {
+                SLSTransactionSetWindowAlpha(transaction, wid, alpha);
+            }
+            pthread_mutex_unlock(&window_fade_lock);
+        } else if (hwm_plane_transform_native(transforms[index])) {
+            CGPoint origin = CGPointMake(transforms[index].x, transforms[index].y);
+            SLSTransactionMoveWindowWithGroup(transaction, wid, origin);
+            SLSTransactionClearWindowLockedBounds(transaction, wid);
+            SLSTransactionSetWindowTransform(transaction, wid, 0, 0, CGAffineTransformMakeTranslation(-origin.x, -origin.y));
+        } else if (reset[index]) {
             SLSTransactionClearWindowLockedBounds(transaction, wid);
             SLSTransactionSetWindowTransform(transaction, wid, 0, 0,
                 CGAffineTransformMakeTranslation(-native[index].origin.x, -native[index].origin.y));
@@ -728,8 +792,13 @@ static void do_window_opacity(char *message)
     }
 }
 
+/* Progress follows the clock, not a count of sleeps: an oversleeping step
+ * neither stretches the fade nor makes its next step jump. Steps keep a
+ * fixed cadence from the start time instead of drifting by each step's work. */
 static void *window_fade_thread_proc(void *data)
 {
+    static mach_timebase_info_data_t timebase;
+    if (!timebase.denom) mach_timebase_info(&timebase);
 entry:;
     struct window_fade_context *context = (struct window_fade_context *) data;
     context->skip  = false;
@@ -738,21 +807,23 @@ entry:;
     float end_alpha = context->alpha;
     SLSGetWindowAlpha(SLSMainConnectionID(), context->wid, &start_alpha);
 
-    int frame_duration = 8;
-    int total_duration = (int)(context->duration * 1000.0f);
-    int frame_count = (int)(((float) total_duration / (float) frame_duration) + 1.0f);
+    uint64_t step = (uint64_t) (NSEC_PER_SEC / 120) * timebase.denom / timebase.numer;
+    uint64_t total = (uint64_t) (fmax(0, context->duration) * NSEC_PER_SEC) * timebase.denom / timebase.numer;
+    uint64_t start = mach_absolute_time();
 
-    for (int frame_index = 1; frame_index <= frame_count; ++frame_index) {
+    for (uint64_t index = 1;; ++index) {
         if (context->skip) goto entry;
 
-        float t = (float) frame_index / (float) frame_count;
+        uint64_t elapsed = mach_absolute_time() - start;
+        float t = total ? (float) ((double) elapsed / (double) total) : 1.0f;
         if (t < 0.0f) t = 0.0f;
         if (t > 1.0f) t = 1.0f;
 
         float alpha = lerp(start_alpha, t, end_alpha);
         SLSSetWindowAlpha(SLSMainConnectionID(), context->wid, alpha);
+        if (t >= 1.0f) break;
 
-        usleep(frame_duration*1000);
+        mach_wait_until(start + index * step);
     }
 
     pthread_mutex_lock(&window_fade_lock);
@@ -998,6 +1069,8 @@ static void do_handshake(int sockfd)
     if (animation_time_addr)               attrib |= OSAX_ATTRIB_ANIM_TIME;
     attrib |= OSAX_ATTRIB_PLANE_TRANSFORM;
     attrib |= OSAX_ATTRIB_INPUT_SHAPE;
+    attrib |= OSAX_ATTRIB_PLANE_NATIVE;
+    attrib |= OSAX_ATTRIB_PLANE_ALPHA;
 
     char bytes[BUFSIZ] = {};
     int version_length = strlen(OSAX_VERSION);
@@ -1112,6 +1185,10 @@ static inline bool read_message(int sockfd, char *message, size_t *message_lengt
 
 static void *handle_connection(void *unused)
 {
+    /* Every frame the manager draws is applied here, and the manager keeps
+     * no more than two frames waiting on this thread. At the default
+     * priority a busy CPU ran it late, and the frames queued behind it. */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     for (;;) {
         int sockfd = accept(daemon_sockfd, NULL, 0);
         if (sockfd == -1) continue;

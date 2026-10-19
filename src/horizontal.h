@@ -45,6 +45,27 @@ static void horizontal_overview_select(uint32_t wid, pid_t pid);
 static void horizontal_overview_done(void);
 static void horizontal_event_timed(int type,double ms);
 static void horizontal_event_settle(void);
+/* Whether an event must wait for the last frame's helper reply before it is
+ * handled. Input that only moves the camera, and position echoes that are
+ * ignored while the camera moves, settle themselves if they read geometry. */
+static bool horizontal_event_settles(int type, void *context, int param1);
+/* At most one move notification per window waits in the queue: its handler
+ * reads current geometry, never the notification's, so a second one adds
+ * nothing but queue time ahead of the next frame. A slot taken by another
+ * window just lets the notification through. */
+static _Atomic uint32_t horizontal_moved_slots[1024];
+static inline bool horizontal_moved_claim(uint32_t wid)
+{
+    if(!wid) return true;
+    uint32_t expected=0;
+    if(atomic_compare_exchange_strong(&horizontal_moved_slots[wid&1023],&expected,wid)) return true;
+    return expected!=wid;
+}
+static inline void horizontal_moved_release(uint32_t wid)
+{
+    uint32_t expected=wid;
+    if(wid) atomic_compare_exchange_strong(&horizontal_moved_slots[wid&1023],&expected,0);
+}
 static uint32_t horizontal_expected_focus(struct application *application);
 
 static void horizontal_mouse_down(struct window *window, CGPoint point);

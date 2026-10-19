@@ -326,8 +326,45 @@ static void test_command_places_freely(void)
     hwm_snap_free=false;
 }
 
+/* With motion on, the magnet eases the window onto its landing over a few
+ * frames and holds it there exactly; letting go eases it back to the pointer. */
+static void test_magnet_eases_onto_landing(void)
+{
+    hwm_motion_scale=1; multi_snap_scene(1,4); clock_now=100; hwm_drag_snap_reset(); hwm_snap_ease_reset();
+    struct window *moving=&windows[0];
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(204,204)));
+    assert(moving->strip_world_x==204 && hwm_snap_easing && hwm_snap_contact_count==3);
+    clock_now+=.02;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(204,204)));
+    assert(moving->strip_world_x>200 && moving->strip_world_x<204 && hwm_snap_easing);
+    clock_now+=.5;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(205,203)));
+    assert(moving->strip_world_x==200 && moving->strip_world_y==200 && !hwm_snap_easing);
+    /* Held exactly, however the pointer moves inside the magnet's reach. */
+    for(int i=0;i<10;i++) { clock_now+=.004; assert(hwm_drag_submit_plane(&view,moving,CGPointMake(203+i%3,201+i%2))); assert(moving->strip_world_x==200 && moving->strip_world_y==200); }
+    /* Letting go: the pointer's jump is followed at once, the magnet's
+     * displacement (last held at raw 203,202) eases out from there. */
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(230,230)));
+    assert(moving->strip_world_x==227 && moving->strip_world_y==228 && hwm_snap_easing && !hwm_snap_contact_count);
+    clock_now+=.02;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(231,230)));
+    assert(moving->strip_world_x>228 && moving->strip_world_x<231 && hwm_snap_easing);
+    clock_now+=.5;
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(230,230)));
+    assert(moving->strip_world_x==230 && moving->strip_world_y==230 && !hwm_snap_easing);
+    hwm_drag_release(&view,moving);
+    assert(moving->strip_world_x==230 && moving->strip_world_y==230);
+    /* Motion off: the magnet places at once. */
+    hwm_motion_scale=0; multi_snap_scene(1,4); hwm_drag_snap_reset(); hwm_snap_ease_reset();
+    assert(hwm_drag_submit_plane(&view,moving,CGPointMake(204,204)));
+    assert(moving->strip_world_x==200 && moving->strip_world_y==200 && !hwm_snap_easing);
+    hwm_drag_release(&view,moving);
+}
+
 int main(void)
 {
+    hwm_motion_scale=0; // These check where the magnet places, not how it gets there.
+    test_magnet_eases_onto_landing();
     @autoreleasepool {
         test_held_magnet_releases_without_accumulating();
         test_held_drag_and_preview_target();

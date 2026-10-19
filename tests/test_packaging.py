@@ -35,6 +35,9 @@ class PackagingTests(unittest.TestCase):
             (root / "build").mkdir()
             (root / "vendor/yabai").mkdir(parents=True)
             (root / "vendor/yabai/LICENSE.txt").write_text("Test license notice")
+            (root / "src/setup_ui").mkdir(parents=True)
+            (root / "src/setup_ui/onboarding.html").write_text("<!doctype html><title>Setup</title>")
+            (root / "docs").mkdir(); (root / "docs/SETUP.html").write_text("offline guide")
             script = root / "scripts/package.sh"
             shutil.copy2(PACKAGE, script)
             shutil.copyfile("/usr/bin/true", root / "build/tana2d")
@@ -42,6 +45,9 @@ class PackagingTests(unittest.TestCase):
             env = os.environ | {"TANA2D_SIGN_ID": "-", "TANA2D_NOTARIZE": "0", "TANA2D_CODESIGN": "/usr/bin/codesign"}
             result = subprocess.run([str(script), "--no-build"], capture_output=True, text=True, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((root / "build/Tana2D.app/Contents/Resources/onboarding.html").is_file())
+            # On a case-insensitive volume a setup.html page would overwrite the offline guide.
+            self.assertEqual((root / "build/Tana2D.app/Contents/Resources/SETUP.html").read_text(), "offline guide")
             helper = root / "build/Tana2D.app/Contents/Helpers/tana2d-window-helper"
             extracted = root / "extracted helper"
             shutil.copy2(helper, extracted)

@@ -54,9 +54,10 @@ static bool hwm_config_reload(bool announce)
     hwm_magnetic_centering=[snapshot boolAt:@"magneticCentering" fallback:NO];
     hwm_auto_center=[snapshot boolAt:@"autoCenter" fallback:YES];
     hwm_pan_momentum=[snapshot boolAt:@"panMomentum" fallback:YES];
-    hwm_auto_center_radius=[snapshot numberAt:@"autoCenterDistance" fallback:120 minimum:20 maximum:400];
+    hwm_auto_center_radius=[snapshot numberAt:@"autoCenterDistance" fallback:180 minimum:20 maximum:400];
     hwm_zoom_click_threshold=[snapshot numberAt:@"zoomClickThreshold" fallback:.5 minimum:0 maximum:1];
-    hwm_swipe_gain=[snapshot numberAt:@"swipeGain" fallback:1 minimum:.4 maximum:3];
+    hwm_swipe_gain=[snapshot numberAt:@"swipeGain" fallback:1.15 minimum:.4 maximum:3];
+    hwm_pinch_gain=[snapshot numberAt:@"pinchGain" fallback:1.35 minimum:.4 maximum:3];
     NSString *placement=[[snapshot stringAt:@"newWindowPlacement" fallback:@"center-gap"] lowercaseString];
     hwm_new_placement=[placement isEqual:@"end"] ? 2 : [placement isEqual:@"beside-focused"] ? 1 : 0;
     if(![@[@"center-gap",@"beside-focused",@"end"] containsObject:placement]) [problems addObject:@"settings.newWindowPlacement must be center-gap, beside-focused or end"];
@@ -141,7 +142,7 @@ static void hwm_config_begin(void)
     if(![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         NSString *directory=path.stringByDeletingLastPathComponent;
         [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL];
-        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"off",@"showStripMap":@NO,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
+        NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"settings":@{@"motionStrength":@1,@"autofocus":@"pointer-movement",@"showStripMap":@NO,@"stripWidths":@[@(1.0/3),@.5,@(2.0/3),@1]},@"shortcuts":@{},@"appRules":@{}} options:NSJSONWritingPrettyPrinted error:NULL];
         int fd=open(path.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
         if(fd>=0) { write(fd,data.bytes,data.length); close(fd); }
     }
@@ -487,6 +488,9 @@ static bool hwm_named_action_requires_navigation_flush(const char *name)
 static bool hwm_named_action(const char *name)
 {
     if(!name) return false;
+#ifdef HWM_NATIVE_ZOOM
+    if(!strcmp(name,"hover-settle")) { hwm_hover_settle(); return true; }
+#endif
     if(hwm_plane_direction_action(name)) return true;
     // Old strip and repacking commands have no meaning on the plane.
     if(!strncmp(name,"strip-",6) || !strncmp(name,"send-strip-",11) ||

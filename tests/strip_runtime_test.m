@@ -50,6 +50,7 @@ struct window {
     float strip_close_alpha;
     double strip_pop_start; int strip_pop; bool strip_pop_scaled,strip_close_scaled,strip_plane_scaled,strip_close_ghost;
     int strip_shelf; double strip_last_shift; float strip_rule_alpha;
+    int strip_native_failures; bool strip_native_riding;
 };
 struct window_node { int window_count; uint32_t window_list[1]; struct window_node *next; struct area area; };
 struct view { int layout,window_gap; struct window_node *root; double strip_offset; bool strip_scrolling; };
@@ -93,6 +94,8 @@ static struct view *window_manager_find_managed_window(void *manager,struct wind
 static bool window_check_flag(struct window *w,int flag) { (void)w; return flag==WINDOW_RESIZABLE; }
 static CGError SLSGetWindowAlpha(int connection,uint32_t id,float *alpha) { (void)connection; *alpha=alphas[id-1]; return kCGErrorSuccess; }
 static double fade_duration[4];
+static bool plane_alpha_supported;
+static bool scripting_addition_plane_alpha_supported(void) { return plane_alpha_supported; }
 static bool scripting_addition_set_opacity(uint32_t id,float alpha,double duration) { fade_duration[id-1]=duration; alphas[id-1]=alpha; return true; }
 static int scale_calls;
 static int plane_transform_calls[4];
@@ -106,6 +109,16 @@ static bool scripting_addition_set_plane_transform(uint32_t id,double x,double y
     projected[id-1]=CGRectMake(x,y,actual[id-1].size.width*scale,actual[id-1].size.height*scale);
     return true;
 }
+static bool native_ride_supported;
+static int native_ride_calls[4];
+static bool scripting_addition_plane_native_supported(void) { return native_ride_supported; }
+static bool scripting_addition_set_plane_native(uint32_t id,double x,double y) {
+    ++native_ride_calls[id-1]; if(move_fails) return false;
+    actual[id-1].origin=CGPointMake(x,y); projected[id-1]=actual[id-1]; test_scales[id-1]=1;
+    return true;
+}
+static int test_hit_level;
+static CGError SLSGetWindowLevel(int cid,uint32_t wid,int *level) { (void)cid; (void)wid; *level=test_hit_level; return kCGErrorSuccess; }
 static bool window_manager_close_window(struct window *w) { (void)w; ++close_calls; return false; }
 static struct window_node *view_find_window_node(struct view *v,uint32_t id) { for(struct window_node *n=v->root;n;n=n->next) if(n->window_list[0]==id) return n; return NULL; }
 static void view_clear_flag(struct view *v,int flag) { (void)v; (void)flag; }
@@ -199,12 +212,28 @@ static CFArrayRef test_presentation_list(CGWindowListOption option,CGWindowID wi
     NSArray *list=@[@{(id)kCGWindowNumber:@(wid),(id)kCGWindowBounds:(id)bounds}];
     CFRelease(bounds); return (CFArrayRef)[list copy];
 }
-#define CGWindowListCopyWindowInfo test_presentation_list
+static int test_presentation_rects(const uint32_t *wids,int count,uint32_t *ids,CGRect *rects) {
+    int found=0;
+    for(int i=0;i<count;i++) {
+        CFArrayRef list=test_presentation_list(kCGWindowListOptionIncludingWindow,wids[i]);
+        if(!list) continue;
+        ids[found]=wids[i];
+        CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)((NSArray *)list)[0][(id)kCGWindowBounds],&rects[found++]);
+        CFRelease(list);
+    }
+    return found;
+}
+#define HWM_PRESENTATION_SCREEN_RECTS
+#define hwm_plane_screen_rects test_presentation_rects
 #include "../src/plane_presentation.h"
-#undef CGWindowListCopyWindowInfo
+#undef hwm_plane_screen_rects
+static bool hwm_plane_window_frames(uint32_t wid,CGRect *native,CGRect *displayed)
+{ return SLSGetWindowBounds(0,wid,native)==kCGErrorSuccess && hwm_plane_displayed_frame(wid,displayed); }
 #define WINDOW_SHADOW 16
 #include "../src/plane_drag_begin.m"
 #include "../src/strip_interaction.m"
+static int event_settles;
+static void horizontal_event_settle(void) { ++event_settles; }
 #include "../src/strip_renderer.m"
 #include "../src/window_transitions.m"
 static double hwm_motion_scale=1,hwm_drag_present_total_ms,hwm_drag_present_max_ms;
@@ -272,6 +301,7 @@ static CGEventFlags test_flags_state(CGEventSourceStateID state) { (void)state; 
 #include "../src/plane_motion.m"
 #undef CGEventSourceFlagsState
 static uint32_t hwm_plane_border_id,test_hit_id=1;
+static bool hwm_plane_border_owns(uint32_t id) { return id && id==hwm_plane_border_id; }
 static int test_hit_owner=1,g_event_loop;
 enum { HORIZONTAL_INPUT, HWM_PLANE_RESIZE, HWM_PLANE_PICK };
 static bool hwm_plane_select_click;
@@ -300,7 +330,7 @@ static bool resize_event(CGEventType type,CGPoint p,CGEventFlags flags) {
 
 static void reset(void)
 {
-    resize_cancellations=0; hwm_drag_snap_reset(); hwm_snap_free=false; test_haptic_engages=test_haptic_commits=0; test_preview_seam_count=0;
+    resize_cancellations=0; hwm_drag_snap_reset(); hwm_snap_ease_reset(); hwm_snap_free=false; test_haptic_engages=test_haptic_commits=0; test_preview_seam_count=0;
     test_preview_visible=false; test_preview_frame=CGRectNull; presentation_unavailable=false; sa_batch_fails=false;
     hwm_drag_native=false;
     hwm_pointer_sample_reset(); hwm_drag_edge_pan=(HWMPlaneEdgePan){0};
@@ -357,6 +387,30 @@ static void test_pan_and_late_notifications(void)
     hwm_render(&view,clock_now);
     assert(actual[0].origin.x==round(12-view.strip_offset));
     assert(ax_calls==0 && hwm_resize_operations==0);
+}
+/* At 100% a helper that can move native frames inside the transaction does
+ * so: no transform is left on the window, and the frame stays atomic. A window
+ * the camera carries above the top edge keeps the presentation transform. */
+static void test_native_ride_at_full_size(void)
+{
+    reset(); native_ride_supported=true; __pending_gesture=true;
+    memset(native_ride_calls,0,sizeof(native_ride_calls)); memset(plane_transform_calls,0,sizeof(plane_transform_calls));
+    for(int step=1;step<=20;step++) {
+        view.strip_offset=step*11.5; clock_now+=1.0/120; hwm_last_input=clock_now;
+        hwm_render(&view,clock_now);
+    }
+    for(int i=0;i<4;i++) {
+        if(windows[i].strip_offscreen) continue;
+        assert(native_ride_calls[i]>0 && windows[i].strip_native_riding && !windows[i].strip_plane_scaled);
+        assert(CGPointEqualToPoint(actual[i].origin,windows[i].strip_last_frame.origin));
+    }
+    assert(disable_calls==0 && update_depth==0);
+    int transforms=plane_transform_calls[0];
+    test_camera_y=windows[0].strip_world_y+300; clock_now+=1.0/120; hwm_last_input=clock_now;
+    hwm_render(&view,clock_now);
+    assert(windows[0].strip_last_frame.origin.y<0 && plane_transform_calls[0]==transforms+1);
+    assert(windows[0].strip_plane_scaled && !windows[0].strip_native_riding);
+    native_ride_supported=false; test_camera_y=0; __pending_gesture=false;
 }
 static void test_retarget_during_scroll(void)
 {
@@ -644,6 +698,25 @@ static void test_offscreen_constraint_visibility(void)
     for(int i=0;i<4;i++) assert(!windows[i].strip_offscreen && alphas[i]==1);
 }
 
+/* A helper taking alpha in the transform transaction reveals a window in
+ * the frame that moves it on screen, without suspending screen updates. */
+static void test_alpha_reveal_joins_frame(void)
+{
+    reset(); plane_alpha_supported=true;
+    struct window *w=&windows[0];
+    view.strip_offset=500; clock_now+=1; hwm_last_input=clock_now-1;
+    hwm_render(&view,clock_now);
+    assert(w->strip_offscreen && alphas[0]==0);
+    int freezes=disable_calls; double hidden_x=projected[0].origin.x;
+    view.strip_offset=350; hwm_last_input=clock_now+.02;
+    hwm_batch_hold=true; hwm_render(&view,clock_now+.02);
+    assert(!w->strip_offscreen && alphas[0]==1 && hwm_visibility_reveal_count==0);
+    hwm_batch_release(); hwm_visibility_flush_reveals();
+    assert(disable_calls==freezes && update_depth==0);
+    assert(projected[0].origin.x==hidden_x+150); // Moved and revealed together.
+    plane_alpha_supported=false;
+}
+
 static void test_companion_visibility(void)
 {
     reset();
@@ -740,8 +813,8 @@ static void test_direct_drag_submission(void)
             double x=step<60?60+step:180-step,y=step%15-7;
             assert(hwm_drag_submit_plane(&view,w,CGPointMake(x,y)));
             assert(w->strip_world_x==x && w->strip_world_y==y);
-            assert(projected[0].origin.x==round(12+x*hwm_plane_scale));
-            assert(projected[0].origin.y==round(51+y*hwm_plane_scale));
+            assert(projected[0].origin.x==12+round(x*hwm_plane_scale));
+            assert(projected[0].origin.y==51+round(y*hwm_plane_scale));
             assert(disable_calls==freezes && update_depth==0 && sa_batch_depth==0);
         }
         assert(ax_calls==0 && moves==before && scale_calls==120 && drag_border_calls==120);
@@ -763,12 +836,29 @@ static void test_scaled_pan_keeps_transform(void)
         view.strip_offset=i; test_camera_y=i*.5; clock_now+=1.0/120;
         hwm_render(&view,clock_now);
         assert(scale_calls>before && ax_calls==0 && moves==0);
-        assert(projected[0].origin.x==round(12+(windows[0].strip_world_x-i)*.5));
-        assert(projected[0].origin.y==round(51+(windows[0].strip_world_y-i*.5)*.5));
+        // World and camera terms snap to the pixel grid separately, so the
+        // gap between two windows is the same on every frame of the pan.
+        assert(projected[0].origin.x==12+round(windows[0].strip_world_x*.5)-round(i*.5));
+        assert(projected[0].origin.y==51+round(windows[0].strip_world_y*.5)-round(i*.5*.5));
+        assert(projected[1].origin.x-projected[0].origin.x==round(windows[1].strip_world_x*.5)-round(windows[0].strip_world_x*.5));
     }
     hwm_layout(&view,true);
     assert(fabs(windows[0].strip_from_x-windows[0].strip_world_x)<=1);
     assert(fabs(windows[0].strip_from_y-windows[0].strip_world_y)<=1);
+}
+
+/* A position echo while the camera moves is ignored without waiting on the
+ * helper; one at rest waits before reading where the window is. */
+static void test_moved_echo_settles_only_at_rest(void)
+{
+    reset(); clock_now+=2; hwm_render(&view,clock_now);
+    struct window *w=&windows[0];
+    hwm_last_input=clock_now; event_settles=0; int reads=bounds_reads;
+    assert(horizontal_window_moved(w));
+    assert(event_settles==0 && bounds_reads==reads);
+    hwm_last_input=clock_now-1;
+    (void)horizontal_window_moved(w);
+    assert(event_settles==1 && bounds_reads>reads);
 }
 
 static void test_position_echo_does_not_resize(void)
@@ -1317,6 +1407,7 @@ int main(void)
 {
     @autoreleasepool {
     test_drag_feedback_cost_and_snap_axes();
+    test_native_ride_at_full_size();
     test_owned_edge_resize();
     test_overview_pointer();
     test_low_zoom_click_ownership();
@@ -1330,7 +1421,9 @@ int main(void)
     test_native_anchor_is_independent_of_projection();
     test_plane_camera_and_fit();
     test_position_echo_does_not_resize();
+    test_moved_echo_settles_only_at_rest();
     test_scaled_pan_keeps_transform();
+    test_alpha_reveal_joins_frame();
     test_direct_drag_submission();
     test_maximize_at_actual_size();
     test_final_resize_confirmation();

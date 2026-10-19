@@ -23,8 +23,9 @@ static bool hwm_backend_ok = true;
 static uint64_t hwm_space;
 static CVDisplayLinkRef hwm_display_link;
 static _Atomic bool hwm_ca_clock_running;
-static _Atomic double hwm_ca_target_time,hwm_display_hz,hwm_display_max_hz;
+static _Atomic double hwm_ca_target_time,hwm_display_max_hz;
 static void hwm_ca_stop(void);
+static void hwm_ca_rebind(void);
 static dispatch_source_t hwm_fallback_timer;
 static _Atomic bool hwm_suspended;
 static _Atomic bool hwm_overview_active;
@@ -51,7 +52,24 @@ static double hwm_rubber; // Signed overscroll shown while a finger holds the st
  * where the fingers are at that frame, carried on from the latest report at
  * the speed they were moving, for no longer than about one report interval. */
 static double hwm_held_velocity, hwm_held_time, hwm_held_lead;
-static const double HWMHeldLeadMax=.012;
+/* How far past the newest report a frame may be drawn. The frame is shown at
+ * the vsync the clock named, a whole refresh after the tick; a fixed 12 ms
+ * covered that on a 120 Hz panel but left a 60 Hz panel's frames drawn for
+ * a moment 5 to 10 ms before they appeared, so the strip trailed the fingers
+ * by that much. One refresh plus a report interval's slack, bounded so a
+ * reversal never overshoots by more than a frame or two of travel. */
+static _Atomic double hwm_display_hz;
+static double hwm_held_lead_max(void)
+{
+    double hz=hwm_display_hz, interval=hz>1 ? 1/hz : 1.0/60;
+    return fmax(.012,fmin(.022,interval+.004));
+}
+#define HWMHeldLeadMax hwm_held_lead_max()
+/* A speed is read from at least three reports spread over this long. The
+ * first reports of a gesture often arrive bunched within a millisecond; a
+ * line through two of them read as a huge speed, and the first frames of a
+ * pinch leapt ahead of the fingers and then stood still while they caught up. */
+static const double HWMHeldLeadSpan=.02;
 /* The last few reports of the swipe in hand. Reports reach this process
  * bunched and late by varying amounts, so one report and its neighbour are a
  * poor measure of speed; a line through the last twentieth of a second is not. */
@@ -69,18 +87,51 @@ static double hwm_held_lead_at(double time,double latest)
 {
     if(hwm_held_count<2) return 0;
     double newest=hwm_held_samples[hwm_held_count-1].time, st=0, sx=0, stt=0, stx=0; int n=0;
+    double oldest=0;
     for(int i=hwm_held_count-1;i>=0 && newest-hwm_held_samples[i].time<=.05;i--) {
         double t=hwm_held_samples[i].time-newest, x=hwm_held_samples[i].offset;
-        st+=t; sx+=x; stt+=t*t; stx+=t*x; ++n;
+        st+=t; sx+=x; stt+=t*t; stx+=t*x; ++n; oldest=t;
     }
     double spread=n*stt-st*st;
-    if(n<2 || !(spread>1e-9)) return 0;
+    if(n<3 || -oldest<HWMHeldLeadSpan || !(spread>1e-9)) return 0;
     double speed=(n*stx-st*sx)/spread, at_newest=(sx-speed*st)/n;
     hwm_held_velocity=speed;
     double ahead=fmax(0,fmin(HWMHeldLeadMax,time-newest));
     // Never further from the latest report than the fingers could have travelled since.
     double lead=at_newest+speed*ahead-latest, limit=fabs(speed)*(HWMHeldLeadMax+.004);
     return fmax(-limit,fmin(limit,lead));
+}
+/* The plane's three-finger pan, resampled the same way on both axes. The
+ * camera the gesture integrates is the latest report (hwm_pan_raw); each frame
+ * is drawn at that plus how far the fingers have moved by the frame's vsync. */
+static bool hwm_pan_raw_valid;
+static double hwm_pan_raw_x,hwm_pan_raw_y;
+static struct { double time,x,y; } hwm_pan_samples[HWM_HELD_SAMPLES];
+static int hwm_pan_count;
+static void hwm_pan_note(double time,double x,double y)
+{
+    if(hwm_pan_count==HWM_HELD_SAMPLES) memmove(hwm_pan_samples,hwm_pan_samples+1,(HWM_HELD_SAMPLES-1)*sizeof(*hwm_pan_samples));
+    else ++hwm_pan_count;
+    hwm_pan_samples[hwm_pan_count-1].time=time; hwm_pan_samples[hwm_pan_count-1].x=x; hwm_pan_samples[hwm_pan_count-1].y=y;
+}
+static void hwm_pan_lead_at(double time,double *lead_x,double *lead_y)
+{
+    *lead_x=*lead_y=0;
+    if(hwm_pan_count<2) return;
+    double newest=hwm_pan_samples[hwm_pan_count-1].time,st=0,stt=0,sx=0,stx=0,sy=0,sty=0; int n=0;
+    double oldest=0;
+    for(int i=hwm_pan_count-1;i>=0 && newest-hwm_pan_samples[i].time<=.05;i--) {
+        double t=hwm_pan_samples[i].time-newest;
+        st+=t; stt+=t*t; sx+=hwm_pan_samples[i].x; stx+=t*hwm_pan_samples[i].x; sy+=hwm_pan_samples[i].y; sty+=t*hwm_pan_samples[i].y; ++n; oldest=t;
+    }
+    double spread=n*stt-st*st;
+    if(n<3 || -oldest<HWMHeldLeadSpan || !(spread>1e-9)) return;
+    double ahead=fmax(0,fmin(HWMHeldLeadMax,time-newest));
+    double vx=(n*stx-st*sx)/spread,vy=(n*sty-st*sy)/spread;
+    double ax=(sx-vx*st)/n+vx*ahead-hwm_pan_raw_x,ay=(sy-vy*st)/n+vy*ahead-hwm_pan_raw_y;
+    // Never further from the latest report than the fingers could have travelled since.
+    double lx=fabs(vx)*(HWMHeldLeadMax+.004),ly=fabs(vy)*(HWMHeldLeadMax+.004);
+    *lead_x=fmax(-lx,fmin(lx,ax)); *lead_y=fmax(-ly,fmin(ly,ay));
 }
 /* When a trackpad report was made, rather than when this thread got to it. */
 static double hwm_event_time(CGEventRef event,double now)
@@ -92,7 +143,8 @@ static bool hwm_swiping_columns; // A swipe has already found its first column.
 static int hwm_snap = 2; // 0 free, 1 column edges, 2 centre the nearest column
 static double hwm_magnet = .1; // Pull toward a centred column while the strip is held.
 static double hwm_snap_threshold = .15; // Share of the way to the next column that commits a swipe to it.
-static double hwm_swipe_gain = 1; // Strip travel per unit of finger travel.
+static double hwm_swipe_gain = 1.15; // Strip travel per unit of finger travel.
+static double hwm_pinch_gain = 1.35; // Zoom (in log scale) per unit of trackpad magnification.
 static double hwm_snap_origin; // Where the strip rested when the current swipe began.
 static int hwm_focus_follow = 2; // After the strip is moved: 0 leave focus, 1 focus the window brought to the centre, 2 the one under the pointer.
 static void hwm_focus_follow_to(struct view *view,double offset);
@@ -121,7 +173,17 @@ static double hwm_plane_y, hwm_plane_y_from, hwm_plane_y_target, hwm_plane_y_sta
 static double hwm_plane_y_initial_velocity, hwm_plane_y_current_velocity;
 static bool hwm_plane_y_scrolling;
 #include "plane_gesture.h"
+#include "plane_pinch.h"
 static HWMPlaneGesture hwm_plane_gesture;
+/* The two-finger pinch read from the raw contacts (plane_pinch.h). The
+ * recogniser runs on the multitouch thread; what the event tap needs to know
+ * is shared through these. hwm_contact_pinch_state: 0 no pair in hand, 1 a
+ * pair still undecided, 2 zooming. hwm_contact_pinch_seen: when a pair was
+ * last reported, on this process's clock. */
+static HWMPlanePinch hwm_contact_pinch;
+static _Atomic int hwm_contact_pinch_state;
+static _Atomic double hwm_contact_pinch_seen=-10;
+typedef struct { double time,delta; int phase; } HWMPlanePinchFrame;
 static HWMPlaneCamera hwm_plane_pan_origin;
 static HWMPlaneVelocity hwm_plane_pan_velocity;
 static HWMPlaneSelectionGesture hwm_selection_gesture;
@@ -148,6 +210,8 @@ static void hwm_zoom_cancel_native(void);
 static bool hwm_zoom_native_busy(uint32_t wid);
 static bool hwm_zoom_wait_native(uint32_t wid);
 static bool hwm_zoom_size_restoring(uint32_t wid);
+static bool hwm_zoom_waiting_only; // See native_zoom.m.
+static bool hwm_zoom_landing; // Native frames are still being placed after motion.
 static bool hwm_plane_select_click;
 static bool hwm_plane_pick_automatic;
 static uint32_t hwm_plane_pick_window;
@@ -158,13 +222,12 @@ static void hwm_plane_transition_to(struct view *view,double x,double y,double s
 static bool hwm_plane_fit_active;
 static bool hwm_magnetic_centering=false;
 static bool hwm_auto_center=true,hwm_pan_momentum=true;
-static double hwm_auto_center_radius=120;
+static double hwm_auto_center_radius=180;
 static void hwm_plane_set_camera(struct view *view,double x,double y,bool animate);
 static void hwm_plane_fit_all(struct view *view);
 static void hwm_plane_fit_focused(struct view *view);
 static void hwm_plane_actual_size(struct view *view);
 static void hwm_plane_arrange_grid(struct view *view);
-static void hwm_plane_zoom_at_pointer(struct view *view,double scale,CGPoint pointer);
 static void hwm_feedback_navigation(bool wall);
 static void hwm_feedback_focus(struct window *previous,struct window *next);
 static void hwm_feedback_tick(struct view *view,double now);
@@ -185,7 +248,7 @@ static bool hwm_plane_pointer_owned(void);
 static HWMPlaneEdgePan hwm_drag_edge_pan;
 static bool hwm_drag_cancelled,hwm_drag_shadow;
 /* Worst time per tick section since the last `profile-reset`, in ms. */
-enum { HWM_PROF_DRAG, HWM_PROF_RENDER, HWM_PROF_EXTRAS, HWM_PROF_PREVIEW, HWM_PROF_FEEDBACK, HWM_PROF_TICK_DRAGGING, HWM_PROF_COUNT };
+enum { HWM_PROF_DRAG, HWM_PROF_RENDER, HWM_PROF_EXTRAS, HWM_PROF_PREVIEW, HWM_PROF_FEEDBACK, HWM_PROF_TICK_DRAGGING, HWM_PROF_BORDER, HWM_PROF_RELEASE, HWM_PROF_HOVER, HWM_PROF_BORDER_PAINT, HWM_PROF_BORDER_SHAPE, HWM_PROF_COUNT };
 static double hwm_prof[HWM_PROF_COUNT];
 static uint64_t hwm_prof_drag_ticks, hwm_prof_drag_events;
 static double hwm_now(void);
@@ -206,15 +269,31 @@ static const char *hwm_event_names[] = {
 #undef EVENT_TYPE_ENTRY
 };
 enum { HWM_FRAME_LOG=1024 };
-static struct { double time, offset, tick_ms, latency_ms; } hwm_frame_log[HWM_FRAME_LOG];
+static struct { double time, offset, tick_ms, latency_ms, camera_y, scale; } hwm_frame_log[HWM_FRAME_LOG];
 static struct { double time, offset; } hwm_input_log[HWM_FRAME_LOG];
 static uint64_t hwm_frame_log_count, hwm_input_log_count;
 static double hwm_helper_due; // When to run the helper's loader after a Dock restart; 0 for never.
+/* Whether the strip's Space is the one on screen. Asking costs WindowServer
+ * round trips on every frame; the answer changes only with the events that
+ * reset hwm_space_visible_stamp, and is checked twice a second regardless. */
+static double hwm_space_visible_stamp=-10;
+static uint64_t hwm_space_visible_sid;
+static bool hwm_space_visible;
+static bool hwm_view_space_visible(struct view *view,double now)
+{
+    if(view->sid!=hwm_space_visible_sid || now-hwm_space_visible_stamp>.5) {
+        hwm_space_visible_sid=view->sid; hwm_space_visible_stamp=now;
+        hwm_space_visible=space_is_visible(view->sid);
+    }
+    return hwm_space_visible;
+}
 static void horizontal_event_timed(int type,double ms)
 {
     if(type<0 || type>=64) return;
     if((type>=DISPLAY_ADDED && type<=DISPLAY_CHANGED) || type==SPACE_CHANGED || type==DOCK_DID_RESTART || type==MENU_BAR_HIDDEN_CHANGED ||
-       type==DOCK_DID_CHANGE_PREF || type==SYSTEM_WOKE) hwm_screen_stamp=-10;
+       type==DOCK_DID_CHANGE_PREF || type==SYSTEM_WOKE) hwm_screen_stamp=hwm_space_visible_stamp=-10;
+    if((type>=DISPLAY_ADDED && type<=DISPLAY_CHANGED) || type==SPACE_CHANGED || type==SYSTEM_WOKE)
+        dispatch_async(dispatch_get_main_queue(),^{ if(hwm_ready) hwm_ca_rebind(); });
     // The helper went with the old Dock; give the new one a moment to come up.
     if(type==DOCK_DID_RESTART) hwm_helper_due=hwm_now()+1.5;
     ++hwm_event_prof[type].count; hwm_event_prof[type].total_ms+=ms;
@@ -235,7 +314,10 @@ static double hwm_tick_note(double now)
     if(latency>hwm_tick_latency_max_ms) hwm_tick_latency_max_ms=latency;
     if(hwm_tick_previous_active) {
         double gap=(now-hwm_tick_previous)*1000;
-        if(gap>25 && gap<1000) ++hwm_frames_dropped;
+        // A frame is dropped when the gap exceeds one and a half refresh
+        // intervals of the panel actually driving the clock (60 or 120 Hz).
+        double period=hwm_display_hz>1 ? 1000/hwm_display_hz : 1000/60.0;
+        if(gap>period*1.5 && gap<1000) ++hwm_frames_dropped;
         if(gap<1000 && gap>hwm_frame_gap_max_ms) hwm_frame_gap_max_ms=gap;
     }
     hwm_tick_previous=now;
@@ -258,11 +340,10 @@ static double hwm_hover_time;
 static uint32_t hwm_close_source, hwm_close_target;
 static double hwm_close_screen_x, hwm_close_time;
 static uint32_t hwm_preserve_focus_window;
+static uint32_t hwm_requested_focus; static double hwm_requested_focus_time; // See horizontal_expected_focus.
 static double hwm_preserve_focus_until;
 static uint32_t hwm_previous_focus;
 static double hwm_previous_focus_time,hwm_previous_focus_offset;
-static uint32_t hwm_preview_id;
-static CGContextRef hwm_preview_context;
 static CGRect hwm_preview_from, hwm_preview_target, hwm_preview_current;
 static double hwm_preview_start;
 static bool hwm_preview_visible;
@@ -296,7 +377,7 @@ static void hwm_apply_app_rule_now(struct window *window);
 static void hwm_config_begin(void);
 static void hwm_menu_refresh_bindings(void);
 static struct window *hwm_tile(uint32_t wid);
-static double hwm_rendered_offset;
+static double hwm_rendered_offset, hwm_rendered_camera_y; // The camera of the frame last drawn.
 static int hwm_shelf_limit(struct view *view);
 static NSString *hwm_shelf_label(int shelf);
 static struct window_node *hwm_slot(struct window_node *node);
@@ -325,7 +406,7 @@ static void hwm_focus_any(struct window *w);
 static struct window *hwm_action_window(void);
 static void hwm_arrangement_window_opened(void);
 
-enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PLANE_PICK, HWM_PLANE_RESIZE, HWM_PLANE_INTERRUPT, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
+enum hwm_action { HWM_EVENT, HWM_TOUCH_FRAME, HWM_PINCH_FRAME, HWM_PLANE_PICK, HWM_PLANE_RESIZE, HWM_PLANE_INTERRUPT, HWM_LEFT, HWM_RIGHT, HWM_MOVE_LEFT, HWM_MOVE_RIGHT,
                   HWM_FLOAT, HWM_FULL, HWM_CENTER, HWM_HOME, HWM_PAUSE, HWM_REFLOW, HWM_QUIT, HWM_CLOSE, HWM_TERMINAL, HWM_BROWSER,
                   HWM_MOVE_FIRST, HWM_MOVE_LAST, HWM_OVERVIEW_FILTER, HWM_OVERVIEW_DRAG, HWM_OVERVIEW_HIGHLIGHT, HWM_OVERVIEW, HWM_OVERVIEW_GESTURE, HWM_OVERVIEW_CANCEL, HWM_OVERVIEW_POINTER, HWM_OVERVIEW_KEY, HWM_CANCEL_DRAG, HWM_NAMED_ACTION, HWM_APPLY_RULE, HWM_TAB_SELECT, HWM_MARK_KEY, HWM_ATTENTION };
 
@@ -351,7 +432,27 @@ static double horizontal_ease(double t)
     return hstrip_ease(t);
 }
 
-static void hwm_wake(void) { __atomic_store_n(&hwm_active, true, __ATOMIC_RELEASE); }
+static void hwm_ca_resume(void);
+static void hwm_menu_status(void);
+static bool hwm_helper_lost_shown;
+/* Every wake bumps a generation. A tick that ends idle only lets the clock
+ * sleep if nothing woke it meanwhile, so a wake from another thread (a title
+ * arriving, a helper reply) is never lost to the tick's own idle store. */
+static uint64_t hwm_wake_generation;
+static void hwm_wake(void)
+{
+    __atomic_add_fetch(&hwm_wake_generation,1,__ATOMIC_SEQ_CST);
+    __atomic_store_n(&hwm_active, true, __ATOMIC_SEQ_CST); hwm_ca_resume();
+}
+static void hwm_tick_idle(uint64_t generation)
+{
+    __atomic_store_n(&hwm_active,false,__ATOMIC_SEQ_CST);
+    if(__atomic_load_n(&hwm_wake_generation,__ATOMIC_SEQ_CST)!=generation) {
+        // The clock may have paused in the instant active read false.
+        __atomic_store_n(&hwm_active,true,__ATOMIC_SEQ_CST); hwm_ca_resume();
+    }
+}
+static uint64_t hwm_tick_wake_generation; // The generation the running tick began with.
 static struct view *hwm_view(void)
 {
     if (!hwm_space) return NULL;
@@ -473,6 +574,10 @@ static double hwm_plane_camera_y(double now)
 static void hwm_plane_set_camera(struct view *view,double x,double y,bool animate)
 {
     if(!view || !isfinite(x) || !isfinite(y) || (hwm_plane_pointer_owned() && !hwm_drag_camera_owned)) return;
+    /* At 100% an animated camera lands on whole points: native AppKit frames
+     * are whole points, so a fractional rest would make every window hop a
+     * pixel when the handoff to native frames follows. */
+    if(animate && hwm_plane_scale==1) { x=round(x); y=round(y); }
     double now=hwm_clock();
     hwm_scroll(view,x,animate);
     if(fabs(y-hwm_plane_y_target)>.25) hwm_zoom_cancel_native();
@@ -488,6 +593,7 @@ static void hwm_plane_transition_to(struct view *view,double x,double y,double s
 {
     if(!view || hwm_plane_pointer_owned() || !isfinite(x) || !isfinite(y) || !isfinite(scale) || scale<=0) return;
     scale=hwm_plane_zoom_clamp(scale);
+    if(animate && scale==1) { x=round(x); y=round(y); } // See hwm_plane_set_camera.
     hwm_zoom_workspace=scale<1; hwm_zoom_detent_armed=false;
     double now=hwm_clock();
     double current_x=hwm_offset(view,now),current_y=hwm_plane_camera_y(now);
@@ -588,27 +694,173 @@ static void hwm_plane_actual_size(struct view *view)
 /* pointer is where the pinch happened: the event's own location. A location
  * off the screen (some forwarded gestures carry none) falls back to asking
  * WindowServer, which costs a round trip on every pinch sample. */
-static void hwm_plane_zoom_at_pointer(struct view *view,double scale,CGPoint pointer)
+static CGPoint hwm_plane_zoom_point(CGRect bounds,CGPoint pointer)
 {
-    if(!view || hwm_plane_pointer_owned() || g_mouse_state.window || !isfinite(scale)) return;
+    CGPoint cursor;
+    if(CGRectContainsPoint(bounds,pointer)) return pointer;
+    if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && CGRectContainsPoint(bounds,cursor)) return cursor;
+    return CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
+}
+/* The camera that keeps screen point p over the same world point while
+ * `from` changes to scale. */
+static HWMPlaneCamera hwm_plane_zoom_about(HWMPlaneCamera from,double scale,CGRect bounds,CGPoint p)
+{
+    double wx=from.x+(p.x-bounds.origin.x)/from.scale;
+    double wy=from.y+(p.y-bounds.origin.y)/from.scale;
+    HWMPlaneCamera to={wx-(p.x-bounds.origin.x)/scale,wy-(p.y-bounds.origin.y)/scale,scale};
+    // Native frames are placed on whole points at 100%.
+    if(scale==1) { to.x=round(to.x); to.y=round(to.y); }
+    return to;
+}
+/* Zoom to scale about the pinch point, from `from` (the camera's target when
+ * NULL). 0: refused, 1: already at that scale, 2: zoomed. The point used is
+ * stored in *anchor when zooming. */
+static int hwm_plane_zoom_from(struct view *view,const HWMPlaneCamera *from,double scale,CGPoint pointer,CGPoint *anchor)
+{
+    if(!view || hwm_plane_pointer_owned() || g_mouse_state.window || !isfinite(scale)) return 0;
     scale=hwm_plane_zoom_clamp(fmax(HWM_PLANE_MIN_SCALE,fmin(1,scale)));
-    if(scale==hwm_plane_scale) return;
+    if(scale==(from ? from->scale : hwm_plane_scale)) return 1;
     /* Zoom stays anchored at the pointer all the way to 100%. Jumping to the
      * focused window at the end of a pinch read as a stutter. */
     hwm_zoom_workspace=scale<1;
     hwm_plane_camera_stop(view,hwm_now());
-    CGRect bounds=hwm_bounds(view); CGPoint point=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
-    CGPoint cursor;
-    if(CGRectContainsPoint(bounds,pointer)) point=pointer;
-    else if(SLSGetCurrentCursorLocation(g_connection,&cursor)==kCGErrorSuccess && CGRectContainsPoint(bounds,cursor)) point=cursor;
-    double old=hwm_plane_scale;
-    double wx=view->strip_target_offset+(point.x-bounds.origin.x)/old;
-    double wy=hwm_plane_y_target+(point.y-bounds.origin.y)/old;
+    CGRect bounds=hwm_bounds(view); CGPoint point=hwm_plane_zoom_point(bounds,pointer);
+    if(anchor) *anchor=point;
+    HWMPlaneCamera start=from ? *from : (HWMPlaneCamera){view->strip_target_offset,hwm_plane_y_target,hwm_plane_scale};
+    HWMPlaneCamera next=hwm_plane_zoom_about(start,scale,bounds,point);
     hwm_plane_scale=scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001;
-    double x=wx-(point.x-bounds.origin.x)/hwm_plane_scale,y=wy-(point.y-bounds.origin.y)/hwm_plane_scale;
-    // Native frames are placed on whole points at 100%.
-    if(scale==1) { x=round(x); y=round(y); }
-    hwm_plane_set_camera(view,x,y,false);
+    hwm_plane_set_camera(view,next.x,next.y,false);
+    return 2;
+}
+/* Pinch reports arrive unevenly and slower than a ProMotion panel draws, so a
+ * pinch drawn straight from them zoomed in uneven steps. As with the pan,
+ * each frame is drawn where the fingers are at its vsync: the latest report
+ * carried on at the rate the zoom was changing (in log scale, so steady
+ * fingers give a steady zoom), for no longer than about one report interval.
+ * Reports integrate onto the latest report (hwm_pinch_raw), never onto a
+ * resampled frame. Anything else that moves the camera ends the resampling,
+ * leaving the camera where it was last drawn. */
+static bool hwm_pinch_raw_valid;
+static HWMPlaneCamera hwm_pinch_raw,hwm_pinch_shown;
+/* How far out a pinch may take the camera: until every window fits on screen
+ * with room to spare, and never closer than HWM_PINCH_FLOOR allows. Beyond
+ * that a pinch only shrank everything into empty plane, and a quick pinch got
+ * there before the fingers could stop it. Set when a pinch begins. */
+#define HWM_PINCH_FLOOR .2
+static double hwm_pinch_floor=HWM_PINCH_FLOOR;
+static bool hwm_plane_window_selectable(struct view *view,struct window *w);
+static double hwm_pinch_floor_for(struct view *view)
+{
+    double x0=INFINITY,y0=INFINITY,x1=-INFINITY,y1=-INFINITY;
+    for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
+        struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
+        if(!hwm_plane_window_selectable(view,w) || !(w->strip_width>0) || !(w->strip_height>0)) continue;
+        x0=fmin(x0,w->strip_world_x); y0=fmin(y0,w->strip_world_y);
+        x1=fmax(x1,w->strip_world_x+w->strip_width); y1=fmax(y1,w->strip_world_y+w->strip_height);
+    }
+    CGRect bounds=hwm_bounds(view);
+    if(!(x1>x0) || !(y1>y0) || bounds.size.width<=0 || bounds.size.height<=0) return HWM_PINCH_FLOOR;
+    double fit=.85*fmin(bounds.size.width/(x1-x0),bounds.size.height/(y1-y0));
+    return fmax(HWM_PLANE_MIN_SCALE,fmin(HWM_PINCH_FLOOR,fit));
+}
+// The floor never pulls a camera that is already further out back in.
+static double hwm_pinch_limit(double scale,double from)
+{
+    return fmax(scale,fmin(hwm_pinch_floor,from));
+}
+/* After the newest report the lead carries on for one report interval, then
+ * runs back to nothing over this long: the zoom comes to rest exactly where
+ * the fingers left it. Holding the extrapolated scale when they stopped left
+ * a quick pinch further out than the fingers had taken it. */
+#define HWM_PINCH_SETTLE .03
+/* When the fingers lift (the gesture's ended phase), nothing more is coming:
+ * the remaining lead goes within a frame, so a pinch stopped abruptly does
+ * not show the zoom carrying on past the fingers and easing back. */
+static double hwm_pinch_ended=-1;
+static CGPoint hwm_pinch_anchor;
+static struct { double time,log_scale; } hwm_pinch_samples[HWM_HELD_SAMPLES];
+static int hwm_pinch_count;
+static void hwm_pinch_reset(void) { hwm_pinch_raw_valid=false; hwm_pinch_count=0; }
+static bool hwm_pinch_intact(struct view *view)
+{
+    return !hwm_camera_animating && !view->strip_scrolling && !hwm_plane_y_scrolling && !hwm_plane_gesture.active &&
+           !hwm_plane_pointer_owned() && !g_mouse_state.window &&
+           view->strip_offset==hwm_pinch_shown.x && hwm_plane_y==hwm_pinch_shown.y && hwm_plane_scale==hwm_pinch_shown.scale;
+}
+static void hwm_pinch_note(double time,double log_scale)
+{
+    if(hwm_pinch_count && time<hwm_pinch_samples[hwm_pinch_count-1].time) time=hwm_pinch_samples[hwm_pinch_count-1].time;
+    if(hwm_pinch_count==HWM_HELD_SAMPLES) memmove(hwm_pinch_samples,hwm_pinch_samples+1,(HWM_HELD_SAMPLES-1)*sizeof(*hwm_pinch_samples));
+    else ++hwm_pinch_count;
+    hwm_pinch_samples[hwm_pinch_count-1].time=time; hwm_pinch_samples[hwm_pinch_count-1].log_scale=log_scale;
+}
+/* How far the fingers have zoomed by `time` beyond the latest report, in log scale. */
+static double hwm_pinch_lead_at(double time)
+{
+    if(hwm_pinch_count<2) return 0;
+    double newest=hwm_pinch_samples[hwm_pinch_count-1].time,st=0,stt=0,ss=0,sts=0; int n=0;
+    double oldest=0;
+    for(int i=hwm_pinch_count-1;i>=0 && newest-hwm_pinch_samples[i].time<=.05;i--) {
+        double t=hwm_pinch_samples[i].time-newest,v=hwm_pinch_samples[i].log_scale;
+        st+=t; stt+=t*t; ss+=v; sts+=t*v; ++n; oldest=t;
+    }
+    double spread=n*stt-st*st;
+    if(n<3 || -oldest<HWMHeldLeadSpan || !(spread>1e-9)) return 0;
+    double rate=(n*sts-st*ss)/spread,at_newest=(ss-rate*st)/n;
+    double ahead=fmax(0,fmin(HWMHeldLeadMax,time-newest));
+    // Never further from the latest report than the fingers could have zoomed since.
+    double lead=at_newest+rate*ahead-log(hwm_pinch_raw.scale),limit=fabs(rate)*(HWMHeldLeadMax+.004);
+    return fmax(-limit,fmin(limit,lead));
+}
+static void hwm_pinch_report(struct view *view,double delta,CGPoint pointer,double time)
+{
+    bool resume=hwm_pinch_raw_valid && hwm_pinch_intact(view);
+    if(!resume) { hwm_pinch_reset(); hwm_pinch_floor=hwm_pinch_floor_for(view); hwm_pinch_ended=-1; }
+    CGPoint anchor=hwm_pinch_anchor;
+    double from=resume ? hwm_pinch_raw.scale : hwm_plane_scale;
+    int zoomed=hwm_plane_zoom_from(view,resume ? &hwm_pinch_raw : NULL,hwm_pinch_limit(from*exp(delta),from),pointer,&anchor);
+    if(!zoomed) { hwm_pinch_reset(); return; }
+    if(zoomed==2 || !resume) hwm_pinch_raw=(HWMPlaneCamera){view->strip_target_offset,hwm_plane_y_target,hwm_plane_scale};
+    if(zoomed==1 && !resume) {
+        CGRect bounds=hwm_bounds(view);
+        anchor=CGRectContainsPoint(bounds,pointer) ? pointer : CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
+    }
+    hwm_pinch_anchor=anchor;
+    hwm_pinch_shown=(HWMPlaneCamera){view->strip_offset,hwm_plane_y,hwm_plane_scale};
+    hwm_pinch_note(time,log(hwm_pinch_raw.scale));
+    hwm_pinch_raw_valid=true;
+}
+/* One pinch sample, from the contacts or from a magnify event: delta is the
+ * zoom in log scale before pinchGain; phase is 1 began, 2 changed, 4 ended,
+ * 8 cancelled. */
+static void hwm_pinch_input(struct view *view,double delta,CGPoint pointer,int phase,double time,double now)
+{
+    if(phase&1) hwm_pinch_ended=-1;
+    hwm_pinch_report(view,delta*hwm_pinch_gain,pointer,time);
+    if(phase&(4|8)) hwm_pinch_ended=now;
+    hwm_zoom_pinch_time=now;
+    if(delta) { hwm_zoom_detent_armed=delta>0 && hwm_plane_scale<1; hwm_zoom_detent_point=pointer; }
+    hwm_last_input=now;
+}
+/* Draw this frame's zoom; time is the frame's vsync. */
+static void hwm_pinch_present(struct view *view,double time)
+{
+    if(!hwm_pinch_raw_valid) return;
+    // Something else took the camera: stay where drawn.
+    if(!hwm_pinch_intact(view)) { hwm_pinch_reset(); return; }
+    double since=time-hwm_pinch_samples[hwm_pinch_count-1].time;
+    double carry=fmax(0,fmin(1,1-(since-HWMHeldLeadMax)/HWM_PINCH_SETTLE));
+    if(hwm_pinch_ended>=0) carry=fmin(carry,fmax(0,1-(time-hwm_pinch_ended)/.016));
+    double scale=hwm_pinch_raw.scale*exp(hwm_pinch_lead_at(time)*carry);
+    scale=hwm_plane_zoom_clamp(fmax(HWM_PLANE_MIN_SCALE,fmin(1,hwm_pinch_limit(scale,hwm_pinch_raw.scale))));
+    // At rest: drawn at the latest report itself, and done.
+    if(carry<=0) hwm_pinch_reset();
+    HWMPlaneCamera next=hwm_plane_zoom_about(hwm_pinch_raw,scale,hwm_bounds(view),hwm_pinch_anchor);
+    if(next.x==view->strip_offset && next.y==hwm_plane_y && next.scale==hwm_plane_scale) return;
+    hwm_zoom_workspace=next.scale<1;
+    hwm_plane_scale=next.scale; hwm_plane_fit_active=fabs(hwm_plane_scale-1)>.001;
+    hwm_plane_set_camera(view,next.x,next.y,false);
+    hwm_pinch_shown=(HWMPlaneCamera){view->strip_offset,hwm_plane_y,hwm_plane_scale};
 }
 
 #include "strip_ax_async.m"
@@ -653,6 +905,7 @@ static bool horizontal_flush_node(struct window_node *node)
 static uint32_t hwm_edge_window;
 #include "strip_feedback.m"
 static bool hwm_view_in_motion(struct view *view,double now);
+#define HWM_PROF_BORDER_PAINT_ENABLED 1
 #include "plane_border.m"
 #include "strip_interaction.m"
 #include "strip_visibility.m"
@@ -699,23 +952,59 @@ static void horizontal_event_settle(void)
 {
     if(!scripting_addition_settle()) hwm_batch_failed();
 }
+/* A held pan or pinch reports every few milliseconds, each moving only the
+ * camera. Waiting on the frame just handed to Dock before each one put Dock's
+ * commit time between every report and the next frame. Paths that go on to
+ * read window geometry settle there instead. */
+static bool horizontal_event_settles(int type,void *context,int param1)
+{
+    if(type==WINDOW_MOVED) return false; // horizontal_window_moved settles before reading.
+    /* Hover hit-tests what is displayed and only changes focus. A frame still
+     * in Dock's hands at worst places a window one frame behind, and hover
+     * does nothing while the camera moves. */
+    if(type==MOUSE_MOVED) return false;
+    /* The housekeeping sweep settles itself before it asks WindowServer
+     * anything, and it does not while frames are being drawn; a title
+     * change reads no geometry at all. Both arrive throughout a gesture. */
+    if(type==HORIZONTAL_RECONCILE || type==WINDOW_TITLE_CHANGED) return false;
+    /* A frame of a held pan or pinch moves the camera over windows whose
+     * geometry it already knows. Waiting for Dock to acknowledge the previous
+     * frame before drawing the next made every frame wait on Dock's
+     * scheduling: under load that wait was most of a refresh, the tick
+     * missed its vsync, and the gesture fell behind. The renderer settles
+     * itself at the two places a frame does read geometry (an application's
+     * own move or resize). Anything pointer-owned keeps the wait. */
+    if(type==HORIZONTAL_TICK && (__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) || hwm_pinch_raw_valid) &&
+       !hwm_drag_window && !hwm_edge_window && !hwm_resize_owned && !g_mouse_state.window) return false;
+    if(type!=HORIZONTAL_INPUT) return true;
+    if(param1==HWM_TOUCH_FRAME || param1==HWM_PINCH_FRAME) return false;
+    return !(param1==HWM_EVENT && context && CGEventGetType((CGEventRef)context)==29 &&
+             CGEventGetIntegerValueField((CGEventRef)context,110)==8);
+}
 static int hwm_backend_misses;
 static void horizontal_tick(void)
 {
     __atomic_store_n(&hwm_tick_pending, false, __ATOMIC_RELEASE);
+    uint64_t wake_generation=__atomic_load_n(&hwm_wake_generation,__ATOMIC_SEQ_CST);
+    hwm_tick_wake_generation=wake_generation;
     if (hwm_stop_requested) { hwm_shutdown(); return; }
     // The camera panel is no longer shown; zoom is driven by gestures and shortcuts.
     hwm_plane_controls_update(false,hwm_plane_scale);
     if(hwm_resize_owned && (hwm_paused || hwm_suspended || hwm_overview_active)) hwm_plane_resize_tick(hwm_view(),hwm_now());
-    if (!hwm_ready || hwm_paused || hwm_suspended || mission_control_is_active()) return;
+    if (!hwm_ready || hwm_paused || hwm_suspended || mission_control_is_active()) {
+        // Paused, locked or not started: nothing is drawn, so the display
+        // clock may sleep. Resuming lays out and wakes it again.
+        if(!hwm_resize_owned && (!hwm_ready || hwm_paused || hwm_suspended)) hwm_tick_idle(wake_generation);
+        return;
+    }
     double start = hwm_now(), latency = hwm_tick_note(start);
     if(hwm_overview_active) { hwm_drawn_time=start; hwm_overview_tick(); hwm_tick_previous_active=hwm_active; return; }
     hwm_tick_previous_active=false;
     struct view *view = hwm_view();
-    if (!view || !space_is_visible(view->sid)) {
+    if (!view || !hwm_view_space_visible(view,start)) {
         // Nothing can be drawn (a native fullscreen Space is in front). Returning
         // to the strip wakes the clock again; until then it should not keep ticking.
-        __atomic_store_n(&hwm_active,false,__ATOMIC_RELEASE);
+        hwm_tick_idle(wake_generation);
         return;
     }
     hwm_drawn_time=start;
@@ -723,12 +1012,14 @@ static void horizontal_tick(void)
         // A failed command is usually one slow reply, not a lost helper: ask
         // again at once and carry on if it answers. Only a helper that keeps
         // not answering is reloaded.
-        if (hwm_backend_misses && start-hwm_last_backend_retry < .5) return;
+        // Between retries the housekeeping timer keeps ticking; the display
+        // clock may sleep.
+        if (hwm_backend_misses && start-hwm_last_backend_retry < .5) { hwm_tick_idle(wake_generation); return; }
         hwm_last_backend_retry = start;
         hwm_backend_ok = tana_backend_ready();
-        if (!hwm_backend_ok) { if (++hwm_backend_misses >= 3) hwm_helper_reload(); return; }
+        if (!hwm_backend_ok) { if (++hwm_backend_misses >= 3) hwm_helper_reload(); hwm_tick_idle(wake_generation); return; }
         hwm_backend_misses = 0;
-        if(hwm_helper_attempts) { hwm_helper_attempts=0; hwm_hud(@"Window helper reconnected"); }
+        if(hwm_helper_attempts || hwm_helper_lost_shown) { hwm_helper_attempts=0; hwm_helper_lost_shown=false; hwm_hud(@"Window helper reconnected"); hwm_menu_status(); }
         hwm_layout(view, false);
     }
     if (__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) && start-view->strip_last_time > .8) {
@@ -738,6 +1029,11 @@ static void horizontal_tick(void)
     }
     // Where the fingers are as this frame is drawn; see hwm_held_velocity.
     hwm_held_lead=0;
+    if(hwm_plane_gesture.active && hwm_pan_raw_valid && __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED)) {
+        double lead_x,lead_y; hwm_pan_lead_at(hwm_frame_time(start),&lead_x,&lead_y);
+        hwm_plane_set_camera(view,hwm_pan_raw_x+lead_x,hwm_pan_raw_y+lead_y,false);
+    }
+    hwm_pinch_present(view,hwm_frame_time(start));
     // Use the same unpredicted camera sample on both axes during held input.
     // Applied once the keys or fingers rest; a swipe still in progress may yet go further.
     if(hwm_nav_pending && start-hwm_nav_time>.07 && !__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED)) hwm_nav_flush();
@@ -779,11 +1075,18 @@ static void horizontal_tick(void)
     active |= hwm_render_shelf_floats(view,frame);
     active |= hwm_render_transitions(frame);
     mark=hwm_prof_mark(HWM_PROF_EXTRAS,mark);
+    // PREVIEW spans this whole block; its border, batch release and hover
+    // parts are also kept apart, to tell which one cost a slow frame.
     active |= hwm_preview_render(frame);
+    double segment=hwm_now();
     active |= hwm_plane_border_tick(view,frame);
+    segment=hwm_prof_mark(HWM_PROF_BORDER,segment);
     hwm_plane_resize_publish(view);
     hwm_batch_release();
+    hwm_visibility_flush_reveals();
+    segment=hwm_prof_mark(HWM_PROF_RELEASE,segment);
     hwm_zoom_hover_tick();
+    hwm_prof_mark(HWM_PROF_HOVER,segment);
     mark=hwm_prof_mark(HWM_PROF_PREVIEW,mark);
     active |= hwm_nav_pending || hwm_settle_pending || hwm_zoom_detent_armed;
     if(hwm_close_source && start-hwm_close_time>1.0) { hwm_close_source=0; hwm_close_target=0; }
@@ -823,12 +1126,18 @@ static void horizontal_tick(void)
     if (!active && hwm_state_pending) { hwm_ipc_layout(view); hwm_save_state(); }
     double elapsed = (hwm_now()-start)*1000;
     ++hwm_frames;
-    if (elapsed > 8.34) ++hwm_slow_frames;
+    if (elapsed > (hwm_display_hz>1 ? 1000/hwm_display_hz : 8.34)) ++hwm_slow_frames;
     if (elapsed > hwm_max_frame_ms) hwm_max_frame_ms = elapsed;
     hwm_frame_log[hwm_frame_log_count%HWM_FRAME_LOG].time=start; hwm_frame_log[hwm_frame_log_count%HWM_FRAME_LOG].offset=hwm_rendered_offset;
+    hwm_frame_log[hwm_frame_log_count%HWM_FRAME_LOG].camera_y=hwm_plane_y; hwm_frame_log[hwm_frame_log_count%HWM_FRAME_LOG].scale=hwm_plane_scale;
     hwm_frame_log[hwm_frame_log_count%HWM_FRAME_LOG].tick_ms=elapsed; hwm_frame_log[hwm_frame_log_count++%HWM_FRAME_LOG].latency_ms=latency;
     hwm_tick_previous_active=active;
-    __atomic_store_n(&hwm_active, active || !hwm_backend_ok, __ATOMIC_RELEASE);
+    // One failed command is retried on the very next frame, as one slow reply
+    // usually is. A helper that keeps missing is retried by the housekeeping
+    // timer: keeping the display clock awake for it would hold a ProMotion
+    // panel at full refresh for as long as the helper is gone.
+    if(active || (!hwm_backend_ok && !hwm_backend_misses)) __atomic_store_n(&hwm_active,true,__ATOMIC_RELEASE);
+    else hwm_tick_idle(wake_generation);
 }
 
 static CVReturn hwm_display_tick(CVDisplayLinkRef link, const CVTimeStamp *now, const CVTimeStamp *out, CVOptionFlags inFlags, CVOptionFlags *outFlags, void *context)
@@ -1153,7 +1462,8 @@ static void hwm_action(int action)
         hwm_paused = !hwm_paused;
         if(hwm_paused) { hwm_plane_abort_interaction(NULL,HWM_PLANE_INTERRUPT_PAUSE); hwm_plane_reset_all_transforms(); hwm_visibility_restore_all(); }
         hwm_alpha_sync(hwm_paused);
-        hwm_hud(hwm_paused ? @"Tana2D paused" : @"Tana2D resumed");
+        hwm_hud(hwm_paused ? @"Tana2D paused. Windows stay where they are." : @"Tana2D resumed");
+        hwm_menu_status();
         __atomic_store_n(&hwm_active,false,__ATOMIC_RELEASE);
         if (!hwm_paused) {
             table_for (struct window *w, g_window_manager.window, { w->strip_last_frame = CGRectNull; })
@@ -1382,6 +1692,21 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
             return true;
         }
     }
+    /* A pinch read from the contacts that the system's recogniser took for
+     * a scroll: its scroll events would scroll the application under the
+     * pointer (or pan the zoomed plane) while the plane zooms, and its
+     * momentum would carry on after the fingers lift. The scroll stream is
+     * dropped from the moment the zoom engages until that stream ends. */
+    if(type==kCGEventScrollWheel) {
+        static bool swallowing;
+        if(atomic_load(&hwm_contact_pinch_state)==2) { swallowing=true; return true; }
+        if(swallowing) {
+            int64_t scroll_phase=CGEventGetIntegerValueField(event,kCGScrollWheelEventScrollPhase);
+            int64_t momentum=CGEventGetIntegerValueField(event,kCGScrollWheelEventMomentumPhase);
+            if(momentum || scroll_phase==kCGScrollPhaseEnded || scroll_phase==kCGScrollPhaseCancelled) return true;
+            swallowing=false;
+        }
+    }
     if (type == kCGEventScrollWheel && (CGEventGetFlags(event)&kCGEventFlagMaskAlternate)) {
         if (CGEventGetFlags(event)&(kCGEventFlagMaskCommand|kCGEventFlagMaskControl)) return false;
         event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_EVENT);
@@ -1407,6 +1732,11 @@ static bool horizontal_event(CGEventType type, CGEventRef event)
      * gesture: field 110 is IOHID zoom (8), field 113 is an incremental
      * magnification. Claim it so the focused application does not zoom too. */
     if(type==29 && CGEventGetIntegerValueField(event,110)==8) {
+        /* While two fingers are on the trackpad the pinch is read from the
+         * contacts; the recogniser's own magnify events for the same fingers
+         * (and the tail it reports after they lift) would zoom twice. Magnify
+         * events with no fingers down, such as a replayed pinch, still zoom. */
+        if(atomic_load(&hwm_contact_pinch_state) || hwm_now()-atomic_load(&hwm_contact_pinch_seen)<.3) return true;
         event_loop_post(&g_event_loop,HORIZONTAL_INPUT,(void *)CFRetain(event),HWM_EVENT);
         return true;
     }
@@ -1543,12 +1873,29 @@ static void horizontal_input(void *context, int action)
         else hwm_plane_pointer(input->type,input->point);
         free(input); return;
     }
+    if(action==HWM_PINCH_FRAME) {
+        HWMPlanePinchFrame *frame=context;
+        struct view *view=hwm_view();
+        /* The pointer does not move during a two-finger gesture; it is asked
+         * of WindowServer once, when the zoom engages. */
+        static CGPoint pointer;
+        if(view && !hwm_paused && !hwm_suspended && !hwm_resize_owned && !hwm_drag_window && !g_mouse_state.window &&
+           !mission_control_is_active() && !hwm_plane_gesture.active) {
+            if((frame->phase&1) || !CGRectContainsPoint(hwm_bounds(view),pointer)) {
+                CGRect bounds=hwm_bounds(view);
+                if(SLSGetCurrentCursorLocation(g_connection,&pointer)!=kCGErrorSuccess) pointer=CGPointMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds));
+            }
+            hwm_pinch_input(view,frame->delta,pointer,frame->phase,frame->time,hwm_now());
+        }
+        free(frame); return;
+    }
     if(action==HWM_TOUCH_FRAME) {
         HWMPlaneTouchFrame *sample=context;
         struct view *view=hwm_view();
         if(view && !hwm_paused && !hwm_suspended && !hwm_resize_owned && !hwm_drag_window && !g_mouse_state.window && !mission_control_is_active()) {
             int select=hwm_plane_selection_gesture_sample(&hwm_selection_gesture,sample->device,sample->contacts,sample->count,sample->time);
             if(select || hwm_selection_gesture.engaged || sample->count>=4) {
+                horizontal_event_settle();
                 hwm_plane_gesture.active=false;
                 __atomic_store_n(&__pending_gesture,false,__ATOMIC_RELEASE);
                 if(select) {
@@ -1566,16 +1913,29 @@ static void horizontal_input(void *context, int action)
                 hwm_zoom_cancel_native();
             }
             HWMPlaneCamera camera={hwm_offset(view,now),hwm_plane_camera_y(now),hwm_plane_scale},target;
-            if(!hwm_plane_gesture.active && sample->count==3) { hwm_plane_pan_origin=camera; hwm_plane_pan_velocity=(HWMPlaneVelocity){0}; }
+            if(!hwm_plane_gesture.active && sample->count==3) { hwm_plane_pan_origin=camera; hwm_plane_pan_velocity=(HWMPlaneVelocity){0}; hwm_pan_count=0; hwm_pan_raw_valid=false; }
+            // Integrate reports onto the last report, never onto a resampled frame.
+            if(hwm_plane_gesture.active && hwm_pan_raw_valid) { camera.x=hwm_pan_raw_x; camera.y=hwm_pan_raw_y; }
             if(hwm_plane_gesture_sample(&hwm_plane_gesture,sample->device,sample->contacts,sample->count,
                                         sample->time,bounds.size.width,sample->aspect,hwm_swipe_gain,camera,&target)) {
                 hwm_held_lead=0; hwm_held_count=0; hwm_rubber=0;
                 hwm_scroll_current_velocity=0; hwm_plane_y_current_velocity=0; hwm_release_velocity=false;
+                /* Lifting: the frame on screen was drawn where the fingers
+                 * would be at its vsync, a little ahead of the last report.
+                 * Releasing from the report itself stepped the plane back by
+                 * that lead, up to a frame or two of travel at speed, before
+                 * the glide set off. The glide starts from what is drawn. */
+                if(!hwm_plane_gesture.active && hwm_pan_raw_valid) { target.x=hwm_rendered_offset; target.y=hwm_rendered_camera_y; }
                 hwm_plane_set_camera(view,target.x,target.y,false);
-                if(hwm_plane_gesture.active) hwm_plane_velocity_add(&hwm_plane_pan_velocity,sample->time,target.x,target.y);
+                if(hwm_plane_gesture.active) {
+                    hwm_plane_velocity_add(&hwm_plane_pan_velocity,sample->time,target.x,target.y);
+                    hwm_pan_raw_x=target.x; hwm_pan_raw_y=target.y; hwm_pan_raw_valid=true;
+                    hwm_pan_note(sample->time,target.x,target.y);
+                } else { hwm_pan_raw_valid=false; hwm_pan_count=0; }
                 view->strip_last_time=sample->time; hwm_last_input=now;
                 __atomic_store_n(&__pending_gesture,hwm_plane_gesture.active,__ATOMIC_RELEASE);
                 if(!hwm_plane_gesture.active) {
+                    horizontal_event_settle(); // The release may look up windows.
                     hwm_focus_after_scroll=false;
                     __atomic_store_n(&__last_gesture_time,read_os_timer(),__ATOMIC_RELEASE);
                     CGPoint pointer;
@@ -1583,6 +1943,12 @@ static void horizontal_input(void *context, int action)
                                                                         hwm_scroll_omega/fmax(.15,hwm_motion_scale));
                     if(!hwm_plane_pan_release(view,hwm_plane_pan_origin,velocity) &&
                        SLSGetCurrentCursorLocation(g_connection,&pointer)==kCGErrorSuccess) hwm_plane_magnet_at(view,pointer,hwm_plane_pan_origin);
+                    // A pan released without a glide stays where the fingers
+                    // left it; at 100%, ease the last fraction of a point onto
+                    // the whole-point grid native frames use.
+                    double rest_x=hwm_offset(view,now),rest_y=hwm_plane_camera_y(now);
+                    if(hwm_plane_scale==1 && !view->strip_scrolling && !hwm_plane_y_scrolling && !hwm_camera_animating &&
+                       (rest_x!=round(rest_x) || rest_y!=round(rest_y))) hwm_plane_set_camera(view,rest_x,rest_y,true);
                 }
                 hwm_input_log[hwm_input_log_count%HWM_FRAME_LOG].time=sample->time;
                 hwm_input_log[hwm_input_log_count++%HWM_FRAME_LOG].offset=target.x;
@@ -1597,12 +1963,8 @@ static void horizontal_input(void *context, int action)
     double now = hwm_now();
     if(CGEventGetType(event)==29 && CGEventGetIntegerValueField(event,110)==8) {
         double delta=CGEventGetDoubleValueField(event,113);
-        if(isfinite(delta) && fabs(delta)<4) {
-            CGPoint pointer=CGEventGetLocation(event);
-            hwm_plane_zoom_at_pointer(view,hwm_plane_scale*exp(delta),pointer);
-            hwm_zoom_pinch_time=now;
-            if(delta) { hwm_zoom_detent_armed=delta>0 && hwm_plane_scale<1; hwm_zoom_detent_point=pointer; }
-        }
+        if(isfinite(delta) && fabs(delta)<4)
+            hwm_pinch_input(view,delta,CGEventGetLocation(event),(int)CGEventGetIntegerValueField(event,132),hwm_event_time(event,now),now);
         hwm_last_input=now; CFRelease(event); return;
     }
     if (CGEventGetType(event) == kCGEventScrollWheel) {
@@ -1916,7 +2278,9 @@ static void horizontal_command(FILE *rsp, char *message)
             @"hoverFocusPending":@(g_mouse_state.ffm_window_id),@"focusGuard":@(hwm_focus_guard),
             @"focusGuardAge":@(hwm_now()-hwm_focus_guard_time),@"focusGuardPoint":@[@(hwm_focus_guard_point.x),@(hwm_focus_guard_point.y)],
             @"cursor":@[@(cursor.x),@(cursor.y)],@"menus":menus,
-            @"menuSuppressed":@(menu_focus_suppressed()),@"popupSuppressed":@(popup_focus_suppressed())};
+            @"menuSuppressed":@(menu_focus_suppressed()),@"popupSuppressed":@(popup_focus_suppressed()),
+            @"hoverRechecks":@(hwm_hover_rechecks),@"hoverRechecksReached":@(hwm_hover_recheck_reached),@"hoverRechecksLost":@(hwm_hover_recheck_lost),
+            @"hoverFocusPaths":@[@(hwm_hover_focus_paths[0]),@(hwm_hover_focus_paths[1]),@(hwm_hover_focus_paths[2]),@(hwm_hover_focus_paths[3])],@"frontSwitches":@(hwm_event_prof[APPLICATION_FRONT_SWITCHED].count)};
         NSData *data=[NSJSONSerialization dataWithJSONObject:state options:0 error:NULL];
         fwrite(data.bytes,1,data.length,rsp); fputc('\n',rsp); return;
     }
@@ -1930,6 +2294,7 @@ static void horizontal_command(FILE *rsp, char *message)
         bool displayedValid=hwm_plane_displayed_frame(w->id,&displayed);
         bool borderVisible=hwm_plane_border_visible && hwm_plane_border_focus==w->id;
         bool borderValid=borderVisible && hwm_plane_displayed_frame(hwm_plane_border_id,&border);
+        if(borderValid) border=hwm_plane_border_frame; // The ring is several strips; report the whole.
         struct view *view=window_manager_find_managed_window(&g_window_manager,w);
         NSDictionary *state=@{@"id":@(w->id),@"displayedValid":@(displayedValid),@"borderValid":@(borderValid),@"borderVisible":@(borderVisible),
             @"displayedX":@(displayed.origin.x),@"displayedY":@(displayed.origin.y),@"displayedWidth":@(displayed.size.width),@"displayedHeight":@(displayed.size.height),
@@ -1957,9 +2322,9 @@ static void horizontal_command(FILE *rsp, char *message)
         fwrite(json.bytes,1,json.length,rsp); fputc('\n',rsp); [snapshot release]; return;
     }
     if(token_equals(command,"profile") || token_equals(command,"profile-reset")) {
-        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_presentations\":%llu,\"drag_present_avg_ms\":%.3f,\"drag_present_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f,\"border_window\":%u,\"display_hz\":%.2f}\n",
+        fprintf(rsp,"{\"ax_resizes\":%llu,\"ax_resizes_coalesced\":%llu,\"ax_resize_max_ms\":%.3f,\"drag_presentations\":%llu,\"drag_present_avg_ms\":%.3f,\"drag_present_max_ms\":%.3f,\"drag_ms\":%.3f,\"render_ms\":%.3f,\"extras_ms\":%.3f,\"preview_ms\":%.3f,\"feedback_ms\":%.3f,\"tick_while_dragging_ms\":%.3f,\"drag_ticks\":%llu,\"drag_events\":%llu,\"overlay_refreshes\":%llu,\"overlay_refresh_max_ms\":%.3f,\"max_frame_ms\":%.3f,\"border_window\":%u,\"display_hz\":%.2f,\"border_ms\":%.3f,\"release_ms\":%.3f,\"hover_ms\":%.3f,\"border_paint_ms\":%.3f,\"border_shape_ms\":%.3f,\"border_atomic\":%s}\n",
                 (unsigned long long)hwm_ax_resizes_sent,(unsigned long long)hwm_ax_resizes_coalesced,(double)hwm_ax_resize_max_ms,(unsigned long long)hwm_drag_present_count,hwm_drag_present_count?hwm_drag_present_total_ms/hwm_drag_present_count:0,hwm_drag_present_max_ms,hwm_prof[HWM_PROF_DRAG],hwm_prof[HWM_PROF_RENDER],hwm_prof[HWM_PROF_EXTRAS],hwm_prof[HWM_PROF_PREVIEW],hwm_prof[HWM_PROF_FEEDBACK],hwm_prof[HWM_PROF_TICK_DRAGGING],
-                (unsigned long long)hwm_prof_drag_ticks,(unsigned long long)hwm_prof_drag_events,(unsigned long long)hwm_feedback_shows,(double)hwm_feedback_show_max_ms,hwm_max_frame_ms,hwm_plane_border_id,(double)hwm_display_hz);
+                (unsigned long long)hwm_prof_drag_ticks,(unsigned long long)hwm_prof_drag_events,(unsigned long long)hwm_feedback_shows,(double)hwm_feedback_show_max_ms,hwm_max_frame_ms,hwm_plane_border_id,(double)hwm_display_hz,hwm_prof[HWM_PROF_BORDER],hwm_prof[HWM_PROF_RELEASE],hwm_prof[HWM_PROF_HOVER],hwm_prof[HWM_PROF_BORDER_PAINT],hwm_prof[HWM_PROF_BORDER_SHAPE],hwm_plane_border_atomic()?"true":"false");
         if(token_equals(command,"profile-reset")) { memset(hwm_prof,0,sizeof(hwm_prof)); hwm_drag_present_count=0; hwm_drag_present_total_ms=hwm_drag_present_max_ms=0; hwm_prof_drag_ticks=0; hwm_prof_drag_events=0; hwm_feedback_shows=0; hwm_feedback_show_max_ms=0; hwm_ax_resizes_sent=0; hwm_ax_resizes_coalesced=0; hwm_ax_resize_max_ms=0; hwm_max_frame_ms=0; hwm_slow_frames=0; hwm_frames=0; }
         return;
     }
@@ -1985,7 +2350,9 @@ static void horizontal_command(FILE *rsp, char *message)
         uint64_t frames=hwm_frame_log_count<HWM_FRAME_LOG?hwm_frame_log_count:HWM_FRAME_LOG, inputs=hwm_input_log_count<HWM_FRAME_LOG?hwm_input_log_count:HWM_FRAME_LOG;
         fprintf(rsp,"{\"frames\":[");
         for(uint64_t i=0;i<frames;i++) { uint64_t k=(hwm_frame_log_count-frames+i)%HWM_FRAME_LOG;
-            fprintf(rsp,"%s[%.5f,%.2f,%.3f,%.3f]",i?",":"",hwm_frame_log[k].time,hwm_frame_log[k].offset,hwm_frame_log[k].tick_ms,hwm_frame_log[k].latency_ms); }
+            // Camera y and zoom come last, so readers of the first four fields are unchanged.
+            fprintf(rsp,"%s[%.5f,%.2f,%.3f,%.3f,%.2f,%.5f]",i?",":"",hwm_frame_log[k].time,hwm_frame_log[k].offset,hwm_frame_log[k].tick_ms,hwm_frame_log[k].latency_ms,
+                    hwm_frame_log[k].camera_y,hwm_frame_log[k].scale); }
         fprintf(rsp,"],\"inputs\":[");
         for(uint64_t i=0;i<inputs;i++) { uint64_t k=(hwm_input_log_count-inputs+i)%HWM_FRAME_LOG;
             fprintf(rsp,"%s[%.5f,%.2f]",i?",":"",hwm_input_log[k].time,hwm_input_log[k].offset); }
@@ -1998,7 +2365,7 @@ static void horizontal_command(FILE *rsp, char *message)
         return;
     }
     if (token_equals(command,"close")) { hwm_action(HWM_CLOSE); return; }
-    if (token_equals(command,"quit")) { hwm_stop_requested = 1; return; }
+    if (token_equals(command,"quit")) { hwm_stop_requested = 1; hwm_wake(); return; }
     struct view *view = hwm_view();
     if (token_equals(command,"input-status")) {
         CFMachPortRef tap=__atomic_load_n(&g_mouse_state.handle,__ATOMIC_RELAXED);
@@ -2110,6 +2477,26 @@ static TanaApplicationDelegate *tana_application_delegate;
 - (void)named:(NSMenuItem *)sender { event_loop_post(&g_event_loop,HORIZONTAL_INPUT,strdup([sender.representedObject UTF8String]),HWM_NAMED_ACTION); }
 @end
 static HorizontalMenu *hwm_menu;
+/* The menu bar icon carries the state a fading HUD cannot: paused, or the
+ * window helper lost. Callable from any thread. */
+static void hwm_menu_status(void)
+{
+    bool paused=hwm_paused,lost=hwm_helper_lost_shown;
+    dispatch_async(dispatch_get_main_queue(),^{
+        if(!hwm_menu) return;
+        NSString *name=lost ? @"exclamationmark.triangle" : paused ? @"pause.circle" : @"square.grid.2x2";
+        NSString *label=lost ? @"Tana2D: window helper disconnected" : paused ? @"Tana2D: paused" : @"Tana2D window manager";
+        NSImage *symbol=[NSImage imageWithSystemSymbolName:name accessibilityDescription:label];
+        if(symbol) { symbol.template=YES; hwm_menu.item.button.image=symbol; }
+        hwm_menu.item.button.accessibilityLabel=label;
+        hwm_menu.item.button.toolTip=lost ? @"Tana2D — the window helper is disconnected. Open Setup to reconnect." :
+                                      paused ? @"Tana2D — paused. Choose Resume Tana2D to continue." : @"Tana2D — an open two-dimensional workspace";
+        for(NSMenuItem *item in hwm_menu.item.menu.itemArray) {
+            if([item.representedObject isEqual:@"pause"]) item.title=paused ? @"Resume Tana2D" : @"Pause Tana2D";
+            if([item.representedObject isEqual:@"setup"] && item.tag==1) item.title=lost ? @"Reconnect Window Helper…" : @"Setup & Settings…";
+        }
+    });
+}
 static void hwm_menu_refresh_bindings(void)
 {
     if(!hwm_menu) return;
@@ -2137,13 +2524,14 @@ static void hwm_menu_begin(void)
     NSMenuItem *palette=[[[NSMenuItem alloc] initWithTitle:@"Command Palette…" action:@selector(named:) keyEquivalent:@""] autorelease];
     palette.target=hwm_menu; palette.representedObject=@"commands"; [menu addItem:palette];
     NSMenuItem *setup=[[[NSMenuItem alloc] initWithTitle:@"Setup & Settings…" action:@selector(named:) keyEquivalent:@""] autorelease];
-    setup.target=hwm_menu; setup.representedObject=@"setup"; [menu addItem:setup];
+    setup.target=hwm_menu; setup.representedObject=@"setup"; setup.tag=1; [menu addItem:setup];
     hwm_menu.item.button.accessibilityLabel=@"Tana2D window manager";
     for(NSArray *section in hwm_command_sections()) {
         [menu addItem:[NSMenuItem separatorItem]];
         if(@available(macOS 14.0,*)) [menu addItem:[NSMenuItem sectionHeaderWithTitle:section[0]]];
         for(NSArray *entry in section[1]) {
-            NSMenuItem *item=[[[NSMenuItem alloc] initWithTitle:entry[1] action:@selector(named:) keyEquivalent:@""] autorelease];
+            if([entry[0] isEqual:@"setup"]) continue; // Already first in the menu.
+            NSMenuItem *item=[[[NSMenuItem alloc] initWithTitle:[entry[0] isEqual:@"pause"] ? @"Pause Tana2D" : entry[1] action:@selector(named:) keyEquivalent:@""] autorelease];
             item.target=hwm_menu; item.representedObject=entry[0]; [menu addItem:item];
         }
     }
@@ -2355,7 +2743,7 @@ static void horizontal_begin(void)
     // Direct WindowServer placement does not depend on Dock's optional
     // set-front-window signature. AX supplies window activation separately.
     hwm_backend_ok = scripting_addition_request_handshake(helper_version,sizeof(helper_version),&helper_attributes) &&
-                     !strcmp(helper_version,OSAX_VERSION) && (helper_attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
+                     OSAX_VERSION_COMPATIBLE(helper_version) && (helper_attributes & OSAX_ATTRIB_PLANE_TRANSFORM);
     if (!hwm_backend_ok) error("Tana2D: window helper is unavailable; no windows were moved. Open Tana2D Setup & Settings to reconnect.\n");
     hwm_config_begin();
     hwm_ready = true;
@@ -2370,6 +2758,8 @@ static void horizontal_begin(void)
             if (window_space(window->id) != hwm_space) window_manager_send_window_to_space(&g_space_manager,&g_window_manager,window,hwm_space,false);
             if (window_check_flag(window,WINDOW_FLOAT)) scripting_addition_set_layer(window->id,LAYER_ABOVE);
             uint8_t ordered=0; SLSWindowIsOrderedIn(g_connection,window->id,&ordered);
+            // A window closed but kept by its application (Slack, say) joins when shown again.
+            if (!ordered) window->strip_ordered_out=true;
             if (ordered && window_manager_should_manage_window(window) && !window_manager_find_managed_window(&g_window_manager,window)) {
                 struct view *view = space_manager_tile_window_on_space(&g_space_manager,window,hwm_space);
                 window_manager_add_managed_window(&g_window_manager,window,view);
@@ -2458,6 +2848,11 @@ static void hwm_start_clock(void)
                 dispatch_source_set_timer(hwm_fallback_timer,dispatch_time(DISPATCH_TIME_NOW,0),fast?NSEC_PER_SEC/120:NSEC_PER_SEC/10,(fast?1:10)*NSEC_PER_MSEC);
             }
             if(stand_in) hwm_display_tick(NULL,NULL,NULL,0,NULL,NULL);
+            else if(hwm_ready && !hwm_backend_ok && !__atomic_load_n(&hwm_active,__ATOMIC_ACQUIRE)) {
+                // Retry a helper that is not answering at the sweep's pace.
+                bool idle=false;
+                if(__atomic_compare_exchange_n(&hwm_tick_pending,&idle,true,false,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED)) event_loop_post(&g_event_loop,HORIZONTAL_TICK,NULL,0);
+            }
         });
         dispatch_resume(hwm_fallback_timer);
     }
@@ -2478,6 +2873,9 @@ static void horizontal_ordered(uint32_t wid)
         w->strip_ordered_out=true;
         space_manager_untile_window(view,w);
         window_manager_remove_managed_window(&g_window_manager,wid);
+    } else if(!ordered && !view && w->is_root) {
+        // Hidden while unmanaged (its app hidden, say): still adopt it when it returns.
+        w->strip_ordered_out=true;
     } else if(ordered && w->strip_ordered_out) {
         w->strip_ordered_out=false;
         if(window_manager_should_manage_window(w) && !view) {
@@ -2487,6 +2885,71 @@ static void horizontal_ordered(uint32_t wid)
     }
 }
 
+/* An application's window-created notification can be lost, or arrive before
+ * the window answers Accessibility (Chrome, opening a window while busy). Such
+ * a window is never tracked, so it stays where it opened while the plane moves
+ * past it. WindowServer still lists it: ask its application again, backing off
+ * for windows that never resolve (helper surfaces with no Accessibility). */
+static bool hwm_adopt_in_flight;
+static void hwm_adopt_missed_windows(double now)
+{
+    enum { MISSED = 64 };
+    static struct { uint32_t wid; double next, delay; } missed[MISSED];
+    int count=0;
+    uint32_t *list=space_window_list(hwm_space,&count,false);
+    if(!list) return;
+    // Forget windows that closed or left this desktop.
+    for(int j=0;j<MISSED;++j) {
+        bool listed=false;
+        for(int i=0;i<count && !listed;++i) listed=list[i]==missed[j].wid;
+        if(!listed) missed[j].wid=0;
+    }
+    for(int i=0;i<count;++i) {
+        uint32_t wid=list[i];
+        if(window_manager_find_window(&g_window_manager,wid)) continue;
+        int slot=-1,free_slot=-1;
+        for(int j=0;j<MISSED;++j) {
+            if(missed[j].wid==wid) { slot=j; break; }
+            if(free_slot<0 && (!missed[j].wid || window_manager_find_window(&g_window_manager,missed[j].wid))) free_slot=j;
+        }
+        if(slot<0) {
+            if(free_slot<0) continue;
+            slot=free_slot; missed[slot].wid=wid; missed[slot].delay=.5; missed[slot].next=now+.5; continue;
+        }
+        if(now<missed[slot].next) continue;
+        missed[slot].delay=fmin(missed[slot].delay*2,60); missed[slot].next=now+missed[slot].delay;
+        int connection=0; pid_t pid=0;
+        if(SLSGetWindowOwner(g_connection,wid,&connection)!=kCGErrorSuccess || SLSConnectionGetPID(connection,&pid)!=kCGErrorSuccess) continue;
+        if(!window_manager_find_application(&g_window_manager,pid)) continue;
+        /* The busy application this targets can hold an Accessibility query
+         * for the full global timeout. Ask it off the event loop, which also
+         * runs the frames, with a short timeout of its own. The slot keeps its
+         * backoff: a window yabai then declines to manage is asked again
+         * only at the backed-off pace, and the slot is reused once tracked. */
+        if(__atomic_exchange_n(&hwm_adopt_in_flight,true,__ATOMIC_ACQ_REL)) continue;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
+            AXUIElementRef app=AXUIElementCreateApplication(pid);
+            CFTypeRef windows=NULL;
+            if(app) {
+                AXUIElementSetMessagingTimeout(app,.25f);
+                AXUIElementCopyAttributeValue(app,kAXWindowsAttribute,&windows);
+                CFRelease(app);
+            }
+            if(windows && CFGetTypeID(windows)==CFArrayGetTypeID()) {
+                for(CFIndex k=0;k<CFArrayGetCount(windows);++k) {
+                    AXUIElementRef ref=CFArrayGetValueAtIndex(windows,k);
+                    if(ax_window_id(ref)!=wid) continue;
+                    event_loop_post(&g_event_loop,WINDOW_CREATED,(void *)CFRetain(ref),0);
+                    break;
+                }
+            }
+            if(windows) CFRelease(windows);
+            __atomic_store_n(&hwm_adopt_in_flight,false,__ATOMIC_RELEASE);
+        });
+    }
+}
+
+extern CGRect SLSWindowIteratorGetBounds(CFTypeRef iterator);
 static void horizontal_reconcile(void)
 {
     __atomic_store_n(&hwm_reconcile_pending,false,__ATOMIC_RELEASE);
@@ -2502,7 +2965,14 @@ static void horizontal_reconcile(void)
     static double last_sweep;
     if(now-hwm_drawn_time>1 && now-last_sweep<.5) return;
     last_sweep=now;
+    horizontal_event_settle(); // Everything drawn has landed before WindowServer is asked.
+    hwm_adopt_missed_windows(now);
     if(hwm_borders_external) hwm_visibility_prepare(hwm_view(),now);
+    /* Settled tiles whose native frame is compared below. Their bounds come
+     * from one WindowServer query rather than a round trip per window, which
+     * was half of this sweep's cost twice a second at rest. */
+    enum { HWM_SWEEP_MAX=256 };
+    uint32_t sweep[HWM_SWEEP_MAX]; int swept=0;
     // Retained Cocoa windows can close without an AX destruction notification.
     // WindowServer ordering catches that case without polling Accessibility.
     table_for(struct window *w,g_window_manager.window, {
@@ -2520,23 +2990,39 @@ static void horizontal_reconcile(void)
            !w->strip_ordered_out && !hwm_workflow_tab_hidden(w) && w->id!=hwm_drag_window && g_mouse_state.window!=w &&
            !hwm_view_in_motion(view,now) && !w->strip_size_pending &&
            now-w->strip_start>hwm_duration+.1 && !CGRectIsNull(w->strip_last_frame)) {
-            // AppKit can constrain an off-screen window after our final move.
-            // A delayed notification may have been suppressed during animation;
-            // compare settled WindowServer positions instead of trusting the cache.
-            CGRect actual=CGRectNull;
-            if(SLSGetWindowBounds(g_connection,w->id,&actual)==kCGErrorSuccess) {
-                bool resized=actual.size.width>=100 && actual.size.height>=100 &&
-                    (fabs(actual.size.width-w->strip_width)>.5 || fabs(actual.size.height-w->strip_height)>.5);
-                if(resized || fabs(actual.origin.x-w->frame.origin.x)>.5 || fabs(actual.origin.y-w->frame.origin.y)>.5) {
-                    // Apps do not always emit AX resize notifications. Reconcile
-                    // the final native size as well as its independent anchor.
-                    w->frame=actual; w->strip_native_resize_pending|=resized;
-                    w->strip_transform_dirty=true;
-                    hwm_wake();
-                }
-            }
+            if(swept<HWM_SWEEP_MAX) sweep[swept++]=w->id;
         }
     })
+    if(!swept) return;
+    CFNumberRef numbers[HWM_SWEEP_MAX];
+    for(int i=0;i<swept;i++) numbers[i]=CFNumberCreate(NULL,kCFNumberSInt32Type,&sweep[i]);
+    CFArrayRef ids=CFArrayCreate(NULL,(const void **)numbers,swept,&kCFTypeArrayCallBacks);
+    for(int i=0;i<swept;i++) CFRelease(numbers[i]);
+    CFTypeRef query=ids ? SLSWindowQueryWindows(g_connection,ids,swept) : NULL;
+    CFTypeRef iterator=query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+    while(iterator && SLSWindowIteratorAdvance(iterator)) {
+        struct window *w=window_manager_find_window(&g_window_manager,SLSWindowIteratorGetWindowID(iterator));
+        if(!w) continue;
+        // AppKit can constrain an off-screen window after our final move.
+        // A delayed notification may have been suppressed during animation;
+        // compare settled WindowServer positions instead of trusting the cache.
+        // These are the native bounds SLSGetWindowBounds reports, presentation
+        // bounds notwithstanding.
+        CGRect actual=SLSWindowIteratorGetBounds(iterator);
+        if(!(actual.size.width>0) || !(actual.size.height>0)) continue;
+        bool resized=actual.size.width>=100 && actual.size.height>=100 &&
+            (fabs(actual.size.width-w->strip_width)>.5 || fabs(actual.size.height-w->strip_height)>.5);
+        if(resized || fabs(actual.origin.x-w->frame.origin.x)>.5 || fabs(actual.origin.y-w->frame.origin.y)>.5) {
+            // Apps do not always emit AX resize notifications. Reconcile
+            // the final native size as well as its independent anchor.
+            w->frame=actual; w->strip_native_resize_pending|=resized;
+            w->strip_transform_dirty=true;
+            hwm_wake();
+        }
+    }
+    if(iterator) CFRelease(iterator);
+    if(query) CFRelease(query);
+    if(ids) CFRelease(ids);
 }
 
 /* Tana2D named the window when it asked for an activation, so the report that
@@ -2545,7 +3031,6 @@ static void horizontal_reconcile(void)
  * application busy activating, on the thread drawing the settle animation.
  * The application's own focus notification still follows and corrects this
  * should it have chosen otherwise. */
-static uint32_t hwm_requested_focus; static double hwm_requested_focus_time;
 static uint32_t horizontal_expected_focus(struct application *application)
 {
     if(!hwm_ready || !hwm_requested_focus || hwm_now()-hwm_requested_focus_time>.5) return 0;
@@ -2563,7 +3048,9 @@ static void horizontal_focus_requested(uint32_t wid)
 static void horizontal_focus_transition(struct window *previous,struct window *next)
 {
     if(!hwm_ready || !previous || previous==next) return;
-    hwm_feedback_focus(previous,next);
+    // While paused, remember the focus for resume without waking the clock.
+    if(!hwm_paused) hwm_feedback_focus(previous,next);
+    else if(next) hwm_feedback_focus_id=next->id;
     if(next) {
         hwm_alpha_focus=next->id; if(hwm_inactive_alpha<1 && !hwm_paused) hwm_alpha_sync(false);
         hwm_attention_seen(next);
@@ -2573,7 +3060,12 @@ static void horizontal_focus_transition(struct window *previous,struct window *n
     hwm_previous_focus=previous->id; hwm_previous_focus_time=hwm_now();
     struct view *view=hwm_view();
     hwm_previous_focus_offset=view?hwm_offset(view,hwm_now()):0;
-    horizontal_ordered(previous->id);
+    /* Focus leaving a window can mean it closed without saying so. Not when
+     * Tana2D moved focus itself (hover, navigation): the pointer has only
+     * left it. That check is a WindowServer round trip on every hover
+     * handoff; the housekeeping sweep still looks at every window. */
+    bool requested=next && next->id==hwm_requested_focus && hwm_now()-hwm_requested_focus_time<.5;
+    if(!requested) horizontal_ordered(previous->id);
 }
 
 #include "strip_config_runtime.m"

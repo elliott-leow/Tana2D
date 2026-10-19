@@ -71,6 +71,14 @@ static inline HWMPlaneCamera hwm_plane_camera_mix(HWMPlaneCamera from,HWMPlaneCa
 
 /* World coordinates can grow without bound; WindowServer coordinates cannot.
  * Clamp only the physical submission, preserving the saved world point. */
+/* Backing scale of the plane's display (set when the frame clock binds to
+ * it), and a screen coordinate snapped to its device-pixel grid. On Retina,
+ * whole points make slow motion advance in two-pixel steps. */
+#ifndef HWM_SURFACE_SCALE_DEFINED
+#define HWM_SURFACE_SCALE_DEFINED
+static double hwm_surface_scale=1;
+static inline double hwm_pixel(double v) { return round(v*hwm_surface_scale)/hwm_surface_scale; }
+#endif
 static inline double hwm_plane_project_physical(double world,double camera,double origin,double scale)
 {
     if(!isfinite(world) || !isfinite(camera) || !isfinite(origin)) return origin;
@@ -504,7 +512,64 @@ static inline HWMPlanePoint hwm_plane_edge_pan(HWMPlaneEdgePan *state,HWMPlaneRe
     return (HWMPlanePoint){x*rate,y*rate};
 }
 
-/* Hover focus has no dwell. Centering is separate: the window must already be
+/* Hover focus follows intent, not every window the pointer passes over.
+ * Each focus change activates an application: it redraws both windows, and
+ * WindowServer, Dock, the menu bar and the system's usage and window
+ * services all react. A quick sweep across a row of windows did that for
+ * every window on the way, which kept several processes busy at once. Focus
+ * goes to the window under the pointer once the pointer slows over it, stops
+ * (the caller checks again HWM_FOCUS_SETTLE after the last movement), or has
+ * stayed in it for HWM_FOCUS_DWELL. Speeds are display points per second. */
+#define HWM_FOCUS_SETTLE_SPEED 450.0
+#define HWM_FOCUS_SETTLE .04
+#define HWM_FOCUS_DWELL .8
+/* However the pointer moves, hover hands focus on at most this often; the
+ * window it ends up over is focused once the interval has passed. */
+#define HWM_FOCUS_INTERVAL .15
+typedef struct { double t[8],x[8],y[8]; unsigned n; uint32_t window; double entered; } HWMFocusIntent;
+static inline void hwm_focus_intent_note(HWMFocusIntent *s,double x,double y,double now)
+{
+    if(!s || !isfinite(x) || !isfinite(y) || !isfinite(now)) return;
+    if(s->n && now<s->t[(s->n-1)%8]) s->n=0;
+    unsigned i=s->n++%8; s->t[i]=now; s->x[i]=x; s->y[i]=y;
+}
+/* How fast the pointer is moving at `now`; one that has stopped reporting is still. */
+static inline double hwm_focus_intent_speed(const HWMFocusIntent *s,double now)
+{
+    if(!s || !s->n) return 0;
+    unsigned last=(s->n-1)%8;
+    if(now-s->t[last]>=HWM_FOCUS_SETTLE) return 0;
+    unsigned available=s->n<8 ? s->n : 8, from=last;
+    for(unsigned k=1;k<available;k++) {
+        unsigned i=(s->n-1-k)%8; from=i;
+        if(s->t[last]-s->t[i]>=HWM_FOCUS_SETTLE) break;
+    }
+    if(from==last) return 0; // A first report after rest: nothing has moved yet.
+    double dt=s->t[last]-s->t[from];
+    // Reports bunched within a few milliseconds say nothing reliable about speed.
+    if(dt<.004) return INFINITY;
+    /* Along the path, not end to end: a quick back-and-forth between two
+     * windows ends each pass with a reversal, where net displacement cancels
+     * and read as slow, focusing every window it bounced in. */
+    double travelled=0;
+    for(unsigned i=from;i!=last;i=(i+1)%8) { unsigned j=(i+1)%8; travelled+=hypot(s->x[j]-s->x[i],s->y[j]-s->y[i]); }
+    return travelled/dt;
+}
+/* The pointer is over `window` at (x, y). True when focus should go there now. */
+static inline bool hwm_focus_intent_sample(HWMFocusIntent *s,uint32_t window,double x,double y,double now)
+{
+    if(!s) return true;
+    hwm_focus_intent_note(s,x,y,now);
+    if(s->window!=window) { s->window=window; s->entered=now; }
+    return now-s->entered>=HWM_FOCUS_DWELL || hwm_focus_intent_speed(s,now)<=HWM_FOCUS_SETTLE_SPEED;
+}
+/* A check after the pointer went quiet: nothing new is noted. */
+static inline bool hwm_focus_intent_settled(const HWMFocusIntent *s,uint32_t window,double now)
+{
+    return s && s->window==window && (now-s->entered>=HWM_FOCUS_DWELL || hwm_focus_intent_speed(s,now)<=HWM_FOCUS_SETTLE_SPEED);
+}
+
+/* Centering is separate from focus: the window must already be
  * near the viewport center, and several pointer samples must approach its
  * interior. Merely crossing an edge or parking the cursor never recenters. */
 typedef struct {

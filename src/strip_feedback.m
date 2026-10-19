@@ -35,6 +35,7 @@ static double hwm_dim_strength;      /* darkness laid over unfocused tiles; 0 is
 static double hwm_parallax;          /* how far the wallpaper may slide, as a share of the screen; 0 is off */
 static _Atomic bool hwm_borders_external; /* an external border tool is running */
 static bool hwm_border_on(void) { return hwm_border_mode!=0; }
+static _Atomic pid_t hwm_borders_pid; /* that tool's process, once found */
 
 static bool hwm_external_borders_running(void)
 {
@@ -46,7 +47,7 @@ static bool hwm_external_borders_running(void)
     bool found=false;
     for(int i=0;i<count && !found;i++) {
         char name[64]={0};
-        if(proc_name(pids[i],name,sizeof(name))>0 && strcmp(name,"borders")==0) found=true;
+        if(proc_name(pids[i],name,sizeof(name))>0 && strcmp(name,"borders")==0) { found=true; atomic_store(&hwm_borders_pid,pids[i]); }
     }
     free(pids);
     return found;
@@ -207,9 +208,18 @@ static NSColor *hwm_color(NSArray *rgba)
     // This runs on the thread that also carries every pointer event, so it
     // does nothing it does not have to: the frame is only set when it changes.
     if(!CGRectEqualToRect(screen,self.screen)) [self.panel setFrame:hwm_overview_panel_frame(screen) display:NO];
-    self.screen=screen; self.tabTargets=state[@"tabs"];
+    BOOL moving=[state[@"moving"] boolValue];
+    self.screen=screen; self.tabTargets=moving ? @[] : state[@"tabs"];
     double height=screen.size.height;
     BOOL reduce=[NSWorkspace sharedWorkspace].accessibilityDisplayShouldReduceMotion;
+    /* Tab bars are positioned by AppKit, a frame behind the helper-moved
+     * windows. While the camera moves they step aside at once; they return,
+     * already in place, with a short fade once it rests. */
+    float tabsOpacity=moving ? 0 : 1;
+    if(self.tabs.opacity!=tabsOpacity) {
+        [CATransaction begin]; [CATransaction setAnimationDuration:moving || reduce ? 0 : .18];
+        self.tabs.opacity=tabsOpacity; [CATransaction commit];
+    }
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     self.tabs.frame=CGRectMake(0,0,screen.size.width,height);
 
@@ -258,6 +268,8 @@ static NSColor *hwm_color(NSArray *rgba)
     self.attention.frame=CGRectMake(0,0,screen.size.width,height);
     self.attention.path=wanted; CGPathRelease(wanted);
     self.attention.lineWidth=width; self.attention.strokeColor=hwm_color(state[@"attentionColor"]).CGColor;
+    // Like dims and tab bars, attention outlines step aside while the camera moves.
+    self.attention.hidden=moving;
     self.focus.colors=@[(id)hwm_color(state[@"active"]).CGColor,(id)hwm_color(state[@"activeEnd"]).CGColor];
     BOOL focus=state[@"focus"]!=nil, changed=[state[@"focusChanged"] boolValue] || focus!=self.hasFocus;
     if(focus) {
@@ -299,7 +311,12 @@ static NSColor *hwm_color(NSArray *rgba)
     self.mapBack.opacity=showMap?1:0; self.wall.opacity=showWall?1:0;
     self.shelfBack.opacity=showShelves?1:0; self.shelfLabel.opacity=showShelves?1:0; self.shelfLabelBack.opacity=showShelves?1:0;
     [CATransaction commit];
-    if(!self.panel.visible || changed) [self.panel orderFrontRegardless];
+    /* A full-screen panel above every window costs WindowServer a composite
+     * of the whole screen whenever anything under it redraws, even when it
+     * draws nothing. It is on screen only while it shows something. */
+    BOOL persistent=[state[@"tabs"] count] || state[@"drag"] || [state[@"others"] count] || asking.count || focus;
+    if(!persistent && !showMap && !showWall && !showShelves) { if(self.panel.visible) [self.panel orderOut:nil]; }
+    else if(!self.panel.visible || changed) [self.panel orderFrontRegardless];
     uint64_t generation=++self.generation;
     double spent=(CACurrentMediaTime()-began)*1000;
     ++hwm_feedback_shows; if(spent>hwm_feedback_show_max_ms) hwm_feedback_show_max_ms=spent;
@@ -308,6 +325,10 @@ static NSColor *hwm_color(NSArray *rgba)
         [CATransaction begin]; [CATransaction setAnimationDuration:reduce?0:.25];
         self.mapBack.opacity=0; self.wall.opacity=0; self.shelfBack.opacity=0; self.shelfLabel.opacity=0; self.shelfLabelBack.opacity=0;
         [CATransaction commit];
+        // Once that has faded, nothing is left to show.
+        if(!persistent) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            if(self.generation==generation) [self.panel orderOut:nil];
+        });
     });
 }
 /* The gradient turns on the render server's clock; this process does nothing per frame. */
@@ -385,8 +406,12 @@ static NSColor *hwm_color(NSArray *rgba)
         }
         layer.frame=[self flip:f]; layer.cornerRadius=radius;
         [CATransaction commit];
-        float target=[entry[2] boolValue] ? 0 : (float)strength;
-        if(fabsf(layer.opacity-target)>.001f) { [CATransaction begin]; [CATransaction setAnimationDuration:reduce ? 0 : .2]; layer.opacity=target; [CATransaction commit]; }
+        /* While the camera moves, dims would trail their windows by a frame
+         * (AppKit versus the helper's transform), so they drop out at once and
+         * fade back in at rest. */
+        BOOL moving=[state[@"moving"] boolValue];
+        float target=[entry[2] boolValue] || moving ? 0 : (float)strength;
+        if(fabsf(layer.opacity-target)>.001f) { [CATransaction begin]; [CATransaction setAnimationDuration:reduce || moving ? 0 : .2]; layer.opacity=target; [CATransaction commit]; }
         [live addObject:entry[0]];
     }
     for(NSNumber *key in self.dims.allKeys) if(![live containsObject:key]) { [(CALayer *)self.dims[key] removeFromSuperlayer]; [self.dims removeObjectForKey:key]; }
@@ -505,9 +530,24 @@ static void hwm_feedback_tick(struct view *view,double now)
     if(hwm_overview_active || hwm_paused || hwm_suspended) { hwm_feedback_hide(); return; }
     static double external_check=-10;
     if(!hwm_drag_window && !hwm_edge_window && !hwm_view_in_motion(view,now) && now-external_check>10) { external_check=now; hwm_external_borders_refresh(); }
-    bool expected=false;
-    if(!atomic_compare_exchange_strong(&hwm_feedback_pending,&expected,true)) return;
     CGRect screen=hwm_screen(view),bounds=hwm_bounds(view);
+    /* Usually nothing here depends on where windows are: no dimming,
+     * wallpaper, tab bars or attention outlines. Then the snapshot only
+     * changes with configuration, so skip building ~a dozen Foundation
+     * objects on every frame of a pan just to find it equal. */
+    static CGRect static_screen; static unsigned static_generation; static bool static_borders,static_valid;
+    bool borders_now=hwm_border_mode!=0 && (hwm_border_on() || hwm_plane_fit_active);
+    bool dynamic=hwm_dim_strength>0 || hwm_parallax>0;
+    for(struct window_node *n=dynamic?NULL:window_node_find_first_leaf(view->root);n && !dynamic;n=window_node_find_next_leaf(n)) for(int j=0;j<n->window_count && !dynamic;j++) {
+        struct window *w=hwm_tile(n->window_list[j]); if(!w) continue;
+        double tab_y,tab_height;
+        dynamic=w->strip_attention || hwm_workflow_tab_geometry(view,w,&tab_y,&tab_height);
+    }
+    if(!dynamic && static_valid && hwm_feedback_last && static_generation==hwm_border_generation &&
+       static_borders==borders_now && CGRectEqualToRect(static_screen,screen)) return;
+    static_valid=!dynamic; static_generation=hwm_border_generation; static_borders=borders_now; static_screen=screen;
+    bool expected=false;
+    if(!atomic_compare_exchange_strong(&hwm_feedback_pending,&expected,true)) { static_valid=false; return; }
     NSMutableArray *tabs=[NSMutableArray array],*others=[NSMutableArray array];
     NSMutableArray *dim=[NSMutableArray array],*asking=[NSMutableArray array];
     /* Members are collected once in traversal order.  The old tab pass found
@@ -546,6 +586,17 @@ static void hwm_feedback_tick(struct view *view,double now)
         if(!CGRectIntersectsRect(shown,screen)) continue;
         hwm_feedback_append_tab_targets(tabs,tabMembers[@(w->strip_column)],w,shown,screen,y,now);
     }
+    /* While the camera moves, keep the dims and tab bars where they rested
+     * and mark them hidden. The snapshot then stays equal through a pan, so
+     * it costs the main thread nothing, and nothing trails the windows. */
+    bool camera_moving=hwm_view_in_motion(view,now) || __atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED);
+    static NSArray *rest_dim,*rest_tabs,*rest_asking;
+    NSArray *dim_out=dim,*tabs_out=tabs,*asking_out=asking;
+    if(camera_moving && rest_dim) { dim_out=rest_dim; tabs_out=rest_tabs; asking_out=rest_asking; }
+    else if(!camera_moving) {
+        [rest_dim release]; rest_dim=[dim copy]; [rest_tabs release]; rest_tabs=[tabs copy];
+        [rest_asking release]; rest_asking=[asking copy];
+    }
     // Only what is actually drawn goes into the snapshot. An unchanged
     // snapshot is not sent at all, so a still strip costs the main thread nothing
     // however long the tick keeps running (during a drag it runs every frame).
@@ -557,10 +608,10 @@ static void hwm_feedback_tick(struct view *view,double now)
                                           @"label":hwm_shelf_label((int)lround(fmax(0,fmin(HWM_SHELVES-1,hwm_shelf_camera(now)))))} : @{@"show":@NO,@"count":@(shelf_count)};
     NSMutableDictionary *state=[NSMutableDictionary dictionaryWithDictionary:@{@"screen":[NSValue valueWithRect:screen],
         @"columns":@[],@"total":@1,@"offset":@0,@"viewport":@(bounds.size.width),
-        @"map":@(map),@"wall":@(wall),@"wallRight":@(wall && view->strip_offset>1),@"tabs":tabs,@"others":others,
+        @"map":@(map),@"wall":@(wall),@"wallRight":@(wall && view->strip_offset>1),@"tabs":tabs_out,@"others":others,@"moving":@(camera_moving && rest_dim!=nil),
         @"borderWidth":@(hwm_border_width),@"borderRadius":@(hwm_border_radius),@"active":hwm_rgba(hwm_border_active),
         @"activeEnd":hwm_rgba(hwm_border_active_end),@"inactive":hwm_rgba(hwm_border_inactive),
-        @"attention":asking,@"attentionColor":hwm_rgba(hwm_border_attention),@"dim":dim,@"dimStrength":@(hwm_dim_strength),
+        @"attention":asking_out,@"attentionColor":hwm_rgba(hwm_border_attention),@"dim":dim_out,@"dimStrength":@(hwm_dim_strength),
         @"shelves":shelf_state,@"spin":@(borders ? hwm_border_spin : 0),@"parallax":@(hwm_parallax)}];
     if(hwm_parallax>0) {
         // Saturating: however long the strip, the picture never runs out.

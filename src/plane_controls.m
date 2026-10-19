@@ -127,7 +127,9 @@ static void hwm_plane_controls_update(bool visible,double scale)
     if(!isfinite(scale) || scale<=0) scale=1;
     bool previous=atomic_exchange(&hwm_camera_controls_visible,visible);
     double oldScale=atomic_exchange(&hwm_camera_controls_scale,scale);
-    if(previous==visible && lround(oldScale*100)==lround(scale*100)) return;
+    // A hidden panel's label is set when it is shown: a pinch need not
+    // relabel and order out an invisible panel at every percent.
+    if(previous==visible && (!visible || lround(oldScale*100)==lround(scale*100))) return;
     if(atomic_exchange(&hwm_camera_controls_pending,true)) return;
     dispatch_async(dispatch_get_main_queue(),^{
         atomic_store(&hwm_camera_controls_pending,false);

@@ -30,6 +30,8 @@ static CGError SLSGetWindowBounds(int connection,uint32_t wid,CGRect *out) { (vo
 static CFArrayRef SLSCopyAssociatedWindows(int connection,uint32_t wid) { (void)connection; (void)wid; return NULL; }
 static struct window *window_manager_find_window(void *manager,uint32_t wid) { (void)manager; (void)wid; return NULL; }
 static struct view *window_manager_find_managed_window(void *manager,struct window *window) { (void)manager; (void)window; return NULL; }
+static bool plane_alpha_supported;
+static bool scripting_addition_plane_alpha_supported(void) { return plane_alpha_supported; }
 static bool scripting_addition_set_opacity(uint32_t wid,float value,float duration) { (void)duration; alpha[wid]=value; return true; }
 static bool scripting_addition_move_window(uint32_t wid,double x,double y) { (void)wid; (void)x; (void)y; return true; }
 static CFArrayRef test_window_list(CGWindowListOption option,CGWindowID wid)
@@ -39,6 +41,9 @@ static CFArrayRef test_window_list(CGWindowListOption option,CGWindowID wid)
 }
 
 #define CGWindowListCopyWindowInfo test_window_list
+static void scripting_addition_batch_begin(void) {}
+static bool scripting_addition_batch_end(void) { return true; }
+static void hwm_batch_failed(void) {}
 #include "../src/strip_visibility.m"
 #undef CGWindowListCopyWindowInfo
 #undef HWM_VISIBILITY_SCHEDULE

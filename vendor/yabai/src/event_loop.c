@@ -722,6 +722,8 @@ static EVENT_HANDLER(WINDOW_FOCUSED)
 static EVENT_HANDLER(WINDOW_MOVED)
 {
     uint32_t window_id = (uint32_t)(intptr_t) context;
+    // A move after this point queues a fresh notification.
+    horizontal_moved_release(window_id);
     struct window *window = window_manager_find_window(&g_window_manager, window_id);
     if (!window) return;
 
@@ -738,6 +740,7 @@ static EVENT_HANDLER(WINDOW_MOVED)
     // Strip movement is owned by WindowServer. Avoid a blocking AX request and
     // its edge-clamped coordinates on every display-synchronized position event.
     if (horizontal_window_moved(window)) return;
+    horizontal_event_settle();
     CGPoint new_origin = window_ax_origin(window);
     if (CGPointEqualToPoint(new_origin, window->frame.origin)) {
         debug("%s:DEBOUNCED %s %d\n", __FUNCTION__, window->application->name, window->id);
@@ -1173,11 +1176,6 @@ static EVENT_HANDLER(DISPLAY_RESIZED)
     debug("%s: %d\n", __FUNCTION__, did);
     space_manager_mark_spaces_invalid_for_display(&g_space_manager, did);
     event_signal_push(SIGNAL_DISPLAY_RESIZED, context);
-}
-
-static EVENT_HANDLER(FIREFOX_WINDOWS_DISCOVER)
-{
-    firefox_discovery_rescan((pid_t)(intptr_t) context);
 }
 
 static EVENT_HANDLER(MOUSE_DOWN)
@@ -1762,7 +1760,8 @@ static void *event_loop_run(void *context)
             } while (!__sync_bool_compare_and_swap(&event_loop->head, head, next));
 
             int type = __atomic_load_n(&next->type, __ATOMIC_RELAXED);
-            horizontal_event_settle();
+            if (horizontal_event_settles(type, __atomic_load_n(&next->context, __ATOMIC_RELAXED),
+                                         __atomic_load_n(&next->param1, __ATOMIC_RELAXED))) horizontal_event_settle();
             uint64_t began = read_os_timer();
             switch (type) {
 #define EVENT_TYPE_ENTRY(value) case value: EVENT_HANDLER_##value(__atomic_load_n(&next->context, __ATOMIC_RELAXED), __atomic_load_n(&next->param1, __ATOMIC_RELAXED)); break;

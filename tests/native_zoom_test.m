@@ -14,6 +14,7 @@ struct window {
     double strip_from_width,strip_from_height,strip_size_sent_at;
     bool strip_initialized,strip_plane_scaled,strip_transform_dirty,strip_native_move_pending,strip_size_pending,strip_native_resize_pending,strip_offscreen;
     CGRect frame,strip_last_frame;
+    CGPoint strip_server_moved; int strip_native_failures; bool strip_native_riding;
 };
 static struct { uint32_t focused_window_id; } g_window_manager={1};
 static struct application app={.pid=123};
@@ -63,6 +64,14 @@ static CGError SLSGetWindowBounds(int c,uint32_t id,CGRect *out) {
     *out=native[id-1];return 0;
 }
 static bool hwm_plane_displayed_frame(uint32_t id,CGRect *out) { *out=shown[id-1];return true; }
+static void hwm_plane_displayed_frames(const uint32_t *ids,int count,CGRect *out,bool *found)
+{ for(int i=0;i<count;i++) found[i]=hwm_plane_displayed_frame(ids[i],&out[i]); }
+#define HWM_ZOOM_READ_BOUNDS
+static void hwm_zoom_read_bounds(const uint32_t *ids,int count,CGRect *out,bool *found)
+{ for(int i=0;i<count;i++) found[i]=SLSGetWindowBounds(0,ids[i],&out[i])==0; }
+static unsigned server_moves;
+static void hwm_batch_begin(void) {}
+static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++server_moves;native[id-1].origin=CGPointMake(x,y);return true; }
 static bool hwm_resize_busy(struct window *w) { (void)w;return false; }
 static unsigned indexFor(AXUIElementRef e) { int value=0;assert(CFNumberGetValue((CFNumberRef)e,kCFNumberIntType,&value));assert(value>=1&&value<=2);return (unsigned)value-1; }
 static AXError mockTimeout(AXUIElementRef e,float t) { (void)e;assert(t<=.2f);return 0; }
@@ -107,7 +116,9 @@ static void reset(void) {
 static void drain(void) { assert(dispatch_group_wait(hwm_zoom_group,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC))==0); }
 static void test_handoff_waits_and_preserves_sizes(void) {
     reset();assert(hwm_zoom_render_native(&view,10));assert(!hwm_plane_selecting);
+    assert(hwm_zoom_waiting_only); // Only placements in flight: they wake the clock themselves.
     drain();assert(!hwm_zoom_render_native(&view,11));assert(!hwm_plane_selecting);
+    assert(!hwm_zoom_waiting_only);
     assert(position_calls==2&&size_calls==0);
     for(int i=0;i<2;i++) { assert(!windows[i].strip_plane_scaled&&!windows[i].strip_offscreen);assert(CGRectEqualToRect(native[i],shown[i]));assert(native[i].size.width==400&&native[i].size.height==600); }
     assert(!hwm_zoom_render_native(&view,12));assert(position_calls==2);
@@ -136,11 +147,17 @@ static void test_failed_placement_recovers_without_blocking_other_apps(void) {
     assert(hwm_zoom_native_position(&windows[0],point,CGSizeZero,CGPointZero,&accepted)==1);
 }
 static void test_top_edge_clamp_keeps_the_window_visible(void) {
-    reset();windows[1].strip_world_y=-500;ax_clamp_top=true;
-    assert(hwm_zoom_render_native(&view,10));drain();assert(!hwm_zoom_render_native(&view,11));
-    assert(!windows[1].strip_offscreen && windows[1].strip_plane_scaled && shown[1].origin.y==-449);
+    reset();server_moves=0;windows[1].strip_world_y=-500;ax_clamp_top=true;
+    assert(hwm_zoom_render_native(&view,10));drain();
+    // AppKit keeps the title bar below the menu bar; WindowServer puts the
+    // native frame where the window is drawn, once.
+    assert(hwm_zoom_render_native(&view,11));
+    assert(!hwm_zoom_waiting_only); // Nothing will wake the clock for this: keep drawing.
+    assert(server_moves==1 && native[1].origin.y==-449 && windows[1].strip_plane_scaled && shown[1].origin.y==-449);
+    assert(!hwm_zoom_render_native(&view,12));
+    assert(!windows[1].strip_offscreen && !windows[1].strip_plane_scaled && shown[1].origin.y==-449);
     assert(!shield);unsigned writes=position_calls;
-    assert(!hwm_zoom_render_native(&view,12));assert(position_calls==writes);
+    assert(!hwm_zoom_render_native(&view,13));assert(position_calls==writes && server_moves==1);
 }
 static void test_pixel_rounding_does_not_restart_projection(void) {
     reset();assert(hwm_zoom_render_native(&view,10));drain();assert(!hwm_zoom_render_native(&view,11));

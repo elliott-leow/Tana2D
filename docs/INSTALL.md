@@ -8,11 +8,17 @@ The engine retains its MIT-licensed yabai foundation and attribution.
 
 1. Open the Tana2D disk image and drag **Tana2D.app** to **Applications** (or unzip
    the app and move it there).
-2. Open **Tana2D** and follow **Setup & Settings**. Allow Accessibility, then use
-   **Set Up Window Helper** when the requirements are ready. Click **Start Tana2D**.
+2. Open **Tana2D**. Setup shows one illustrated step per screen, each with one or
+   two buttons, and moves on by itself as each requirement is met: move to
+   Applications, allow Accessibility, the macOS Recovery change if needed, the
+   helper, then a choice of trackpad or keyboard, login startup, and a short
+   interactive tour. Click **Start Tana2D** at the end.
 
-The setup page checks automatically as permissions change. Nothing is tiled
-until the checks pass. The helper setup asks for administrator approval and
+Nothing is tiled until the checks pass. Setup resumes where it left off after
+the Recovery restart: choosing **Shut Down** or **Restart** in setup registers
+Tana2D to reopen at login, and the later login question keeps or removes that.
+On Apple Silicon, **Turn On** adds the `-arm64e_preview_abi` boot argument with
+administrator approval and preserves any existing boot arguments. The helper setup asks for administrator approval and
 installs a root-owned copy with permission to run only its fixed helper-loading
 command. No separate window manager or passwordless general shell is installed.
 
@@ -64,10 +70,12 @@ are never imported automatically. Tana2D requires its own Accessibility grant.
 
 ## Everyday use and accessibility
 
-- Open **Setup & Settings** from the Tana2D menu, or open the app again.
+- Open **Setup & Settings** from the Tana2D menu, or open the app again. While
+  Tana2D is running it shows Settings: login startup, keyboard mode, the settings
+  file, and the tour.
 - The menu bar is visible by default. Every command is available in the menu and
   command palette. Gestures are optional; the README lists keyboard equivalents.
-- **Use Keyboard & Screen Reader Preferences** turns off hover focus, reduces
+- **Keyboard** in setup, or **Keyboard & screen reader mode** in Settings, turns off hover focus, reduces
   motion, disables haptics, and shows the menu bar. It keeps Spotlight and app Quit
   on their usual keys and changes the palette to **Control + Command + P**. Other
   settings, rules, and unrelated shortcuts are preserved. These preferences are
@@ -91,7 +99,11 @@ workflow. Set `settings.autofocus` to `off` to disable hover focus independently
 /Applications/Tana2D.app/Contents/MacOS/tana2d --setup-status
 /Applications/Tana2D.app/Contents/MacOS/tana2d --check-backend
 open -n /Applications/Tana2D.app --args --setup
+open -n /Applications/Tana2D.app --args --setup-preview   # browse every screen; buttons do nothing
 ```
+
+The setup page is `src/setup_ui/onboarding.html`. Opened directly in a browser it runs
+on mock state: `onboarding.html?mock=fresh`, `intel`, `ready`, `settings` or `preview`.
 
 A failed setup stays open with the next action. Another running window manager
 must be quit first. Permission checks run in the launched app; calling a binary

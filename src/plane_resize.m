@@ -72,7 +72,8 @@ static void hwm_plane_resize_publish(struct view *view)
 }
 /* A click on a far zoomed-out window is a request to open it: the press is
  * captured, a click focuses it and zooms to it at 100%, and a drag moves it.
- * Closer than the threshold, the application receives its own clicks.
+ * Closer than the threshold, the application receives its own clicks, unless
+ * fn (🌐) is held: fn-click centers and focuses a window at any zoom.
  * The event tap reads a published snapshot, never mutable window objects. */
 static bool hwm_plane_center_click(CGEventRef event)
 {
@@ -80,11 +81,14 @@ static bool hwm_plane_center_click(CGEventRef event)
     os_unfair_lock_lock(&hwm_resize_hit_lock);
     bool low=hwm_published_scale<hwm_zoom_click_threshold;
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
-    if(!low) return false;
+    CGEventFlags flags=CGEventGetFlags(event);
+    bool fn=(flags&kCGEventFlagMaskSecondaryFn) &&
+            !(flags&(kCGEventFlagMaskAlternate|kCGEventFlagMaskControl|kCGEventFlagMaskCommand|kCGEventFlagMaskShift));
+    if(!low && !fn) return false;
     CGPoint point=CGEventGetLocation(event),local; uint32_t id=0; int owner=0;
     SLSFindWindowAndOwner(g_connection,0,1,0,&point,&local,&id,&owner);
     if(owner==g_connection) {
-        if(id!=hwm_plane_border_id) return false;
+        if(!hwm_plane_border_owns(id)) return false;
         SLSFindWindowAndOwner(g_connection,id,-1,0,&point,&local,&id,&owner);
     }
     bool managed=false;
@@ -113,7 +117,7 @@ static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
         CGPoint local; int owner=0;
         SLSFindWindowAndOwner(g_connection,0,1,0,&point,&local,&id,&owner);
         if(owner==g_connection) {
-            if(id!=hwm_plane_border_id) return false; // Keep interactive native panels intact.
+            if(!hwm_plane_border_owns(id)) return false; // Keep interactive native panels intact.
             SLSFindWindowAndOwner(g_connection,id,-1,0,&point,&local,&id,&owner);
         }
         os_unfair_lock_lock(&hwm_resize_hit_lock);

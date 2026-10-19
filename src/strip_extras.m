@@ -496,9 +496,12 @@ static void hwm_attention_apps(NSArray *pids)
 static NSDictionary *hwm_dock_badges(void)
 {
     NSMutableDictionary *badges=[NSMutableDictionary dictionary];
-    NSRunningApplication *dock=[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"].firstObject;
-    if(!dock) return badges;
-    AXUIElementRef app=AXUIElementCreateApplication(dock.processIdentifier);
+    // Dock's pid is looked up again only once it has gone (a Dock restart).
+    static pid_t dock_pid;
+    if(dock_pid<=0 || kill(dock_pid,0)!=0)
+        dock_pid=[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"].firstObject.processIdentifier;
+    if(dock_pid<=0) return badges;
+    AXUIElementRef app=AXUIElementCreateApplication(dock_pid);
     AXUIElementSetMessagingTimeout(app,.5f);
     CFTypeRef lists=NULL;
     if(AXUIElementCopyAttributeValue(app,kAXChildrenAttribute,&lists)==kAXErrorSuccess && lists && CFGetTypeID(lists)==CFArrayGetTypeID()) {
@@ -536,11 +539,25 @@ static void hwm_attention_poll(double now)
         @autoreleasepool {
             NSDictionary *badges=hwm_dock_badges();
             NSMutableArray *pids=[NSMutableArray array];
+            /* A process's bundle never changes. Asking LaunchServices for
+             * every running application's bundle on each changed badge was
+             * most of this poll's cost; each pid is asked once. */
+            static NSMutableDictionary *paths;
+            if(!paths) paths=[NSMutableDictionary new];
+            NSArray *running=nil;
             // The first reading only establishes what is already there.
             if(previous) for(NSString *path in badges) {
                 if([badges[path] isEqual:previous[path]]) continue;
-                for(NSRunningApplication *app in [NSWorkspace sharedWorkspace].runningApplications)
-                    if([app.bundleURL.path.stringByStandardizingPath isEqual:path]) [pids addObject:@(app.processIdentifier)];
+                if(!running) {
+                    running=[NSWorkspace sharedWorkspace].runningApplications;
+                    NSMutableSet *live=[NSMutableSet setWithCapacity:running.count];
+                    for(NSRunningApplication *app in running) {
+                        NSNumber *pid=@(app.processIdentifier); [live addObject:pid];
+                        if(!paths[pid]) paths[pid]=app.bundleURL.path.stringByStandardizingPath ?: @"";
+                    }
+                    for(NSNumber *pid in paths.allKeys) if(![live containsObject:pid]) [paths removeObjectForKey:pid];
+                }
+                for(NSNumber *pid in paths) if([paths[pid] isEqual:path]) [pids addObject:pid];
             }
             [previous release]; previous=[badges copy];
             if(pids.count) event_loop_post(&g_event_loop,HORIZONTAL_INPUT,[pids copy],HWM_ATTENTION);
@@ -564,7 +581,16 @@ static void hwm_helper_reload(void)
     double now=hwm_now();
     // After a Dock restart, hwm_helper_tick loads the helper once Dock is up.
     if(hwm_helper_due) return;
-    if(!hwm_helper_auto || now-hwm_helper_last<8 || hwm_helper_attempts>=4) return;
+    if(hwm_helper_attempts>=4 || (!hwm_helper_auto && !hwm_helper_lost_shown)) {
+        // Out of automatic retries: say so where it stays visible, and how to fix it.
+        if(!hwm_helper_lost_shown) {
+            hwm_helper_lost_shown=true;
+            hwm_hud(@"Window helper disconnected. Choose Reconnect Window Helper… in the Tana2D menu.");
+            hwm_menu_status();
+        }
+        return;
+    }
+    if(!hwm_helper_auto || now-hwm_helper_last<8) return;
     hwm_helper_last=now; ++hwm_helper_attempts;
     warn("Tana2D: window helper is not answering; running the loader (attempt %d).\n",hwm_helper_attempts);
     if(hwm_helper_attempts==1) hwm_hud(@"Reconnecting window helper…");

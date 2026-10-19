@@ -1,11 +1,11 @@
 {
   "settings": {
     "motionStrength": 1,
-    "autofocus": "off",
+    "autofocus": "pointer-movement",
     "focusAfterScroll": "none",
     "magneticCentering": false,
     "autoCenter": true,
-    "autoCenterDistance": 120,
+    "autoCenterDistance": 180,
     "panMomentum": true,
     "zoomClickThreshold": 0.5,
     "showMenuBar": true,
@@ -61,7 +61,8 @@
       "terminal": "open -na Ghostty",
       "browser": "open -b org.mozilla.firefox"
     },
-    "swipeGain": 1,
+    "swipeGain": 1.15,
+    "pinchGain": 1.35,
     "dimInactive": 0.2,
     "attention": "badge",
     "haptics": true,

@@ -115,21 +115,78 @@ static struct window *window_manager_find_window(struct window_manager *wm, uint
     return NULL;
 }
 static bool window_is_standard(struct window *window) { return window->standard; }
-static CFArrayRef popup_test_window_list(CGWindowListOption option, CGWindowID wid)
+/* WindowServer's on-screen list and its batched query, over the fixture's
+ * window descriptions. */
+static CGError popup_test_window_ids(int cid, int owner, int max, uint32_t *list, int *count)
 {
-    (void) option; (void) wid;
+    (void) cid; (void) owner;
     ++popup_scan_count;
-    if (!popup_window_list_available) return NULL;
-    return popup_window_info ? CFRetain(popup_window_info) : NULL;
+    if (!popup_window_list_available || !popup_window_info) return kCGErrorFailure;
+    *count = (int) CFArrayGetCount(popup_window_info);
+    assert(*count <= max);
+    for (int i = 0; i < *count; ++i)
+        CFNumberGetValue(CFDictionaryGetValue(CFArrayGetValueAtIndex(popup_window_info, i), kCGWindowNumber), kCFNumberSInt32Type, &list[i]);
+    return kCGErrorSuccess;
+}
+static int popup_test_connection;
+static CFIndex popup_test_cursor;
+static CFTypeRef popup_test_query(int cid, CFArrayRef windows, int count)
+{
+    (void) cid;
+    assert(CFArrayGetCount(windows) == count && CFArrayGetCount(popup_window_info) == count);
+    return CFRetain(popup_window_info);
+}
+static CFTypeRef popup_test_query_windows(CFTypeRef query) { popup_test_cursor = -1; return CFRetain(query); }
+static bool popup_test_advance(CFTypeRef iterator) { return ++popup_test_cursor < CFArrayGetCount(iterator); }
+static CFDictionaryRef popup_test_current(void) { return CFArrayGetValueAtIndex(popup_window_info, popup_test_cursor); }
+static int popup_test_int(CFStringRef key)
+{
+    int value = 0;
+    CFNumberGetValue(CFDictionaryGetValue(popup_test_current(), key), kCFNumberIntType, &value);
+    return value;
+}
+static uint32_t popup_test_wid(CFTypeRef iterator) { (void) iterator; return (uint32_t) popup_test_int(kCGWindowNumber); }
+static pid_t popup_test_pid(CFTypeRef iterator) { (void) iterator; return popup_test_int(kCGWindowOwnerPID); }
+static int popup_test_level(CFTypeRef iterator) { (void) iterator; return popup_test_int(kCGWindowLayer); }
+static float popup_test_alpha(CFTypeRef iterator)
+{
+    (void) iterator; double alpha = 1;
+    CFNumberRef value = CFDictionaryGetValue(popup_test_current(), kCGWindowAlpha);
+    if (value) CFNumberGetValue(value, kCFNumberDoubleType, &alpha);
+    return (float) alpha;
+}
+static CGRect popup_test_bounds(CFTypeRef iterator)
+{
+    (void) iterator; CGRect bounds = CGRectNull;
+    CGRectMakeWithDictionaryRepresentation(CFDictionaryGetValue(popup_test_current(), kCGWindowBounds), &bounds);
+    return bounds;
 }
 
 #define read_os_timer popup_test_timer
 #define read_os_freq popup_test_freq
-#define CGWindowListCopyWindowInfo popup_test_window_list
+#define g_connection popup_test_connection
+#define SLSGetOnScreenWindowList popup_test_window_ids
+#define SLSWindowQueryWindows popup_test_query
+#define SLSWindowQueryResultCopyWindows popup_test_query_windows
+#define SLSWindowIteratorAdvance popup_test_advance
+#define SLSWindowIteratorGetWindowID popup_test_wid
+#define SLSWindowIteratorGetLevel popup_test_level
+#define SLSWindowIteratorGetPID popup_test_pid
+#define SLSWindowIteratorGetAlpha popup_test_alpha
+#define SLSWindowIteratorGetBounds popup_test_bounds
 #define debug(...) ((void) 0)
 #include "../vendor/yabai/src/popup_focus_guard.c"
 #undef debug
-#undef CGWindowListCopyWindowInfo
+#undef SLSWindowIteratorGetBounds
+#undef SLSWindowIteratorGetAlpha
+#undef SLSWindowIteratorGetPID
+#undef SLSWindowIteratorGetLevel
+#undef SLSWindowIteratorGetWindowID
+#undef SLSWindowIteratorAdvance
+#undef SLSWindowQueryResultCopyWindows
+#undef SLSWindowQueryWindows
+#undef SLSGetOnScreenWindowList
+#undef g_connection
 #undef read_os_freq
 #undef read_os_timer
 
@@ -234,7 +291,9 @@ static void test_popup_classification_and_cache(void)
     popup_add(404, 1, 0, true, true);
     assert(!popup_focus_suppressed()); /* ordinary current document */
     popup_add(404, 2, 0, true, false);
-    assert(popup_focus_suppressed() && popup_scan_count == 2); /* a new popup cannot hide behind a negative cache */
+    assert(!popup_focus_suppressed() && popup_scan_count == 1); /* hover reports within a frame share one scan */
+    popup_test_time += 17;
+    assert(popup_focus_suppressed() && popup_scan_count == 2); /* a new popup hides behind a negative for one frame at most */
 
     popup_reset();
     popup_add(404, 2, 0, true, false);

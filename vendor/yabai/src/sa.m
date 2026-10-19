@@ -240,6 +240,7 @@ cleanup:
  * report a slow reply as a lost helper. */
 #define HWM_SA_TIMEOUT_MS 250
 static bool hwm_sa_plane_settle(void);
+static void sa_recent_layers_forget(void);
 
 static bool scripting_addition_request_handshake(char *version, size_t capacity, uint32_t *attrib)
 {
@@ -248,6 +249,7 @@ static bool scripting_addition_request_handshake(char *version, size_t capacity,
     bool result = hwm_sa_handshake(g_sa_socket_file, bytes, sizeof(bytes), version, capacity, attrib, HWM_SA_TIMEOUT_MS);
     hwm_sa_capabilities_known = result;
     hwm_sa_capabilities = result ? *attrib : 0;
+    sa_recent_layers_forget(); // A new helper (or Dock) knows nothing we set.
     return result;
 }
 
@@ -411,29 +413,72 @@ static __thread void (*hwm_sa_batch_barrier)(void);
 static __thread HwmPlaneTransform hwm_sa_plane_transforms[SA_PLANE_TRANSFORM_MAX_RECORDS];
 static __thread uint16_t hwm_sa_plane_transform_count;
 /* A plane-only frame does not wait for its acknowledgement: the helper's one
- * transaction is atomic, so the frame is already whole. The reply is read
- * before anything else talks to the helper, at most one packet behind. */
-static __thread int hwm_sa_plane_pending_fd = -1;
-static __thread long long hwm_sa_plane_pending_deadline;
+ * transaction is atomic, so the frame is already whole. Replies are read
+ * before anything else talks to the helper.
+ *
+ * Up to HWM_SA_PLANE_IN_FLIGHT frames may be awaiting their reply at once.
+ * Waiting for each frame's reply before handing over the next tied every
+ * frame to Dock's scheduling: when its helper thread ran late (a busy CPU),
+ * the frame thread sat in that wait, missed its own vsync, and the gesture
+ * it was drawing fell behind. With the helper that far behind, a further
+ * frame is not queued up for it: its records are carried into the next
+ * frame, newer records for a window replacing older, so what the helper
+ * applies when it catches up is where the windows are now, not a backlog of
+ * where they were. Replies come back in the order the frames were sent. */
+enum { HWM_SA_PLANE_IN_FLIGHT = 2 };
+static __thread int hwm_sa_plane_pending_fds[HWM_SA_PLANE_IN_FLIGHT];
+static __thread long long hwm_sa_plane_pending_deadlines[HWM_SA_PLANE_IN_FLIGHT];
+static __thread int hwm_sa_plane_pending_count;
+static __thread bool hwm_sa_plane_pending_failed; // A collected reply said no, or never came.
+static __thread uint16_t hwm_sa_plane_carried; // Records held over from a frame the helper was not ready for.
+static __thread bool hwm_sa_plane_held; // The last deferred send kept its records instead.
 static __thread bool hwm_sa_plane_defer;
 static bool hwm_sa_plane_flush(void);
 
-
+/* Read the oldest outstanding reply, waiting for it. */
+static void hwm_sa_plane_collect_oldest(void)
+{
+    if (hwm_sa_plane_pending_count <= 0) return;
+    int fd = hwm_sa_plane_pending_fds[0];
+    long long deadline = hwm_sa_plane_pending_deadlines[0];
+    --hwm_sa_plane_pending_count;
+    memmove(hwm_sa_plane_pending_fds, hwm_sa_plane_pending_fds + 1, sizeof(*hwm_sa_plane_pending_fds) * (size_t) hwm_sa_plane_pending_count);
+    memmove(hwm_sa_plane_pending_deadlines, hwm_sa_plane_pending_deadlines + 1, sizeof(*hwm_sa_plane_pending_deadlines) * (size_t) hwm_sa_plane_pending_count);
+    /* Collected after the clock slept, the reply has long been waiting: its
+     * deadline passing meanwhile says nothing about the helper. Still look. */
+    long long now = hwm_sa_monotonic_ms();
+    if (now >= 0 && deadline <= now) deadline = now + 1;
+    unsigned char acknowledgement = 0;
+    if (!hwm_sa_receive_byte(fd, &acknowledgement, deadline) || acknowledgement != 1) hwm_sa_plane_pending_failed = true;
+    close(fd);
+}
+/* Read the replies that have already arrived, without waiting for the rest. */
+static void hwm_sa_plane_reap(void)
+{
+    while (hwm_sa_plane_pending_count > 0) {
+        long long now = hwm_sa_monotonic_ms();
+        if (!hwm_sa_ready(hwm_sa_plane_pending_fds[0]) && !(now >= 0 && hwm_sa_plane_pending_deadlines[0] <= now)) return;
+        hwm_sa_plane_collect_oldest();
+    }
+}
+/* Wait for every outstanding reply. False if any frame was refused or lost. */
 static bool hwm_sa_plane_settle(void)
 {
-    int fd = hwm_sa_plane_pending_fd;
-    if (fd < 0) return true;
-    hwm_sa_plane_pending_fd = -1;
-    unsigned char acknowledgement = 0;
-    bool success = hwm_sa_receive_byte(fd, &acknowledgement, hwm_sa_plane_pending_deadline) && acknowledgement == 1;
-    close(fd);
+    while (hwm_sa_plane_pending_count > 0) hwm_sa_plane_collect_oldest();
+    bool success = !hwm_sa_plane_pending_failed;
+    hwm_sa_plane_pending_failed = false;
     return success;
 }
 
-// Wait for a frame submitted with scripting_addition_batch_end_deferred.
+/* Wait for the frames submitted with scripting_addition_batch_end_deferred,
+ * and apply any records a frame held back, so that what WindowServer is
+ * asked next reflects everything the manager has drawn. */
 bool scripting_addition_settle(void)
 {
-    return hwm_sa_plane_settle();
+    bool settled = hwm_sa_plane_settle();
+    if (!hwm_sa_plane_carried) return settled;
+    if (hwm_sa_batch_depth > 0 && hwm_sa_batch_barrier) hwm_sa_batch_barrier();
+    return hwm_sa_plane_flush() && settled;
 }
 
 void scripting_addition_batch_begin(void)
@@ -467,8 +512,11 @@ bool scripting_addition_batch_end_deferred(void)
 {
     if (hwm_sa_batch_depth > 1) { --hwm_sa_batch_depth; return true; }
     if (hwm_sa_batch_depth > 0) --hwm_sa_batch_depth;
-    bool settled = hwm_sa_plane_settle();
-    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline)) { hwm_sa_plane_transform_count = 0; return false; }
+    // Replies that have arrived are read now; those still to come are not waited for.
+    hwm_sa_plane_reap();
+    bool settled = !hwm_sa_plane_pending_failed;
+    hwm_sa_plane_pending_failed = false;
+    if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline)) { hwm_sa_plane_transform_count = 0; hwm_sa_plane_carried = 0; return false; }
     hwm_sa_plane_defer = true;
     bool sent = hwm_sa_plane_flush();
     hwm_sa_plane_defer = false;
@@ -491,7 +539,11 @@ static bool scripting_addition_send_bytes(char *bytes, int length)
  * create the transaction. Unlike legacy commands, this makes backend failure observable. */
 static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool defer)
 {
-    if (!hwm_sa_plane_settle()) return false;
+    hwm_sa_plane_held = false;
+    if (defer) {
+        hwm_sa_plane_reap();
+        if (hwm_sa_plane_pending_count >= HWM_SA_PLANE_IN_FLIGHT) { hwm_sa_plane_held = true; return true; }
+    } else if (!hwm_sa_plane_settle()) return false;
     long long start = hwm_sa_monotonic_ms();
     if (!bytes || !length || start < 0 || start > LLONG_MAX - HWM_SA_TIMEOUT_MS) return false;
     long long deadline = start + HWM_SA_TIMEOUT_MS;
@@ -499,8 +551,8 @@ static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool de
     if (fd < 0) return false;
     bool success = hwm_sa_send_all(fd, bytes, length, deadline);
     if (success && defer) {
-        hwm_sa_plane_pending_fd = fd;
-        hwm_sa_plane_pending_deadline = deadline;
+        hwm_sa_plane_pending_fds[hwm_sa_plane_pending_count] = fd;
+        hwm_sa_plane_pending_deadlines[hwm_sa_plane_pending_count++] = deadline;
         return true;
     }
     unsigned char acknowledgement = 0;
@@ -525,7 +577,7 @@ static bool hwm_sa_plane_flush(void)
     /* All earlier ordinary commands must reach Dock before an absolute
      * compositor transaction is committed. */
     if (!hwm_sa_pipeline_flush(&hwm_sa_pipeline)) {
-        hwm_sa_plane_transform_count = 0;
+        hwm_sa_plane_transform_count = 0; hwm_sa_plane_carried = 0;
         return false;
     }
     while (hwm_sa_plane_transform_count) {
@@ -535,23 +587,53 @@ static bool hwm_sa_plane_flush(void)
         if (!hwm_plane_transform_packet_encode(bytes + sizeof(int16_t), sizeof(bytes) - sizeof(int16_t),
                                                hwm_sa_plane_transforms, count, &payload_length) ||
             payload_length > INT16_MAX) {
-            hwm_sa_plane_transform_count = 0;
+            hwm_sa_plane_transform_count = 0; hwm_sa_plane_carried = 0;
             return false;
         }
         int16_t wire_length = (int16_t) payload_length;
         memcpy(bytes, &wire_length, sizeof(wire_length));
         if (!hwm_sa_plane_send(bytes, payload_length + sizeof(wire_length), hwm_sa_plane_defer)) {
-            hwm_sa_plane_transform_count = 0;
+            hwm_sa_plane_transform_count = 0; hwm_sa_plane_carried = 0;
             return false;
         }
-        hwm_sa_plane_transform_count = 0;
+        // The helper is behind: these records go with the next frame instead.
+        if (hwm_sa_plane_held) { hwm_sa_plane_carried = count; return true; }
+        hwm_sa_plane_transform_count = 0; hwm_sa_plane_carried = 0;
     }
     return true;
+}
+
+/* Queue one record for the frame's transaction. A record carried over from
+ * a frame the helper was not ready for is replaced by a newer one for the
+ * same window and kind: only the latest placement matters. */
+static bool hwm_sa_plane_queue(HwmPlaneTransform transform)
+{
+    for (uint16_t index = 0; index < hwm_sa_plane_carried && index < hwm_sa_plane_transform_count; ++index) {
+        if (hwm_sa_plane_transforms[index].wid != transform.wid) continue;
+        hwm_sa_plane_transforms[index] = transform;
+        return hwm_sa_batch_depth > 0 || hwm_sa_plane_flush();
+    }
+    if (hwm_sa_plane_transform_count == SA_PLANE_TRANSFORM_MAX_RECORDS) {
+        if(hwm_sa_batch_barrier) hwm_sa_batch_barrier();
+        if(!hwm_sa_plane_flush()) return false;
+    }
+    hwm_sa_plane_transforms[hwm_sa_plane_transform_count++] = transform;
+    return hwm_sa_batch_depth > 0 || hwm_sa_plane_flush();
 }
 
 bool scripting_addition_plane_supported(void)
 {
     return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_TRANSFORM);
+}
+
+bool scripting_addition_plane_native_supported(void)
+{
+    return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_NATIVE);
+}
+
+bool scripting_addition_plane_alpha_supported(void)
+{
+    return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_ALPHA);
 }
 
 bool scripting_addition_input_shape_supported(void)
@@ -596,17 +678,21 @@ bool scripting_addition_set_plane_transform_xy(uint32_t wid, double x, double y,
     }
     HwmPlaneTransform transform = { wid, x, y, scale_x, scale_y };
     if (!hwm_plane_transform_valid(transform)) return false;
-    if (hwm_sa_plane_transform_count == SA_PLANE_TRANSFORM_MAX_RECORDS) {
-        if(hwm_sa_batch_barrier) hwm_sa_batch_barrier();
-        if(!hwm_sa_plane_flush()) return false;
-    }
-    hwm_sa_plane_transforms[hwm_sa_plane_transform_count++] = transform;
-    return hwm_sa_batch_depth > 0 || hwm_sa_plane_flush();
+    return hwm_sa_plane_queue(transform);
 }
 
 bool scripting_addition_set_plane_transform(uint32_t wid, double x, double y, double scale)
 {
     return scripting_addition_set_plane_transform_xy(wid, x, y, scale, scale);
+}
+
+/* Move the native frame within the frame's plane transaction. */
+bool scripting_addition_set_plane_native(uint32_t wid, double x, double y)
+{
+    if (!scripting_addition_plane_native_supported() || !wid || (wid & HWM_PLANE_TRANSFORM_NATIVE)) return false;
+    HwmPlaneTransform transform = { wid | HWM_PLANE_TRANSFORM_NATIVE, x, y, 1, 1 };
+    if (!hwm_plane_transform_valid(transform)) return false;
+    return hwm_sa_plane_queue(transform);
 }
 
 
@@ -664,6 +750,12 @@ bool scripting_addition_move_window(uint32_t wid, int x, int y)
 
 bool scripting_addition_set_opacity(uint32_t wid, float opacity, float duration)
 {
+    /* An immediate change joins the frame's compositor transaction, so it
+     * lands together with the movement queued beside it. */
+    if (duration <= 0.0f && wid && !(wid & HWM_PLANE_TRANSFORM_FLAGS) && scripting_addition_plane_alpha_supported()) {
+        HwmPlaneTransform transform = { wid | HWM_PLANE_TRANSFORM_ALPHA, opacity, 0, 1, 1 };
+        if (hwm_plane_transform_valid(transform)) return hwm_sa_plane_queue(transform);
+    }
     sa_payload_init();
     pack(wid);
     pack(opacity);
@@ -671,12 +763,28 @@ bool scripting_addition_set_opacity(uint32_t wid, float opacity, float duration)
     return sa_payload_send(duration > 0.0f ? SA_OPCODE_WINDOW_OPACITY_FADE : SA_OPCODE_WINDOW_OPACITY);
 }
 
+/* Every focus change sets its window's layer, a command that waits for
+ * Dock's reply. Hover hands focus back and forth across the same few
+ * windows: a layer this process set moments ago is not set again. Every
+ * layer change goes through here, so the record cannot go stale by our own
+ * hand; it is forgotten after two seconds and whenever the helper reconnects. */
+struct sa_recent_layer { uint32_t wid; int layer; long long time; };
+static struct sa_recent_layer sa_recent_layers[16];
+static unsigned sa_recent_layer_next;
+static void sa_recent_layers_forget(void) { memset(sa_recent_layers, 0, sizeof(sa_recent_layers)); }
 bool scripting_addition_set_layer(uint32_t wid, int layer)
 {
+    long long now = hwm_sa_monotonic_ms();
+    struct sa_recent_layer *recent = NULL;
+    for (int i = 0; i < 16; ++i) if (sa_recent_layers[i].wid == wid) { recent = &sa_recent_layers[i]; break; }
+    if (recent && recent->layer == layer && now >= 0 && now - recent->time < 2000) return true;
+    if (recent) recent->wid = 0;
     sa_payload_init();
     pack(wid);
     pack(layer);
-    return sa_payload_send(SA_OPCODE_WINDOW_LAYER);
+    bool result = (sa_payload_send(SA_OPCODE_WINDOW_LAYER));
+    if (result && wid && now >= 0) sa_recent_layers[sa_recent_layer_next++ % 16] = (struct sa_recent_layer) { wid, layer, now };
+    return result;
 }
 
 bool scripting_addition_set_sticky(uint32_t wid, bool sticky)

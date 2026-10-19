@@ -28,12 +28,31 @@ static void menu_focus_close(AXUIElementRef menu)
     debug("menu-focus-recovery: close (%ld menus)\n", CFArrayGetCount(ffm_menus));
 }
 
+// Pids with a menu-level window on screen. AX hands out no window id for
+// most menus, and an app keeps its closed menus' elements alive for reuse:
+// without this, one opened menu suppressed hover focus for good.
+static bool menu_focus_pid_has_menu(CFArrayRef windows, pid_t pid)
+{
+    if (!windows) return true;
+    for (CFIndex i = 0; i < CFArrayGetCount(windows); ++i) {
+        CFDictionaryRef info = CFArrayGetValueAtIndex(windows, i);
+        CFNumberRef pid_ref = CFDictionaryGetValue(info, kCGWindowOwnerPID);
+        CFNumberRef layer_ref = CFDictionaryGetValue(info, kCGWindowLayer);
+        pid_t owner = 0;
+        int layer = 0;
+        if (pid_ref && layer_ref && CFNumberGetValue(pid_ref, kCFNumberIntType, &owner) && owner == pid &&
+            CFNumberGetValue(layer_ref, kCFNumberIntType, &layer) && layer >= CGWindowLevelForKey(kCGPopUpMenuWindowLevelKey)) return true;
+    }
+    return false;
+}
+
 static bool menu_focus_suppressed(void)
 {
     if (!ffm_menus || !CFArrayGetCount(ffm_menus)) return false;
     uint64_t now = read_os_timer();
     if ((double)(now - ffm_menu_check_time) / read_os_freq() < 0.25) return true;
     ffm_menu_check_time = now;
+    CFArrayRef on_screen = NULL;
     for (CFIndex i = CFArrayGetCount(ffm_menus); i-- > 0;) {
         AXUIElementRef menu = (AXUIElementRef) CFArrayGetValueAtIndex(ffm_menus, i);
         pid_t owner = 0;
@@ -47,12 +66,18 @@ static bool menu_focus_suppressed(void)
         uint32_t wid = 0;
         if (!gone) {
             CFTypeRef role = NULL;
+            // A hung app must not hold the event thread for AX's 6 s default.
+            AXUIElementSetMessagingTimeout(menu, 0.1f);
             AXError error = AXUIElementCopyAttributeValue(menu, kAXRoleAttribute, &role);
             if (role) CFRelease(role);
             gone = error == kAXErrorInvalidUIElement;
             wid = ax_window_id(menu);
             uint8_t ordered = 1;
             if (wid && SLSWindowIsOrderedIn(g_connection, wid, &ordered) == kCGErrorSuccess && !ordered) gone = true;
+            if (!wid && owner_error == kAXErrorSuccess) {
+                if (!on_screen) on_screen = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+                if (!menu_focus_pid_has_menu(on_screen, owner)) gone = true;
+            }
         }
         // Transient AX/SkyLight failures are not evidence that a menu closed.
         if (gone) {
@@ -60,5 +85,6 @@ static bool menu_focus_suppressed(void)
             debug("menu-focus-recovery: cleared stale menu %u (%ld remain)\n", wid, CFArrayGetCount(ffm_menus));
         }
     }
+    if (on_screen) CFRelease(on_screen);
     return CFArrayGetCount(ffm_menus) != 0;
 }

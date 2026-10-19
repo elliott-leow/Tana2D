@@ -1,5 +1,6 @@
 #include "plane_presentation.h"
 static void hwm_drag_snap_reset(void);
+static void hwm_snap_ease_reset(void);
 /* Set only from the event that opened a normal titlebar/controller drag.
  * A queued callback is then matched to that original press, not whichever
  * button happened most recently at the event tap. */
@@ -46,7 +47,7 @@ static void hwm_drag_started(struct window *window)
     hwm_drag_native_moved=false;
     hwm_drag_native_recovered=false;
     hwm_drag_native_projected=false;
-    hwm_drag_snap_reset();
+    hwm_drag_snap_reset(); hwm_snap_ease_reset();
     /* Assigned by the controller that owns a concrete queued drag event.
      * Other entry points leave this at zero rather than consulting the newest
      * global press, which could belong to a later physical click. */

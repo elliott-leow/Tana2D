@@ -21,5 +21,5 @@ if [ "${TANA2D_NOTARIZE:-0}" = 1 ]; then
     "$xcrun_command" stapler staple "$app"
 fi
 if [ "$format" = zip ]; then artifact="$output_dir/Tana2D-0.4.0.zip"; "$ditto_command" -c -k --sequesterRsrc --keepParent "$app" "$stage_dir/Tana2D-0.4.0.zip"
-else artifact="$output_dir/Tana2D-0.4.0.dmg"; mkdir "$stage_dir/Tana2D"; cp -R "$app" "$stage_dir/Tana2D/Tana2D.app"; ln -s /Applications "$stage_dir/Tana2D/Applications"; /usr/bin/hdiutil create -volname Tana2D -srcfolder "$stage_dir/Tana2D" -ov -format UDZO "$stage_dir/Tana2D-0.4.0.dmg" >/dev/null; fi
+else artifact="$output_dir/Tana2D-0.4.0.dmg"; "${TANA2D_DMG_SCRIPT:-$script_dir/dmg.sh}" "$app" "$stage_dir/Tana2D-0.4.0.dmg" >/dev/null; fi
 mv "$stage_dir/$(basename -- "$artifact")" "$artifact"; printf '%s\n' "created $artifact"; printf '%s\n' 'release architecture: host-native (universal payload builds are not yet validated)'

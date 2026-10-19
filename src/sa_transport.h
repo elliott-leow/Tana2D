@@ -52,6 +52,16 @@ static inline bool hwm_sa_wait(int fd, short events, long long deadline)
     }
 }
 
+/* Whether a reply (or the helper closing the socket) is waiting to be read. */
+static inline bool hwm_sa_ready(int fd)
+{
+    struct pollfd descriptor;
+    descriptor.fd = fd;
+    descriptor.events = POLLIN | POLLHUP;
+    descriptor.revents = 0;
+    return poll(&descriptor, 1, 0) > 0;
+}
+
 static inline int hwm_sa_connect(const char *path, long long deadline)
 {
     struct sockaddr_un address;

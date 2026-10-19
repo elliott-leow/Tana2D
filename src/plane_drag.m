@@ -16,14 +16,16 @@ static bool hwm_drag_present_plane(struct view *view,struct window *window,CGPoi
     HWMDragSnap snap; CGPoint raw=world;
     bool snapped=magnet && hwm_drag_window==window->id &&
         hwm_drag_snap_proposal_at(view,window,world,&snap);
-    if(snapped) world=snap.point;
+    if(magnet) world=hwm_snap_ease(window->id,raw,snapped,snapped ? snap.point : raw,hwm_now());
     double began=hwm_now();
     CGRect bounds=hwm_bounds(view); double camera_x=hwm_offset(view,hwm_now()), camera_y=hwm_plane_camera_y(hwm_now()), scale=hwm_plane_scale;
     CGRect base=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
                            round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
                            round(hwm_plane_physical_size(window->strip_width)),round(hwm_plane_physical_size(window->strip_height)));
-    CGRect projected=CGRectMake(round(hwm_plane_project_physical(world.x,camera_x,bounds.origin.x,scale)),
-                                round(hwm_plane_project_physical(world.y,camera_y,bounds.origin.y,scale)),
+    // The same device-pixel rule as hwm_render, so a dragged window and its
+    // neighbours share one grid.
+    CGRect projected=CGRectMake(hwm_pixel(hwm_plane_project_physical(hwm_pixel(world.x*scale)/scale,hwm_pixel(camera_x*scale)/scale,bounds.origin.x,scale)),
+                                hwm_pixel(hwm_plane_project_physical(hwm_pixel(world.y*scale)/scale,hwm_pixel(camera_y*scale)/scale,bounds.origin.y,scale)),
                                 round(hwm_plane_physical_size(window->strip_width*scale)),round(hwm_plane_physical_size(window->strip_height*scale)));
     bool own_batch=!hwm_batch_open;
     if(own_batch) scripting_addition_batch_begin();
@@ -60,18 +62,20 @@ static double hwm_drag_native_finish_began,hwm_drag_native_finish_deadline;
 static CGRect hwm_drag_native_finish_frame;
 static unsigned hwm_drag_native_finish_stable;
 
+static double hwm_drag_native_sampled_at=-10;
 static bool hwm_drag_native_sync(struct view *view,struct window *window)
 {
-    CGRect frame=CGRectNull;
-    if(!view || SLSGetWindowBounds(g_connection,window->id,&frame)!=kCGErrorSuccess || CGRectIsNull(frame) ||
-       !isfinite(frame.size.width) || !isfinite(frame.size.height) || frame.size.width<=0 || frame.size.height<=0) {
+    hwm_drag_native_sampled_at=hwm_now();
+    CGRect frame=CGRectNull,presented=CGRectNull;
+    /* Do not recover the displayed frame from SLSGetWindowTransform: AppKit
+     * can retain the old requested plane matrix after it has moved the
+     * displayed titlebar surface. Keep the last accepted position and retry
+     * on the next tick. */
+    if(!view || !hwm_plane_window_frames(window->id,&frame,&presented) || CGRectIsNull(frame) ||
+       !isfinite(frame.size.width) || !isfinite(frame.size.height) || frame.size.width<=0 || frame.size.height<=0 ||
+       !hwm_plane_rect_drawn(presented)) {
         hwm_drag_native_displayed=CGRectNull; return false;
     }
-    CGRect presented=CGRectNull;
-    /* Do not recover this from SLSGetWindowTransform: AppKit can retain the
-     * old requested plane matrix after it has moved the displayed titlebar
-     * surface. Keep the last accepted position and retry on the next tick. */
-    if(!hwm_plane_displayed_frame(window->id,&presented)) { hwm_drag_native_displayed=CGRectNull; return false; }
     CGPoint displayed=presented.origin;
     if(!isfinite(displayed.x) || !isfinite(displayed.y)) return false;
     hwm_drag_native_displayed=presented;
@@ -192,7 +196,7 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
         if(view) hwm_layout(view,false);
     }
     hwm_drag_committed=false;
-    hwm_drop_target=0; hwm_drag_snap_reset(); hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
+    hwm_drop_target=0; hwm_drag_snap_reset(); hwm_snap_ease_reset(); hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
 }
 
 /* A title-bar release is not immediately trustworthy: AppKit can publish the

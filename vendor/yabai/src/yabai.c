@@ -185,6 +185,9 @@ static void parse_arguments(int argc, char **argv)
     if (string_equals(argv[1], "--install-helper")) {
         exit(argc==3 ? tana_install_helper(argv[2]) : 2);
     }
+    if (string_equals(argv[1], "--enable-arm64e-boot-arg")) {
+        exit(argc==2 ? tana_enable_arm64e_boot_arg() : 2);
+    }
     if (string_equals(argv[1], "--setup-status")) {
         [NSApplication sharedApplication];
         NSData *json=[NSJSONSerialization dataWithJSONObject:tana_setup_status() options:0 error:NULL];
@@ -194,7 +197,7 @@ static void parse_arguments(int argc, char **argv)
         struct passwd *user = getpwuid(getuid());
         char version[256] = {0}; uint32_t attributes = 0;
         if (user) snprintf(g_sa_socket_file, sizeof(g_sa_socket_file), SA_SOCKET_PATH_FMT, user->pw_name);
-        bool ready = user && scripting_addition_request_handshake(version,sizeof(version),&attributes) && !strcmp(version,OSAX_VERSION);
+        bool ready = user && scripting_addition_request_handshake(version,sizeof(version),&attributes) && OSAX_VERSION_COMPATIBLE(version);
         fprintf(stdout,"{\"backend\":%s,\"attributes\":%u}\n",ready ? "true" : "false",attributes);
         exit(ready ? EXIT_SUCCESS : EXIT_FAILURE);
     }

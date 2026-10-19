@@ -50,6 +50,7 @@ static NSVisualEffectView *hwm_glass(NSRect frame,CGFloat radius)
 + (instancetype)shared;
 - (void)show:(NSString *)text;
 @end
+static const CGFloat TanaHUDMargin=18; // Room for the pill's shadow.
 @implementation TanaHUD
 + (instancetype)shared { static TanaHUD *instance; if(!instance) instance=[TanaHUD new]; return instance; }
 - (void)show:(NSString *)text
@@ -57,11 +58,18 @@ static NSVisualEffectView *hwm_glass(NSRect frame,CGFloat radius)
     if(!text.length) return;
     if(!self.panel) {
         self.panel=[[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,200,40) styleMask:NSWindowStyleMaskBorderless|NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO] autorelease];
-        self.panel.opaque=NO; self.panel.backgroundColor=NSColor.clearColor; self.panel.hasShadow=YES;
+        /* The shadow belongs to a layer that fades and rises with the pill;
+         * a window-server shadow would sit still at full strength. */
+        self.panel.opaque=NO; self.panel.backgroundColor=NSColor.clearColor; self.panel.hasShadow=NO;
         self.panel.ignoresMouseEvents=YES; self.panel.level=NSStatusWindowLevel;
         self.panel.collectionBehavior=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorStationary|NSWindowCollectionBehaviorIgnoresCycle;
-        NSVisualEffectView *glass=hwm_glass(NSMakeRect(0,0,200,40),14);
-        self.panel.contentView=glass;
+        NSView *container=[[[NSView alloc] initWithFrame:NSMakeRect(0,0,200+2*TanaHUDMargin,40+2*TanaHUDMargin)] autorelease];
+        container.wantsLayer=YES;
+        container.layer.shadowColor=NSColor.blackColor.CGColor; container.layer.shadowOpacity=.32;
+        container.layer.shadowRadius=10; container.layer.shadowOffset=CGSizeMake(0,-3);
+        self.panel.contentView=container;
+        NSVisualEffectView *glass=hwm_glass(NSMakeRect(TanaHUDMargin,TanaHUDMargin,200,40),14);
+        [container addSubview:glass];
         self.label=[NSTextField labelWithString:@""];
         self.label.font=[NSFont systemFontOfSize:14 weight:NSFontWeightMedium]; self.label.textColor=NSColor.whiteColor;
         self.label.alignment=NSTextAlignmentCenter; self.label.lineBreakMode=NSLineBreakByTruncatingMiddle;
@@ -77,23 +85,51 @@ static NSVisualEffectView *hwm_glass(NSRect frame,CGFloat radius)
         [self.label.layer addAnimation:fade forKey:@"text"];
     }
     CGFloat width=fmax(1,fmin(fmax(1,visible.size.width-24),ceil([self.label.attributedStringValue size].width)+44));
-    NSRect frame=NSMakeRect(NSMidX(visible)-width/2,NSMinY(visible)+56,width,40);
+    NSRect frame=NSInsetRect(NSMakeRect(NSMidX(visible)-width/2,NSMinY(visible)+56,width,40),-TanaHUDMargin,-TanaHUDMargin);
     self.label.frame=NSMakeRect(16,10,width-32,20);
     BOOL reduce=[NSWorkspace sharedWorkspace].accessibilityDisplayShouldReduceMotion;
-    BOOL visibleNow=self.panel.visible && self.panel.alphaValue>.05;
-    if(!visibleNow) { [self.panel setFrame:(reduce ? frame : NSOffsetRect(frame,0,-10)) display:YES]; self.panel.alphaValue=0; }
+    CALayer *layer=self.panel.contentView.layer;
+    BOOL visibleNow=self.panel.visible && layer.presentationLayer.opacity>.05;
+    /* The panel itself never animates its frame: that would be paced by the
+     * main thread. Its layer rises and fades in the render server instead,
+     * so the HUD stays smooth whatever AppKit is doing. */
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    if(!NSEqualRects(self.panel.frame,frame)) {
+        [self.panel setFrame:frame display:NO];
+        CGPathRef shadow=CGPathCreateWithRoundedRect(CGRectMake(TanaHUDMargin,TanaHUDMargin,width,40),14,14,NULL);
+        layer.shadowPath=shadow; CGPathRelease(shadow);
+    }
+    self.panel.alphaValue=1;
+    CGFloat from=visibleNow ? layer.presentationLayer.opacity : 0;
+    [layer removeAnimationForKey:@"hide"];
+    layer.opacity=1; layer.transform=CATransform3DIdentity;
+    [CATransaction commit];
     [self.panel orderFrontRegardless];
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration=reduce ? 0 : .18; context.timingFunction=[CAMediaTimingFunction functionWithControlPoints:.22 :1 :.36 :1];
-        [[self.panel animator] setFrame:frame display:YES]; [[self.panel animator] setAlphaValue:1];
-    } completionHandler:nil];
+    if(!reduce && !visibleNow) {
+        CAMediaTimingFunction *curve=[CAMediaTimingFunction functionWithControlPoints:.22 :1 :.36 :1];
+        CABasicAnimation *fade=[CABasicAnimation animationWithKeyPath:@"opacity"];
+        fade.fromValue=@(from); fade.toValue=@1; fade.duration=.18; fade.timingFunction=curve;
+        CABasicAnimation *rise=[CABasicAnimation animationWithKeyPath:@"transform.translation.y"];
+        rise.fromValue=@(-10); rise.toValue=@0; rise.duration=.18; rise.timingFunction=curve;
+        [layer addAnimation:fade forKey:@"fade"]; [layer addAnimation:rise forKey:@"rise"];
+    }
+    // VoiceOver users hear status the panel can never be navigated to.
+    NSAccessibilityPostNotificationWithUserInfo(NSApp,NSAccessibilityAnnouncementRequestedNotification,
+        @{NSAccessibilityAnnouncementKey:text,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityHigh)});
     uint64_t generation=++self.generation;
     double hold=fmin(4,1.3+text.length*.03);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(hold*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
         if(self.generation!=generation) return;
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-            context.duration=reduce ? 0 : .22; [[self.panel animator] setAlphaValue:0];
-        } completionHandler:^{ if(self.generation==generation) [self.panel orderOut:nil]; }];
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:^{ if(self.generation==generation) [self.panel orderOut:nil]; }];
+        if(!reduce) {
+            CABasicAnimation *fade=[CABasicAnimation animationWithKeyPath:@"opacity"];
+            fade.fromValue=@1; fade.toValue=@0; fade.duration=.22;
+            fade.timingFunction=[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+            [layer addAnimation:fade forKey:@"hide"];
+        }
+        [CATransaction setDisableActions:YES]; layer.opacity=0;
+        [CATransaction commit];
     });
 }
 @end

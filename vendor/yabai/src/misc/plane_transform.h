@@ -22,9 +22,37 @@ typedef struct {
     double x, y, scale_x, scale_y;
 } HwmPlaneTransform;
 
+/* Set in a record's window id: move the window's native frame to (x, y), at
+ * its own size, and clear any presentation override. Window ids never reach
+ * this bit. Only helpers advertising OSAX_ATTRIB_PLANE_NATIVE accept it. */
+#define HWM_PLANE_TRANSFORM_NATIVE 0x80000000u
+/* Set in a record's window id: set the window's alpha to x (0...1) in the
+ * same transaction, so a window coming on screen appears in the very frame
+ * that moves it there. y is 0 and both scales are 1. Only helpers
+ * advertising OSAX_ATTRIB_PLANE_ALPHA accept it. */
+#define HWM_PLANE_TRANSFORM_ALPHA 0x40000000u
+#define HWM_PLANE_TRANSFORM_FLAGS (HWM_PLANE_TRANSFORM_NATIVE | HWM_PLANE_TRANSFORM_ALPHA)
+static inline uint32_t hwm_plane_transform_wid(HwmPlaneTransform transform)
+{
+    return transform.wid & ~HWM_PLANE_TRANSFORM_FLAGS;
+}
+static inline bool hwm_plane_transform_native(HwmPlaneTransform transform)
+{
+    return (transform.wid & HWM_PLANE_TRANSFORM_NATIVE) != 0;
+}
+static inline bool hwm_plane_transform_alpha(HwmPlaneTransform transform)
+{
+    return (transform.wid & HWM_PLANE_TRANSFORM_ALPHA) != 0;
+}
+
 static inline bool hwm_plane_transform_valid(HwmPlaneTransform transform)
 {
-    return transform.wid && isfinite(transform.x) && isfinite(transform.y) &&
+    if (hwm_plane_transform_alpha(transform))
+        return !hwm_plane_transform_native(transform) && hwm_plane_transform_wid(transform) &&
+               transform.x >= 0 && transform.x <= 1 && transform.y == 0 &&
+               transform.scale_x == 1 && transform.scale_y == 1;
+    if (hwm_plane_transform_native(transform) && (transform.scale_x != 1 || transform.scale_y != 1)) return false;
+    return hwm_plane_transform_wid(transform) && isfinite(transform.x) && isfinite(transform.y) &&
            isfinite(transform.scale_x) && transform.scale_x > 0 &&
            isfinite(transform.scale_y) && transform.scale_y > 0 &&
            isfinite(1.0 / transform.scale_x) && isfinite(1.0 / transform.scale_y) &&

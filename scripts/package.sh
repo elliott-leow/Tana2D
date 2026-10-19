@@ -24,6 +24,8 @@ cp "$binary" "$stage_app/Contents/Helpers/tana2d-window-helper"
 chmod 0755 "$stage_app/Contents/Helpers/tana2d-window-helper"
 cp "$root_dir/vendor/yabai/LICENSE.txt" "$stage_app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
 if [ -f "$root_dir/docs/SETUP.html" ]; then cp "$root_dir/docs/SETUP.html" "$stage_app/Contents/Resources/SETUP.html"; fi
+cp "$root_dir/src/setup_ui/onboarding.html" "$stage_app/Contents/Resources/onboarding.html"
+if [ -f "$root_dir/assets/Tana2D.icns" ]; then cp "$root_dir/assets/Tana2D.icns" "$stage_app/Contents/Resources/Tana2D.icns"; fi
 cat > "$stage_app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -31,6 +33,7 @@ cat > "$stage_app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>Tana2D</string>
   <key>CFBundleExecutable</key><string>tana2d</string>
+  <key>CFBundleIconFile</key><string>Tana2D</string>
   <key>CFBundleIdentifier</key><string>dev.tana2d.manager</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Tana2D</string>

@@ -226,6 +226,41 @@ static void test_simultaneous_multi_neighbor_snap(void)
     near(target.point.x,200); near(target.point.y,200); assert(target.contact_count==80);
 }
 
+/* A quick sweep focuses nothing on the way; slowing, stopping or staying does. */
+static void test_focus_intent(void)
+{
+    HWMFocusIntent s={0}; double t=10,x=0;
+    // 4800 points per second, a report every 8 ms, across windows 1..4.
+    // The sweep starts in window 1, already focused; it crosses 2, 3 and 4.
+    for(int i=0;i<40;i++) { t+=.008; x+=38.4; bool go=hwm_focus_intent_sample(&s,1+(uint32_t)(i/10),x,300,t); if(i>=2) assert(!go); }
+    // The pointer stops in window 4: nothing more is reported, and a check
+    // after the settle interval focuses it.
+    assert(!hwm_focus_intent_settled(&s,4,t+.01));
+    assert(hwm_focus_intent_settled(&s,4,t+HWM_FOCUS_SETTLE+.002));
+    assert(!hwm_focus_intent_settled(&s,3,t+HWM_FOCUS_SETTLE+.002)); // Only the window it stopped in.
+    // Decelerating onto window 5 focuses it while still moving slowly.
+    HWMFocusIntent d={0}; t=20; x=0; bool focused=false;
+    for(int i=0;i<6;i++) { t+=.008; x+=32; hwm_focus_intent_sample(&d,4,x,300,t); } // Arriving at 4000 points per second.
+    for(int i=0;i<30 && !focused;i++) { t+=.008; double v=4000*pow(.82,i); x+=v*.008; focused=hwm_focus_intent_sample(&d,5,x,300,t); if(focused) assert(v<1200); }
+    assert(focused);
+    // A slow, deliberate move focuses at once.
+    HWMFocusIntent w={0}; t=30;
+    assert(hwm_focus_intent_sample(&w,6,0,0,t));
+    t+=.008; assert(hwm_focus_intent_sample(&w,7,2,0,t)); // 250 points per second.
+    // Staying in a window long enough focuses it even while moving fast.
+    HWMFocusIntent f={0}; t=40; x=0; bool dwell=false;
+    for(int i=0;i<6;i++) { t+=.008; x+=40; hwm_focus_intent_sample(&f,7,x,0,t); }
+    for(int i=0;i<120;i++) { t+=.008; x+=40; dwell=hwm_focus_intent_sample(&f,8,x,0,t); if(i<98) assert(!dwell); }
+    assert(dwell);
+    // A quick back-and-forth reverses in each window without settling there.
+    HWMFocusIntent r={0}; t=60; x=0; double v=3000;
+    for(int i=0;i<60;i++) { t+=.008; x+=v*.008; if(x>400 || x<0) { v=-v; x+=2*v*.008; }
+        bool go=hwm_focus_intent_sample(&r,x<200?10:11,x,0,t); if(i>=4) assert(!go); }
+    // Bunched reports carry no speed and do not count as slow.
+    HWMFocusIntent b={0}; t=50;
+    hwm_focus_intent_note(&b,0,0,t); assert(!hwm_focus_intent_sample(&b,9,30,0,t+.001));
+}
+
 static void test_auto_center(void)
 {
     HWMPlanePoint target;
@@ -349,6 +384,7 @@ int main(void)
     assert(hop>=.22 && hop<.26 && trip>hop && trip<=.42 && zoom>hop && zoom<=.42);
     near(hwm_plane_camera_duration((HWMPlaneCamera){0,0,0},to,1200,900),.36);
     test_auto_center();
+    test_focus_intent();
     HWMPlaneCamera start=hwm_plane_camera_mix(from,to,1200,900,0),end=hwm_plane_camera_mix(from,to,1200,900,1);
     near(start.x,from.x); near(start.scale,from.scale); near(end.y,to.y); near(end.scale,1);
     HWMPlaneCamera invalid_from={0,0,0};

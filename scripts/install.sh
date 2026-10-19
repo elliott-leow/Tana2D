@@ -19,6 +19,15 @@ if [ -e "$destination" ]; then
     existing_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)
     case "$existing_identifier" in dev.tana2d.manager) ;; *) printf '%s\n' "install.sh: refusing to replace an unrelated app at $destination" >&2; exit 1 ;; esac
 fi
+# A running Tana2D keeps the bundle that is about to be moved aside and
+# deleted; "open" below would only bring that instance forward, and from a
+# deleted bundle it can neither register as a login item nor relaunch. Ask it
+# to quit (it restores the desktop first) and start the new one afresh.
+if [ -e "$destination" ] && pgrep -q -x tana2d; then
+    "$destination/Contents/MacOS/tana2d" -m strip quit >/dev/null 2>&1 || true
+    i=0; while pgrep -q -x tana2d && [ "$i" -lt 50 ]; do sleep .1; i=$((i+1)); done
+    if pgrep -q -x tana2d; then pkill -TERM -x tana2d || true; sleep 1; fi
+fi
 stage_dir=$(mktemp -d "$parent_dir/.Tana2D.install.XXXXXX"); backup="${parent_dir}/.Tana2D.previous.$$.app"; installed=0
 cleanup() { rm -rf "$stage_dir"; if [ "$installed" -eq 0 ] && [ -e "$backup" ] && [ ! -e "$destination" ]; then mv "$backup" "$destination"; fi; }; trap cleanup EXIT HUP INT TERM
 cp -R "$app_source" "$stage_dir/Tana2D.app"
