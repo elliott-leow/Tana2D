@@ -98,6 +98,23 @@ static EVENT_HANDLER(APPLICATION_LAUNCHED)
         return;
     }
 
+    // Never this process: its own windows (the setup window) are not managed,
+    // and subscribing to its policy or launch state would only re-post this
+    // event. It stays in the process table so front-switch tracking sees it.
+    if (process->pid == getpid()) return;
+
+    // A process that keeps bouncing back here through its own key-value
+    // observations is never going to settle; stop resubscribing rather than
+    // pin a core. A real launch needs at most a handful of passes.
+    {
+        uint64_t now = read_os_timer();
+        if (now - process->launch_retry_time > read_os_freq()) { process->launch_retry_time = now; process->launch_retries = 0; }
+        if (++process->launch_retries > 32) {
+            if (process->launch_retries == 33) warn("%s: %s (%d) relaunched %d times in a second; giving up on it\n", __FUNCTION__, process->name, process->pid, process->launch_retries);
+            return;
+        }
+    }
+
     if (!__atomic_load_n(&process->ns_application, __ATOMIC_RELAXED)) {
         debug("%s: %s (%d) missing ns_application. fetching..\n", __FUNCTION__, process->name, process->pid);
         __atomic_store_n(&process->ns_application, workspace_application_create_running_ns_application(process), __ATOMIC_RELEASE);

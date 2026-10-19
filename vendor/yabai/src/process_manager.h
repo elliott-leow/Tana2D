@@ -12,6 +12,8 @@ struct process
     void *ns_application;
     int policy;
     bool volatile terminated;
+    int launch_retries;
+    uint64_t launch_retry_time;
 };
 
 struct process_manager

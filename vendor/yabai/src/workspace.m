@@ -102,6 +102,12 @@ void workspace_application_unobserve(void *ws_context, struct process *process)
 
 bool workspace_application_is_observable(struct process *process)
 {
+    /* Never this process. The setup window makes Tana2D a regular
+     * application for as long as it is open; observed like any other, its
+     * own window was tiled and then placed through Accessibility from a
+     * background queue, which AppKit refuses in-process (a fatal
+     * "Must only be used from the main thread"). */
+    if (process->pid == getpid()) return false;
     NSRunningApplication *application = __atomic_load_n(&process->ns_application, __ATOMIC_RELAXED);
     if (application) {
         process->policy = [application activationPolicy];
@@ -210,7 +216,7 @@ extern struct event_loop g_event_loop;
 {
     if ([keyPath isEqualToString:@"activationPolicy"]) {
         struct process *process = context;
-        if (process->terminated) return;
+        if (process->terminated || process->pid == getpid()) return;
 
         id result = [change objectForKey:NSKeyValueChangeNewKey];
         if ([result intValue] != process->policy) {
@@ -235,7 +241,7 @@ extern struct event_loop g_event_loop;
 
     if ([keyPath isEqualToString:@"finishedLaunching"]) {
         struct process *process = context;
-        if (process->terminated) return;
+        if (process->terminated || process->pid == getpid()) return;
 
         id result = [change objectForKey:NSKeyValueChangeNewKey];
         if ([result intValue] == 1) {
