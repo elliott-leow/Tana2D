@@ -433,6 +433,10 @@ static __thread bool hwm_sa_plane_pending_failed; // A collected reply said no, 
 static __thread uint16_t hwm_sa_plane_carried; // Records held over from a frame the helper was not ready for.
 static __thread bool hwm_sa_plane_held; // The last deferred send kept its records instead.
 static __thread bool hwm_sa_plane_defer;
+/* Client handoff diagnostics. ACK means transaction submitted, not displayed. */
+static __thread uint64_t hwm_sa_frames_sent,hwm_sa_frames_held,hwm_sa_replies;
+static __thread long long hwm_sa_ack_wait_total_ms,hwm_sa_ack_wait_max_ms;
+
 static bool hwm_sa_plane_flush(void);
 
 /* Read the oldest outstanding reply, waiting for it. */
@@ -450,6 +454,9 @@ static void hwm_sa_plane_collect_oldest(void)
     if (now >= 0 && deadline <= now) deadline = now + 1;
     unsigned char acknowledgement = 0;
     if (!hwm_sa_receive_byte(fd, &acknowledgement, deadline) || acknowledgement != 1) hwm_sa_plane_pending_failed = true;
+    long long waited=hwm_sa_monotonic_ms()-now;
+    if(waited>0) { hwm_sa_ack_wait_total_ms+=waited; if(waited>hwm_sa_ack_wait_max_ms) hwm_sa_ack_wait_max_ms=waited; }
+    ++hwm_sa_replies;
     close(fd);
 }
 /* Read the replies that have already arrived, without waiting for the rest. */
@@ -542,7 +549,7 @@ static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool de
     hwm_sa_plane_held = false;
     if (defer) {
         hwm_sa_plane_reap();
-        if (hwm_sa_plane_pending_count >= HWM_SA_PLANE_IN_FLIGHT) { hwm_sa_plane_held = true; return true; }
+        if (hwm_sa_plane_pending_count >= HWM_SA_PLANE_IN_FLIGHT) { ++hwm_sa_frames_held; hwm_sa_plane_held = true; return true; }
     } else if (!hwm_sa_plane_settle()) return false;
     long long start = hwm_sa_monotonic_ms();
     if (!bytes || !length || start < 0 || start > LLONG_MAX - HWM_SA_TIMEOUT_MS) return false;
@@ -550,6 +557,7 @@ static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool de
     int fd = hwm_sa_connect(g_sa_socket_file, deadline);
     if (fd < 0) return false;
     bool success = hwm_sa_send_all(fd, bytes, length, deadline);
+    if(success) ++hwm_sa_frames_sent;
     if (success && defer) {
         hwm_sa_plane_pending_fds[hwm_sa_plane_pending_count] = fd;
         hwm_sa_plane_pending_deadlines[hwm_sa_plane_pending_count++] = deadline;

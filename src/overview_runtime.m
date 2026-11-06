@@ -364,7 +364,7 @@ static void hwm_overview_finish_opening(void)
 static void hwm_overview_add(NSMutableArray *windows,NSMutableSet *seen,struct window *w)
 {
     if(!w || [seen containsObject:@(w->id)] || w->application->pid==getpid() ||
-       !window_manager_is_window_eligible(w) || !window_is_standard(w) ||
+       !window_manager_is_window_eligible(w) || !window_manager_is_plane_window(w) ||
        window_check_flag(w,WINDOW_MINIMIZE) || window_check_flag(w,WINDOW_FULLSCREEN) ||
        w->application->is_hidden || w->strip_ordered_out) return;
     struct view *view=window_manager_find_managed_window(&g_window_manager,w);

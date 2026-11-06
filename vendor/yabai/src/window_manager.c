@@ -16,14 +16,7 @@ static TABLE_COMPARE_FUNC(compare_wm)
     return *(uint32_t *) key_a == *(uint32_t *) key_b;
 }
 
-bool window_manager_is_window_eligible(struct window *window)
-{
-#ifdef HWM_TEST_FIXTURE_ONLY
-    if(!window->application || !window->application->name || strcmp(window->application->name,"Tana2DFixture")) return false;
-#endif
-    bool result = window->is_root && (window_is_real(window) || window_check_rule_flag(window, WINDOW_RULE_MANAGED));
-    return result;
-}
+#include "window_admission.h"
 
 void window_manager_query_window_rules(FILE *rsp)
 {
@@ -270,20 +263,6 @@ void window_manager_center_mouse(struct window_manager *wm, struct window *windo
     if (!CGRectContainsPoint(bounds, center)) return;
 
     CGWarpMouseCursorPosition(center);
-}
-
-bool window_manager_should_manage_window(struct window *window)
-{
-#ifdef HWM_TEST_FIXTURE_ONLY
-    if(!window_manager_is_window_eligible(window)) return false;
-#endif
-    if (!window->is_root)                           return false;
-    if (window_check_flag(window, WINDOW_FLOAT))    return false;
-    if (window_is_sticky(window->id))               return false;
-    if (window_check_flag(window, WINDOW_MINIMIZE)) return false;
-    if (window->application->is_hidden)             return false;
-
-    return (window_is_standard(window) && window_level_is_standard(window) && window_can_move(window)) || window_check_rule_flag(window, WINDOW_RULE_MANAGED);
 }
 
 struct view *window_manager_find_managed_window(struct window_manager *wm, struct window *window)
@@ -1559,11 +1538,7 @@ struct window *window_manager_create_and_add_window(struct space_manager *sm, st
                 goto out;
             }
 
-            if (window_is_sticky(window->id) ||
-                !window_can_move(window) ||
-                !window_is_standard(window) ||
-                !window_level_is_standard(window) ||
-                (!window_can_resize(window) && window_is_undersized(window))) {
+            if (window_manager_should_float_by_default(window)) {
                 window_set_flag(window, WINDOW_FLOAT);
             }
         } else {
@@ -2244,12 +2219,17 @@ void window_manager_make_window_floating(struct space_manager *sm, struct window
     if (!window_manager_is_window_eligible(window)) return;
 
     if (!force) {
-        if (!window_is_standard(window) || !window_level_is_standard(window) || !window_can_move(window)) {
+        if (!window_manager_is_plane_window(window)) {
             if (!window_check_rule_flag(window, WINDOW_RULE_MANAGED)) {
                 return;
             }
         }
     }
+
+    // Dialogs, panels and attached windows stay floating, even when an app
+    // rule or the float toggle asks for that application's windows to tile.
+    // Cleared, the flag would only drop them below the plane's tiles.
+    if (!should_float && !window_manager_may_tile(window)) return;
 
     if (should_float) {
         struct view *view = window_manager_find_managed_window(wm, window);

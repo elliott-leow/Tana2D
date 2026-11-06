@@ -70,13 +70,36 @@ static void test_example_is_clean(void) {
     [s release];
 }
 static void test_plane_bindings(void) {
-    TanaConfig *config=[[[TanaConfig alloc] initWithPath:test_path() defaultShortcuts:hwm_default_shortcuts()] autorelease];
+    NSString *path=test_path();
+    TanaConfig *config=[[[TanaConfig alloc] initWithPath:path defaultShortcuts:hwm_default_shortcuts()] autorelease];
     assert([config reload:NULL]); TanaConfigSnapshot *s=[config copySnapshot];
+    NSUInteger mod=NSEventModifierFlagControl|NSEventModifierFlagOption|NSEventModifierFlagCommand;
     assert(s.shortcutConflicts.count==0);
-    assert([[s actionForKeyCode:36 modifiers:NSEventModifierFlagControl] isEqual:@"select-window"]);
-    assert([[s actionForKeyCode:126 modifiers:NSEventModifierFlagControl] isEqual:@"select-window-alt"]);
-    assert([[s actionForKeyCode:36 modifiers:NSEventModifierFlagCommand] isEqual:@"terminal"]);
-    assert([[s actionForKeyCode:13 modifiers:NSEventModifierFlagCommand|NSEventModifierFlagShift] isEqual:@"browser"]);
+    assert([[s actionForKeyCode:36 modifiers:mod] isEqual:@"select-window"]);
+    assert([[s actionForKeyCode:1 modifiers:mod] isEqual:@"select-window-alt"]);
+    assert([[s actionForKeyCode:17 modifiers:mod] isEqual:@"terminal"]);
+    assert([[s actionForKeyCode:11 modifiers:mod] isEqual:@"browser"]);
+    assert(![s actionForKeyCode:12 modifiers:NSEventModifierFlagCommand]); /* Cmd-Q */
+    assert(![s actionForKeyCode:49 modifiers:NSEventModifierFlagCommand]); /* Spotlight */
+    assert(![s actionForKeyCode:36 modifiers:NSEventModifierFlagCommand]);
+    assert(![s actionForKeyCode:13 modifiers:NSEventModifierFlagCommand|NSEventModifierFlagShift]);
+    assert(![s actionForKeyCode:126 modifiers:NSEventModifierFlagControl]); /* Mission Control */
+    /* F11 toggles native fullscreen. The event's Function flag is stripped
+     * by the event tap, as for arrows; Control-Command-F stays the app's. */
+    assert([[s actionForKeyCode:103 modifiers:0] isEqual:@"fullscreen"]);
+    assert([TanaBindingDescription(s.shortcuts[@"fullscreen"]) isEqual:@"F11"]);
+    assert(![s actionForKeyCode:3 modifiers:NSEventModifierFlagControl|NSEventModifierFlagCommand]);
     assert(s.autofocusMode==TanaAutofocusOff); [s release];
+    write_text(path,@"{\"shortcuts\":{\"fullscreen\":\"fn+f12\",\"commands\":\"shift+f5\"}}");
+    assert([config reload:NULL]); s=[config copySnapshot];
+    assert([[s actionForKeyCode:111 modifiers:NSEventModifierFlagFunction] isEqual:@"fullscreen"]);
+    assert([[s actionForKeyCode:96 modifiers:NSEventModifierFlagShift] isEqual:@"commands"]);
+    assert(![s actionForKeyCode:103 modifiers:0] && s.diagnostics.count==0); [s release];
+    write_text(path,@"{\"shortcuts\":{\"terminal\":\"cmd+return\"}}");
+    assert([config reload:NULL]); s=[config copySnapshot];
+    assert([[s actionForKeyCode:36 modifiers:NSEventModifierFlagCommand] isEqual:@"terminal"]);
+    assert(![s actionForKeyCode:17 modifiers:mod]);
+    [s release]; [[NSFileManager defaultManager] removeItemAtPath:[path stringByDeletingLastPathComponent] error:NULL];
 }
+
 int main(void) { @autoreleasepool { test_plane_bindings(); test_rules_and_jump(); test_example_is_clean(); test_defaults(); test_malformed_is_atomic(); test_duplicates_and_invalid_numbers(); test_wrong_types_are_ignored(); test_persistence(); test_extended_settings(); puts("tana_config_test: OK"); } return 0; }

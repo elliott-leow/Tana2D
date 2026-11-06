@@ -53,6 +53,29 @@ static void test_palette_match_highlight_and_recent(void)
     [palette release];
 }
 
+static NSEvent *palette_mouse(NSView *view,NSEventType type,CGFloat x,CGFloat y)
+{
+    return [NSEvent mouseEventWithType:type location:[view convertPoint:NSMakePoint(x,y) toView:nil] modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:1 pressure:1];
+}
+static void test_palette_click_commit(void)
+{
+    TanaPalette *palette=[TanaPalette new];
+    palette.list=[[[TanaPaletteList alloc] initWithFrame:NSMakeRect(0,0,400,200)] autorelease];
+    palette.list.owner=palette;
+    palette.list.rows=@[@[@"first",@"First",@""],@[@"second",@"Second",@""]];
+    __block int runs=0; palette.run=^(NSString *name) { (void)name; ++runs; };
+    [palette.list mouseDown:palette_mouse(palette.list,NSEventTypeLeftMouseDown,20,12)]; assert(runs==0);
+    [palette.list mouseUp:palette_mouse(palette.list,NSEventTypeLeftMouseUp,20,12)]; assert(runs==1);
+    [palette.list mouseDown:palette_mouse(palette.list,NSEventTypeLeftMouseDown,20,12)];
+    [palette.list mouseUp:palette_mouse(palette.list,NSEventTypeLeftMouseUp,20,46)]; assert(runs==1);
+    [palette.list mouseDown:palette_mouse(palette.list,NSEventTypeLeftMouseDown,20,12)];
+    [palette.list mouseDragged:palette_mouse(palette.list,NSEventTypeLeftMouseDragged,80,12)];
+    [palette.list mouseUp:palette_mouse(palette.list,NSEventTypeLeftMouseUp,20,12)]; assert(runs==1);
+    [palette.list mouseDown:palette_mouse(palette.list,NSEventTypeLeftMouseDown,20,12)];
+    palette.list.rows=@[@[@"replacement",@"Replacement",@""]];
+    [palette.list mouseUp:palette_mouse(palette.list,NSEventTypeLeftMouseUp,20,12)]; assert(runs==1);
+    [palette release];
+}
 int main(void)
 {
     @autoreleasepool {
@@ -81,6 +104,7 @@ int main(void)
         assert([[row accessibilityLabel] isEqual:@""]);
         assert([palette.list accessibilityChildren].count==1U);
         [ran release];
+        test_palette_click_commit();
         test_palette_toggle_filters_commands();
         test_palette_match_highlight_and_recent();
         puts("accessibility tests passed");

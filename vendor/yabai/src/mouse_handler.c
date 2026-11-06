@@ -24,6 +24,7 @@ static MOUSE_HANDLER(mouse_handler)
     horizontal_input_trace(type,event);
     hwm_pointer_sample_event(type,event);
     if (horizontal_event(type, event)) return NULL;
+    horizontal_replay_native_down(proxy);
 
     switch (type) {
     case kCGEventTapDisabledByTimeout:
@@ -91,21 +92,9 @@ static MOUSE_HANDLER(mouse_handler)
         if (!atomic_exchange(&horizontal_moved_queued, true))
             event_loop_post(&g_event_loop, MOUSE_MOVED, (void *) CFRetain(event), mod);
     } break;
-    case /* kCGSEventDockControl */ 30: {
-        int type = CGEventGetIntegerValueField(event, /* kCGEventGestureHIDType */ 110);
-        if (type == /* kIOHIDEventTypeDockSwipe */ 23) {
-            int motion = CGEventGetIntegerValueField(event, /* kCGEventGestureSwipeMotion */ 123);
-            if (motion == /* kCGGestureMotionHorizontal */ 1) {
-                int phase = CGEventGetIntegerValueField(event, /* kCGEventGesturePhase */ 132);
-                if (phase == /* kCGSGesturePhaseBegan */ 1) {
-                    __atomic_store_n(&__pending_gesture, true, __ATOMIC_RELEASE);
-                } else if (phase == /* kCGSGesturePhaseEnded */ 4 || phase == /* kCGSGesturePhaseCancelled */ 8) {
-                    __atomic_store_n(&__pending_gesture, false, __ATOMIC_RELEASE);
-                    __atomic_store_n(&__last_gesture_time, read_os_timer(), __ATOMIC_RELEASE);
-                }
-            }
-        }
-    } break;
+    /* System Dock swipes that reach this fallback belong to macOS.
+     * Claimed workspace gestures are handled by horizontal_event above. */
+
     }
 
     return event;
@@ -290,7 +279,7 @@ end:
 
 void mouse_state_init(struct mouse_state *state)
 {
-    state->modifier    = MOUSE_MOD_ALT;
+    state->modifier    = MOUSE_MOD_FN;
     state->action1     = MOUSE_MODE_MOVE;
     state->action2     = MOUSE_MODE_RESIZE;
     state->drop_action = MOUSE_MODE_SWAP;

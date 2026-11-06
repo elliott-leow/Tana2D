@@ -10,6 +10,7 @@ typedef enum {
     HWM_PLANE_INTERRUPT_DESTROY,
     HWM_PLANE_INTERRUPT_RESUME,
     HWM_PLANE_INTERRUPT_MISSION_CONTROL,
+    HWM_PLANE_INTERRUPT_FULLSCREEN,
 } HWMPlaneInterruptReason;
 
 /* Event-tap ownership is intentionally distinct from manager ownership.  The
@@ -76,7 +77,7 @@ static void hwm_plane_abort_interaction(struct window *window,HWMPlaneInterruptR
 #ifdef HWM_NATIVE_ZOOM
     hwm_zoom_cancel_native();
 #endif
-    (void)reason;
+    if(!window) hwm_workspace_cancel();
     bool drag=hwm_plane_interaction_matches(window,hwm_drag_window);
     bool pick=hwm_plane_interaction_matches(window,hwm_plane_pick_window);
     bool edge=hwm_plane_interaction_matches(window,hwm_edge_window);

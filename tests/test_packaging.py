@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,18 @@ PACKAGE = ROOT / "scripts" / "package.sh"
 RELEASE = ROOT / "scripts" / "release.sh"
 
 class PackagingTests(unittest.TestCase):
+    def setUp(self):
+        # Temporary app installation must never stop the user's real manager.
+        directory = tempfile.TemporaryDirectory(prefix="Tana2D isolated processes ")
+        self.addCleanup(directory.cleanup)
+        tools = Path(directory.name)
+        for name, status in (("pgrep", 1), ("pkill", 99)):
+            script = tools / name
+            script.write_text(f"#!/bin/sh\nexit {status}\n")
+            script.chmod(0o755)
+        env = mock.patch.dict(os.environ, {"PATH": f"{tools}:{os.environ['PATH']}"})
+        env.start()
+        self.addCleanup(env.stop)
     def fixture(self, directory):
         app = directory / "source app" / "Tana2D.app"; binary = app / "Contents" / "MacOS" / "tana2d"
         binary.parent.mkdir(parents=True); binary.write_text("#!/bin/sh\nexit 0\n"); binary.chmod(0o755)

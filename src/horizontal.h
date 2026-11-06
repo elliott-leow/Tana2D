@@ -6,8 +6,10 @@
 static bool horizontal_flush_node(struct window_node *node);
 static void horizontal_tick(void);
 static void horizontal_input(void *context, int action);
+static void horizontal_replay_native_down(CGEventTapProxy proxy);
 static bool horizontal_event(CGEventType type, CGEventRef event);
 static void horizontal_focused(struct window *window, struct view *view);
+static void horizontal_deliberate_focus(struct window *window);
 static bool horizontal_drop(struct window *window, CGPoint point);
 static bool horizontal_drag(CGEventRef event);
 static bool horizontal_owns_native_drag(void);
@@ -48,6 +50,7 @@ static void horizontal_event_settle(void);
 /* Whether an event must wait for the last frame's helper reply before it is
  * handled. Input that only moves the camera, and position echoes that are
  * ignored while the camera moves, settle themselves if they read geometry. */
+static void horizontal_replay_native_down(CGEventTapProxy proxy);
 static bool horizontal_event_settles(int type, void *context, int param1);
 /* At most one move notification per window waits in the queue: its handler
  * reads current geometry, never the notification's, so a second one adds
@@ -70,6 +73,11 @@ static uint32_t horizontal_expected_focus(struct application *application);
 
 static void horizontal_mouse_down(struct window *window, CGPoint point);
 static bool horizontal_resize_event(struct window *window);
+/* Native fullscreen hand-off (plane_fullscreen.m). */
+static bool hwm_frame_covers_display(CGRect frame);
+static bool hwm_fullscreen_frame_adoptable(struct window *w, CGRect native);
+static bool hwm_fullscreen_began(struct window *w, struct view *view);
+static void horizontal_fullscreen_exited(struct window *w);
 /* Set while a pointer event of that kind is queued; coalesce each mouse
  * button independently so an in-flight right drag never drops a left drag. */
 static _Atomic bool horizontal_moved_queued, horizontal_dragged_queued[2];

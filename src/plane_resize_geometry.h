@@ -2,10 +2,9 @@
 #define TANA2D_PLANE_RESIZE_GEOMETRY_H
 #include "plane_geometry.h"
 enum { HWM_EDGE_TOP=1, HWM_EDGE_BOTTOM=2, HWM_EDGE_LEFT=4, HWM_EDGE_RIGHT=8 };
-/* Every path decides against the displayed, scaled frame in screen points.
- * Keeping one band avoids a title-bar press changing meaning at a 2-4px seam. */
+/* Every path decides against the same displayed frame in screen points. */
 enum { HWM_PLANE_RESIZE_EDGE_SLOP=5 };
-static inline unsigned hwm_plane_resize_hit(HWMPlaneRect frame,HWMPlanePoint point)
+static inline unsigned hwm_plane_resize_hit_scaled(HWMPlaneRect frame,HWMPlanePoint point,double scale)
 {
     if(!hwm_plane_rect_valid(frame) || !isfinite(point.x) || !isfinite(point.y)) return 0;
     if(point.x<frame.x-HWM_PLANE_RESIZE_EDGE_SLOP || point.x>frame.x+frame.width+HWM_PLANE_RESIZE_EDGE_SLOP ||
@@ -13,9 +12,17 @@ static inline unsigned hwm_plane_resize_hit(HWMPlaneRect frame,HWMPlanePoint poi
     unsigned direction=0;
     if(fabs(point.x-frame.x)<=HWM_PLANE_RESIZE_EDGE_SLOP) direction|=HWM_EDGE_LEFT;
     else if(fabs(point.x-frame.x-frame.width)<=HWM_PLANE_RESIZE_EDGE_SLOP) direction|=HWM_EDGE_RIGHT;
-    if(fabs(point.y-frame.y)<=HWM_PLANE_RESIZE_EDGE_SLOP) direction|=HWM_EDGE_TOP;
+    /* Keep the outside reach in screen points, but scale the part inside the
+     * title bar with the window. Otherwise at low zoom a five-point band can
+     * consume most of the visible title bar. */
+    double top_inside=HWM_PLANE_RESIZE_EDGE_SLOP*(isfinite(scale) && scale>0?fmin(scale,1):1);
+    if(point.y>=frame.y-HWM_PLANE_RESIZE_EDGE_SLOP && point.y<=frame.y+top_inside) direction|=HWM_EDGE_TOP;
     else if(fabs(point.y-frame.y-frame.height)<=HWM_PLANE_RESIZE_EDGE_SLOP) direction|=HWM_EDGE_BOTTOM;
     return direction;
+}
+static inline unsigned hwm_plane_resize_hit(HWMPlaneRect frame,HWMPlanePoint point)
+{
+    return hwm_plane_resize_hit_scaled(frame,point,1);
 }
 static inline HWMPlaneRect hwm_plane_resize_target(HWMPlaneRect start,HWMPlanePoint delta,double scale,unsigned direction)
 {

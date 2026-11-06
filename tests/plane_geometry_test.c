@@ -279,6 +279,19 @@ static void test_auto_center(void)
     assert(hwm_plane_auto_center((HWMPlaneCamera){640,50,1},(HWMPlaneCamera){642,50,1},targets,2,120)==-1); // A touch.
     assert(hwm_plane_auto_center(start,(HWMPlaneCamera){700,50,1},targets,2,120)==-1); // Already centered.
     assert(hwm_plane_auto_center(start,(HWMPlaneCamera){640,80,1},NULL,2,120)==-1);
+    // A modest crossing near center still captures; leaving center does not.
+    assert(hwm_plane_auto_center((HWMPlaneCamera){684,50,1},(HWMPlaneCamera){718,50,1},targets,2,120)==0);
+    assert(hwm_plane_auto_center((HWMPlaneCamera){695,50,1},(HWMPlaneCamera){718,50,1},targets,2,120)==-1);
+    assert(hwm_plane_auto_center((HWMPlaneCamera){684,50,1},(HWMPlaneCamera){740,50,1},targets,2,120)==-1);
+    assert(hwm_plane_auto_center((HWMPlaneCamera){684,50,1},(HWMPlaneCamera){689,50,1},targets,2,120)==-1);
+    // A shallow near approach and a crossing well to one side are distinct.
+    assert(hwm_plane_auto_center((HWMPlaneCamera){680,50,1},(HWMPlaneCamera){684,56,1},targets,2,120)==0);
+    assert(hwm_plane_auto_center((HWMPlaneCamera){684,68,1},(HWMPlaneCamera){716,68,1},targets,2,120)==-1);
+    HWMPlanePoint ambiguous[]={{700,40},{700,60}};
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){690,50,1},ambiguous,2,120)==-1);
+    HWMPlanePoint duplicates[]={{700,50},{700,50}};
+    assert(hwm_plane_auto_center(start,(HWMPlaneCamera){690,50,1},duplicates,2,120)==0);
+
 }
 
 

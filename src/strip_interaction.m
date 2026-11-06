@@ -22,6 +22,8 @@ static void horizontal_mouse_down(struct window *w, CGPoint p)
 #ifdef HWM_NATIVE_ZOOM
     hwm_zoom_native_press(v,w);
 #endif
+    /* After the camera freeze above, so the sample is the frame actually grabbed. */
+    hwm_drag_native_press_sample(w);
     if(!v || v->layout!=VIEW_STRIP || g_mouse_state.current_action==MOUSE_MODE_MOVE) return;
     if(!window_check_flag(w,WINDOW_RESIZABLE)) return;
     CGRect f=g_mouse_state.window_frame, hit=w->strip_last_frame;
@@ -33,9 +35,8 @@ static void horizontal_mouse_down(struct window *w, CGPoint p)
         direction=(p.x<CGRectGetMidX(hit)?HANDLE_LEFT:HANDLE_RIGHT)|(p.y<CGRectGetMidY(hit)?HANDLE_TOP:HANDLE_BOTTOM);
         g_mouse_state.direction=direction;
     }
-    else direction=hwm_plane_resize_hit((HWMPlaneRect){hit.origin.x,hit.origin.y,hit.size.width,hit.size.height},
-                                         (HWMPlanePoint){p.x,p.y});
-    if(g_mouse_state.current_action==MOUSE_MODE_NONE && displayed_scale>=.70 && (direction&HANDLE_TOP)) return;
+    else direction=hwm_plane_resize_hit_scaled((HWMPlaneRect){hit.origin.x,hit.origin.y,hit.size.width,hit.size.height},
+                                                (HWMPlanePoint){p.x,p.y},displayed_scale);
     if(!direction) return;
     (void)hwm_ax_cancel_resize(w->id);
     hwm_nav_pending=false; hwm_nav_window=0;
@@ -57,7 +58,8 @@ static bool hwm_edge_update(struct window *w, struct view *v)
         CGRect displayed=CGRectNull;
         bool shown=hwm_plane_displayed_frame(w->id,&displayed);
         if(hypot(actual.origin.x-hwm_edge_origin.origin.x,actual.origin.y-hwm_edge_origin.origin.y)>3 ||
-           (shown && hypot(displayed.origin.x-w->strip_last_frame.origin.x,displayed.origin.y-w->strip_last_frame.origin.y)>3)) {
+           (shown && hypot(displayed.origin.x-w->strip_last_frame.origin.x,displayed.origin.y-w->strip_last_frame.origin.y)>3 &&
+            !(hwm_drag_native_press_sampled && hwm_drag_native_near(displayed.origin,hwm_drag_native_press_shown)))) {
             uint64_t generation=hwm_mouse_pointer_generation;
             CGPoint point;
             if(hwm_mouse_pointer_button==kCGMouseButtonLeft && generation &&

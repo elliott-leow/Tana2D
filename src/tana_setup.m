@@ -252,7 +252,7 @@ static NSDictionary *tana_accessible_settings(void)
 static NSDictionary *tana_accessible_shortcuts(void)
 {
     /* Preserve Spotlight, app Quit, and VoiceOver's Control-Option-P. */
-    return @{@"float-alt":@NO,@"utility":@"ctrl+cmd+u",@"utility-mark":@"ctrl+shift+cmd+u",@"float":@"alt+cmd+space",@"close":@"alt+cmd+q",@"commands":@"ctrl+cmd+p"};
+    return @{@"float-alt":@NO,@"utility":@"ctrl+cmd+u",@"utility-mark":@"ctrl+shift+cmd+u",@"float":@"ctrl+shift+alt+cmd+space",@"close":@"ctrl+shift+alt+cmd+q",@"commands":@"ctrl+cmd+p"};
 }
 static BOOL tana_keyboard_mode(NSDictionary *config)
 {

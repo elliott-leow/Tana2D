@@ -79,8 +79,10 @@ static bool hwm_render(struct view *view, double now)
                 if(!size_animation && !window->strip_size_pending && !hwm_resize_busy(window)) {
                     CGRect measured=CGRectNull;
                     horizontal_event_settle();
+                    // A display-sized frame may be native fullscreen; the resize
+                    // hook or the sweep asks the application before it is adopted.
                     if(SLSGetWindowBounds(g_connection,window->id,&measured)==kCGErrorSuccess &&
-                       measured.size.width>=100 && measured.size.height>=100) {
+                       measured.size.width>=100 && measured.size.height>=100 && hwm_fullscreen_frame_adoptable(window,measured)) {
                         window->frame=measured;
                         window->strip_width=window->strip_from_width=measured.size.width;
                         window->strip_height=window->strip_from_height=measured.size.height;
@@ -222,7 +224,10 @@ static bool hwm_render(struct view *view, double now)
                             hwm_resize_submit(window,base,true);
                             active=true; continue;
                         }
-                        window->strip_min_width=fmax(window->strip_min_width,actual.size.width);
+                        // A height mismatch or a failed grow says nothing
+                        // about minimum width. Learn only a rejected shrink.
+                        if(actual.size.width>window->strip_width+1)
+                            window->strip_min_width=fmax(window->strip_min_width,actual.size.width);
                         hwm_column_width(view,window,actual.size.width);
                         if(isfinite(actual.size.height) && actual.size.height>=100) window->strip_height=actual.size.height;
                         window->strip_full_width = false;
@@ -343,8 +348,10 @@ static bool horizontal_resize_event(struct window *window)
     if (!hwm_ready || hwm_paused || !view || view->layout != VIEW_STRIP) return false;
     if (hwm_overview_active) return true;
     if (window->id==hwm_edge_window) { hwm_edge_update(window,view); hwm_wake(); return true; }
-    // Entering native fullscreen is a resize too, and the engine must see it:
-    // such a window has already left the strip's Space.
+    // Entering native fullscreen is a resize too. The tile is handed to
+    // macOS here: the engine's own check can find this frame already cached.
+    if (hwm_fullscreen_began(window,view)) return true;
+    // A window moved to another Space is the engine's to handle.
     if (hwm_window_left_strip(window)) return false;
     window->strip_native_resize_pending=true;
     // AppKit may notify before WindowServer publishes the new bounds. Keep

@@ -15,6 +15,7 @@ struct window {
     bool strip_initialized,strip_plane_scaled,strip_transform_dirty,strip_native_move_pending,strip_size_pending,strip_native_resize_pending,strip_offscreen;
     CGRect frame,strip_last_frame;
     CGPoint strip_server_moved; int strip_native_failures; bool strip_native_riding;
+    bool strip_fullscreen_probe;
 };
 static struct { uint32_t focused_window_id; } g_window_manager={1};
 static struct application app={.pid=123};
@@ -73,6 +74,8 @@ static unsigned server_moves;
 static void hwm_batch_begin(void) {}
 static bool scripting_addition_move_window(uint32_t id,double x,double y) { ++server_moves;native[id-1].origin=CGPointMake(x,y);return true; }
 static bool hwm_resize_busy(struct window *w) { (void)w;return false; }
+/* No fixture frame fills the display: native fullscreen detection is not exercised here. */
+static bool hwm_fullscreen_frame_adoptable(struct window *w,CGRect frame) { (void)w;(void)frame;return true; }
 static unsigned indexFor(AXUIElementRef e) { int value=0;assert(CFNumberGetValue((CFNumberRef)e,kCFNumberIntType,&value));assert(value>=1&&value<=2);return (unsigned)value-1; }
 static AXError mockTimeout(AXUIElementRef e,float t) { (void)e;assert(t<=.2f);return 0; }
 static bool ax_enhanced_userinterface(AXUIElementRef e) { (void)e;return false; }
@@ -229,6 +232,22 @@ static void test_saved_layout_size_is_restored_explicitly(void) {
     assert(!hwm_zoom_render_native(&view,11));
     assert(size_calls==1&&windows[0].strip_width==400&&native[0].size.width==400);
 }
+static void test_two_window_screen_split_resizes_both_apps(void) {
+    reset();
+    for(int i=0;i<2;i++) {
+        windows[i].strip_from_width=windows[i].strip_width;
+        windows[i].strip_from_height=windows[i].strip_height;
+        windows[i].strip_world_x=i?606:0; windows[i].strip_world_y=0;
+        windows[i].strip_width=594;windows[i].strip_height=900;
+    }
+    assert(hwm_zoom_render_native(&view,10));drain();
+    assert(!hwm_zoom_render_native(&view,11));
+    assert(size_calls==2);
+    assert(native[0].size.width==594 && native[1].size.width==594);
+    assert(native[0].size.height==900 && native[1].size.height==900);
+    assert(native[0].origin.x==12 && native[1].origin.x==618);
+    assert(!windows[0].strip_plane_scaled && !windows[1].strip_plane_scaled);
+}
 int main(void) { @autoreleasepool {
     test_handoff_waits_and_preserves_sizes();test_native_failure_does_not_block_input();
     test_native_job_waits_for_appkit_and_server_agreement();
@@ -238,6 +257,7 @@ int main(void) { @autoreleasepool {
     test_cancelled_queue_never_issues_position();
     test_zoom_never_resizes_an_app_changed_window();
     test_saved_layout_size_is_restored_explicitly();
+    test_two_window_screen_split_resizes_both_apps();
     test_slow_window_does_not_block_ready_window();
     test_native_camera_animation_keeps_input_live();
     test_native_paint_lag_never_hides_or_reissues_placement();

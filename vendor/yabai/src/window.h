@@ -97,6 +97,8 @@ struct window
     CGRect frame;
     CGRect windowed_frame;
     bool is_root;
+    bool is_child;   /* attached to a parent window in WindowServer */
+    bool is_modal;   /* AXModal when it was created */
     bool is_eligible;
     uint8_t notification;
     uint8_t rule_flags;
@@ -117,6 +119,22 @@ struct window
     float strip_close_alpha;
     bool strip_close_pending;
     bool strip_float_full,strip_ordered_out;
+    /* In native fullscreen on a Space of its own. Its tile left the plane and
+     * strip_fullscreen_world keeps the world rect it returns to. */
+    bool strip_fullscreen_away;
+    CGRect strip_fullscreen_world;
+    /* A display-sized frame waiting to be asked about (strip_fullscreen_probe),
+     * and the last such size the application said was not fullscreen. */
+    bool strip_fullscreen_probe;
+    CGSize strip_fullscreen_checked;
+    /* A secondary window following its owner tile (plane_satellite.m): the
+     * offset from the owner's world origin, where it was last drawn and at
+     * what scale, and whether AppKit has been given that frame. */
+    uint32_t strip_owner;
+    CGPoint strip_owner_delta, strip_sat_shown;
+    double strip_sat_scale, strip_sat_moved;
+    bool strip_sat_synced;
+    uint8_t strip_sat_failures;
     CGRect strip_last_frame;
     double strip_last_offset;
     double strip_last_camera_y;
@@ -213,6 +231,8 @@ bool window_is_undersized(struct window *window);
 bool window_is_fullscreen(struct window *window);
 bool window_is_real(struct window *window);
 bool window_is_standard(struct window *window);
+bool window_has_window_role(struct window *window);
+bool window_is_dialog(struct window *window);
 bool window_level_is_standard(struct window *window);
 bool window_is_unknown(struct window *window);
 bool window_observe(struct window *window);

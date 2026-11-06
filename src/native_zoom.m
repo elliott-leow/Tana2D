@@ -211,6 +211,8 @@ static bool hwm_zoom_render_native(struct view *view,double now)
         if(hidden) { hwm_visibility_set(w,true,CGRectNull);continue; }
         CGRect native=CGRectNull;
         if(!hwm_zoom_bounds_lookup(snap_ids,snap_bounds,snap_found,snap_count,w->id,&native)) {pending=unready=true;continue;}
+        // A display-sized frame may be native fullscreen: ask before placing it.
+        if(!hwm_fullscreen_frame_adoptable(w,native)) {pending=true;continue;}
         if(![hwm_zoom_restore_sizes containsObject:@(w->id)] && !hwm_resize_busy(w) &&
            fabs(w->strip_from_width-w->strip_width)<1 && fabs(w->strip_from_height-w->strip_height)<1 &&
            (fabs(native.size.width-w->strip_width)>1 || fabs(native.size.height-w->strip_height)>1)) {
@@ -241,7 +243,7 @@ static bool hwm_zoom_render_native(struct view *view,double now)
     struct window *checks[64];CGRect check_frames[64];uint32_t check_ids[64];int check_count=0;
     for(struct window_node *n=window_node_find_first_leaf(view->root);n;n=window_node_find_next_leaf(n)) for(int i=0;i<n->window_count;i++) {
         struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
-        if(!w || !w->strip_initialized || w->strip_offscreen || w->id==hwm_drag_window || w->id==hwm_edge_window)continue;
+        if(!w || !w->strip_initialized || w->strip_offscreen || w->strip_fullscreen_probe || w->id==hwm_drag_window || w->id==hwm_edge_window)continue;
         CGRect desired=w->strip_last_frame,native=CGRectNull,accepted=CGRectNull;
         // The projections above move no native frame: the snapshot still holds.
         if(!hwm_zoom_bounds_lookup(snap_ids,snap_bounds,snap_found,snap_count,w->id,&native) || hwm_resize_busy(w)) {pending=unready=true;continue;}

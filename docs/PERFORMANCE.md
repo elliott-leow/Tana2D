@@ -332,6 +332,112 @@ still zooms, so the live tests are unchanged. Pinch reports now reach the
 loop at the trackpad's report rate with the device clock mapped as the pan's
 is, rather than through the recogniser's start-up hysteresis.
 
+## Pinch or scroll (2026-10-19)
+
+Two complaints with the contact pinch above: a two-finger scroll in an
+application sometimes turned into a zoom part-way, and a pinch had to be
+close to anti-parallel to zoom at all. Both came from the way a pair was
+decided. A scroll was only latched once it had travelled 3 mm with the
+separation within 30% of that, so a scroll whose fingers parted a little
+more than that stayed undecided and zoomed as soon as the spread reached
+3 mm, however far along it was. And fingers settling as they land shift the
+pair a millimetre or two with no spread, which was enough to latch the pair
+as a scroll before the pinch had started; the pinch then did nothing until
+the fingers lifted.
+
+A pair is now decided once, when its spread (change in separation) and
+travel (movement of the midpoint) together reach about 3 mm: a zoom if the
+spread is at least half the travel, otherwise a scroll, and either holds
+until the fingers lift. A spread of 1.6 mm with little travel still zooms
+at once. A thumb that rests, or drifts along at a third of the index
+finger's speed, is a zoom; fingers that part at under half the speed they
+scroll at are a scroll. While a pair is undecided, fingers that hold still
+within 0.16 mm for 100 ms are measured afresh from where they rest, so the
+landing settle and any pause before the gesture do not count. The unit
+test (`plane_pinch_test`) covers the settle, the rest, the drifting thumb
+and a diverging scroll.
+
+When the zoom engages after the application has already received the
+scroll's first events, the first dropped event is turned into the gesture's
+end with no movement rather than dropped outright, so the application does
+not wait for an end that never comes.
+
+## Scroll read as a pinch (2026-10-19, later)
+
+A two-finger scroll in an application still zoomed the plane now and then.
+The pair was judged on its motion since the rest as a whole, so anything
+that parted the fingers early stayed in the ratio: a scroll in which one
+finger sets off a few millimetres before the other is, until the second
+finger moves, exactly a thumb-anchored pinch (along the fingers' own line,
+as in a horizontal scroll, 2 mm of lead is a spread of 2 mm against 1 mm
+of travel), and a fingertip whose contact grows as it lands shifts a
+millimetre or two along that line. Either reached the decision point with
+the spread at half the travel and zoomed, swallowing the scroll.
+
+Three changes in `plane_pinch.h`, with the thresholds unchanged:
+
+- **Recent motion must agree.** The spread has to be at least half the
+  travel over the latest 1.6 mm of motion (or the latter half of it, when
+  there is less) as well as since the rest. Once the trailing finger catches
+  up the recent motion is all travel, and the pair stops reading as a pinch.
+- **Confirmation.** The pair zooms only after it has read as a pinch for
+  40 ms without a break. A scroll's lead is over within that; a pinch goes
+  on. Fingers moving against each other, each by at least a quarter of the
+  spread, cannot be a scroll's lead, so that pair keeps the early 1.6 mm
+  path and confirms in 20 ms.
+- **Catch-up paid out.** The spread accrued before the pair engaged used to
+  arrive in one step, which with the confirmation would have been a jump of
+  ×1.3-1.6 at ordinary pinch speeds. It is now paid out over 60 ms on top of
+  the fingers' own motion; a lift mid-way drops what is left.
+
+A pair is latched as a scroll when it reaches the decision point reading
+as a scroll both overall and recently; an ambiguous pair stays undecided,
+scrolling the application, until the motion settles it. What this costs a
+pinch, at 125 Hz, from a sweep of the recogniser (`first step` is the first
+frame's zoom, after the payout):
+
+| Pattern | 2 cm/s | 5 cm/s | 10 cm/s | 20 cm/s |
+|---|---|---|---|---|
+| Fingers against each other | 2.1 mm, 104 ms | 2.8 mm, 56 ms | 4.0 mm, 40 ms | 6.4 mm, 32 ms |
+| Thumb resting | 3.7 mm, 184 ms | 5.2 mm, 104 ms | 7.2 mm, 72 ms | 11 mm, 56 ms |
+| Thumb drifting along at a third | 2.7 mm, 272 ms | 3.6 mm, 144 ms | 4.4 mm, 88 ms | 6.4 mm, 64 ms |
+
+The unit test adds a leading finger in a fast, a slow and a diagonal
+scroll, a landing shift, a closing pinch, a pinch that stops before its
+confirmation (it still zooms) and the payout.
+
+### Second pass
+
+Scrolls still zoomed now and then. Three more changes:
+
+- **Share raised to 1.** The spread must at least match the travel, overall
+  and recently. A thumb that rests, or drifts along at under a third of the
+  index finger's speed, still zooms; two fingers moving the same way at
+  different speeds (one at twice the other's: share 0.63) are now a scroll.
+- **Confirmation 60 ms** (30 ms for fingers moving against each other),
+  and each finger must move at least 30% of the spread to count as against
+  the other.
+- **The system's recogniser as a shortcut.** macOS reports a magnify only
+  when the fingers move against each other, which a scroll never does. A
+  magnify event arriving while a pair is undecided (`hwm_contact_pinch_system`)
+  makes the contacts zoom on the next frame, with no confirmation, so a
+  clean pinch is as quick as it ever was. A pair already latched as a scroll
+  ignores it.
+
+Each decision is logged with the distances involved, never the positions:
+`/usr/bin/log show --last 10m --predicate 'process == "tana2d" AND
+eventMessage CONTAINS "pinch"'` lists `zoom` and `scroll` lines with the
+spread, travel, recent spread and travel in millimetres and which tests
+passed, so the next complaint can be read against the actual gesture.
+
+Cost to a pinch the system does not report, at 125 Hz:
+
+| Pattern | 2 cm/s | 5 cm/s | 10 cm/s | 20 cm/s |
+|---|---|---|---|---|
+| Fingers against each other | 2.2 mm, 112 ms | 3.2 mm, 64 ms | 4.8 mm, 48 ms | 8.0 mm, 40 ms |
+| Thumb resting | 4.2 mm, 208 ms | 6.4 mm, 128 ms | 9.6 mm, 96 ms | 16 mm, 80 ms |
+| Thumb drifting along at a quarter | 3.3 mm, 272 ms | 4.6 mm, 152 ms | 6.7 mm, 112 ms | 11 mm, 88 ms |
+
 ## WindowServer pass (2026-10-19)
 
 The question this pass answered: why WindowServer sits at 30-40% while the

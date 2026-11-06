@@ -1080,6 +1080,33 @@ out:
     return standard_win;
 }
 
+bool window_has_window_role(struct window *window)
+{
+    CFStringRef role = window_role(window);
+    return role && CFEqual(role, kAXWindowRole);
+}
+
+bool window_is_dialog(struct window *window)
+{
+    CFStringRef subrole = window_subrole(window);
+    return subrole && (CFEqual(subrole, kAXDialogSubrole) ||
+                       CFEqual(subrole, kAXSystemDialogSubrole) ||
+                       CFEqual(subrole, kAXSystemFloatingWindowSubrole));
+}
+
+static bool window_ax_is_modal(struct window *window)
+{
+    bool result = false;
+    CFTypeRef value = NULL;
+
+    if (AXUIElementCopyAttributeValue(window->ref, kAXModalAttribute, &value) == kAXErrorSuccess && value) {
+        result = CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue(value);
+    }
+
+    if (value) CFRelease(value);
+    return result;
+}
+
 bool window_level_is_standard(struct window *window)
 {
     int level = window_level(window->id);
@@ -1108,7 +1135,10 @@ struct window *window_create(struct application *application, AXUIElementRef win
     window->role = window_ax_role(window);
     window->subrole = window_ax_subrole(window);
     window->title = window_title(window);
-    window->is_root = !window_parent(window->id) || window_is_root(window);
+    uint32_t parent = window_parent(window->id);
+    window->is_child = parent != 0;
+    window->is_root = !parent || window_is_root(window);
+    window->is_modal = window_ax_is_modal(window);
 
     if (window_shadow(window->id)) {
         window_set_flag(window, WINDOW_SHADOW);

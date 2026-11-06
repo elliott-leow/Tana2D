@@ -30,7 +30,7 @@ static bool horizontal_drag(CGEventRef event)
         else return true;
     }
     hwm_drag_point=point; ++hwm_prof_drag_events;
-    hwm_snap_free=(CGEventGetFlags(event)&kCGEventFlagMaskCommand)!=0;
+    hwm_snap_free=hwm_snap_declined || (CGEventGetFlags(event)&kCGEventFlagMaskCommand)!=0;
     if(hwm_edge_window==window->id) {
         if(g_mouse_state.current_action==MOUSE_MODE_RESIZE) {
             double dx=(point.x-g_mouse_state.down_location.x)/hwm_plane_scale,dy=(point.y-g_mouse_state.down_location.y)/hwm_plane_scale;
@@ -80,7 +80,7 @@ static void hwm_drag_autoscroll(struct view *view,double now)
     }
     if(hwm_drag_native_finishing) { hwm_drag_native_finish_tick(view,w,now); return; }
     /* Pressing or releasing Command without moving still updates the magnet. */
-    bool free=(CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState)&kCGEventFlagMaskCommand)!=0;
+    bool free=hwm_snap_declined || (CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState)&kCGEventFlagMaskCommand)!=0;
     if(free!=hwm_snap_free) { hwm_snap_free=free; hwm_drag_move_pending=true; }
     /* A nonzero owner has a button-specific sampler record. Validate it before
      * every tick: this stops either button at its own up and lets an active
@@ -100,7 +100,11 @@ static void hwm_drag_autoscroll(struct view *view,double now)
     /* A pointer event that sampled the surface moments ago leaves nothing for
      * the frame to learn; with the pointer still, the frame keeps sampling
      * for AppKit's own late moves. */
-    if(hwm_drag_native) { if(hwm_now()-hwm_drag_native_sampled_at>.006) hwm_drag_native_sync(view,w); return; }
+    if(hwm_drag_native) {
+        if(hwm_now()-hwm_drag_native_sampled_at>.006) hwm_drag_native_sync(view,w);
+        if(hwm_drag_native_moved) hwm_drag_preview_update(view,w);
+        return;
+    }
     // The tap publishes every drag before coalescing. Never poll the cursor
     // cache here: consuming drag events can leave that cache frozen.
     if(sampled && (g_mouse_state.window==w || hwm_plane_pick_window==w->id)) {
@@ -120,6 +124,7 @@ static void hwm_drag_autoscroll(struct view *view,double now)
         hwm_drag_camera_owned=false;
         hwm_drag_move=hwm_drag_world_at(view,hwm_drag_point); hwm_drag_move_pending=true;
     }
+    hwm_drag_preview_update_at(view,w,hwm_drag_world_at(view,hwm_drag_point));
     // The magnet's ease carries on between pointer samples.
     if(hwm_drag_move_pending || hwm_snap_easing) { hwm_drag_move_pending=false; hwm_drag_submit_plane(view,w,hwm_drag_move); }
 }

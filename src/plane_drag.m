@@ -56,7 +56,6 @@ static bool hwm_drag_submit_plane(struct view *view,struct window *window,CGPoin
  * beneath our presentation bounds, keep the surface attached to the pointer
  * through the same projection path as a plane drag. A stationary native
  * anchor alone is not evidence of a drag: body selections remain untouched. */
-static bool hwm_drag_native_finishing;
 static bool hwm_drag_native_recovering;
 static double hwm_drag_native_finish_began,hwm_drag_native_finish_deadline;
 static CGRect hwm_drag_native_finish_frame;
@@ -84,15 +83,16 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
      * published its first move yet. A body selection must not become a drop.
      * Native anchors and displayed origins are independent; test both only
      * after obtaining a real presentation sample. */
-    if(!hwm_drag_native_moved && CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin) &&
-       (hwm_drag_native_unscaled || CGPointEqualToPoint(displayed,window->strip_last_frame.origin))) return true;
+    bool anchor_still=hwm_drag_native_near(frame.origin,g_mouse_state.window_frame.origin);
+    bool shown_still=hwm_drag_native_unscaled || hwm_drag_native_shown_still(window,displayed);
+    if(!hwm_drag_native_moved && anchor_still && shown_still) return true;
     bool observed_native_move=hwm_drag_native_moved;
     hwm_drag_commit_interaction(window);
     hwm_drag_native_moved=true;
-    bool native_anchor_moved=!CGPointEqualToPoint(frame.origin,g_mouse_state.window_frame.origin);
+    bool native_anchor_moved=!anchor_still;
     if(!hwm_drag_native_finishing &&
        (hwm_drag_native_projected || (!observed_native_move && native_anchor_moved &&
-        CGPointEqualToPoint(displayed,window->strip_last_frame.origin)))) {
+        hwm_drag_native_near(displayed,window->strip_last_frame.origin)))) {
         CGPoint point,world;
         bool pointer=!hwm_drag_native_recovering && hwm_drag_pointer_generation &&
             !hwm_pointer_sample_generation_is_aborted(hwm_drag_pointer_generation) &&
@@ -164,7 +164,8 @@ static bool hwm_drag_native_sync(struct view *view,struct window *window)
 
 /* The parent supplies the placement policy. It runs once, after the final
  * native sample is accepted, never on forced interruption. */
-static void hwm_drag_snap_commit(struct view *view,struct window *window);
+static bool hwm_drag_snap_commit(struct view *view,struct window *window);
+static void hwm_tile_raise_pair(void);
 
 static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
 {
@@ -181,7 +182,7 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
          * renderer frame before any camera motion can use that stale matrix. */
         window->strip_transform_dirty=true;
     }
-    if(snap && (!native || hwm_drag_native_moved)) hwm_drag_snap_commit(view,window);
+    bool share_screen=snap && (!native || hwm_drag_native_moved) && hwm_drag_snap_commit(view,window);
     hwm_drag_window=0; hwm_drag_native=false;
     if(recovered_native && g_mouse_state.window==window) {
         g_mouse_state.window=NULL;
@@ -193,10 +194,11 @@ static void hwm_drag_complete(struct view *view,struct window *window,bool snap)
     if(hwm_drag_committed) {
         scripting_addition_set_shadow(window->id,hwm_drag_shadow);
         scripting_addition_set_layer(window->id,hwm_drag_restore_layer);
-        if(view) hwm_layout(view,false);
+        if(view) hwm_layout(view,share_screen);
+        if(share_screen) hwm_tile_raise_pair();
     }
     hwm_drag_committed=false;
-    hwm_drop_target=0; hwm_drag_snap_reset(); hwm_snap_ease_reset(); hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
+    hwm_drop_target=0; hwm_tile_reset(); hwm_drag_snap_reset(); hwm_snap_ease_reset(); hwm_preview_hide(); hwm_hold_focus(); hwm_wake();
 }
 
 /* A title-bar release is not immediately trustworthy: AppKit can publish the

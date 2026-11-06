@@ -94,6 +94,42 @@ int main(void) { @autoreleasepool {
         assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
                 writeToFile:@"build/snap-preview-seams.png" atomically:YES]);
     [bitmap release]; CGImageRelease(rendered); CGContextRelease(canvas);
+    // The tiling offer has its own cached, click-through surface and label.
+    hwm_preview_tile_show(CGRectMake(100,100,400,300));
+    preview_clock+=.3; hwm_preview_render(preview_clock);
+    assert(hwm_preview_visible && hwm_preview_tile_mode && !hwm_preview_snap_mode);
+    assert(hwm_preview_surface()->drawn.tile);
+    draws=hwm_preview_draws;
+    for(int i=0;i<120;i++) { preview_clock+=1.0/120; hwm_preview_tile_show(CGRectMake(100,100,400,300)); hwm_preview_render(preview_clock); }
+    assert(hwm_preview_draws==draws);
+    colors=CGColorSpaceCreateDeviceRGB();
+    canvas=CGBitmapContextCreate(NULL,400,300,8,0,colors,(CGBitmapInfo)kCGImageAlphaPremultipliedLast); CGColorSpaceRelease(colors);
+    hwm_preview_draw_tile(canvas,CGSizeMake(400,300)); rendered=CGBitmapContextCreateImage(canvas);
+    bitmap=[[NSBitmapImageRep alloc]initWithCGImage:rendered];
+    assert([[bitmap colorAtX:200 y:24] alphaComponent]>.8);
+    if(getenv("TANA2D_RENDER_PREVIEW"))
+        assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]writeToFile:@"build/tile-preview.png" atomically:YES]);
+    [bitmap release];CGImageRelease(rendered);CGContextRelease(canvas);
+    CGRect left=CGRectMake(0,0,594,900),right_half=CGRectMake(606,0,594,900);
+    hwm_preview_split_show(left,right_half); preview_clock+=.3; hwm_preview_render(preview_clock);
+    assert(hwm_preview_split_mode && hwm_preview_surface()->drawn.split);
+    draws=hwm_preview_draws;
+    for(int i=0;i<120;i++) {
+        preview_clock+=1.0/120;
+        hwm_preview_split_show(CGRectOffset(left,10,20),CGRectOffset(right_half,10,20));
+        hwm_preview_render(preview_clock);
+    }
+    assert(hwm_preview_draws==draws); // Pair geometry translates without repainting.
+    colors=CGColorSpaceCreateDeviceRGB();
+    canvas=CGBitmapContextCreate(NULL,1200,900,8,0,colors,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);CGColorSpaceRelease(colors);
+    hwm_preview_draw_split(canvas,CGSizeMake(1200,900),left,right_half);
+    rendered=CGBitmapContextCreateImage(canvas);bitmap=[[NSBitmapImageRep alloc]initWithCGImage:rendered];
+    assert([[bitmap colorAtX:300 y:450]alphaComponent]>.15);
+    assert([[bitmap colorAtX:900 y:450]alphaComponent]>.15);
+    assert([[bitmap colorAtX:600 y:450]alphaComponent]<.01); // The actual gap stays clear.
+    if(getenv("TANA2D_RENDER_PREVIEW"))
+        assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]writeToFile:@"build/screen-share-preview.png" atomically:YES]);
+    [bitmap release];CGImageRelease(rendered);CGContextRelease(canvas);
     for(int i=0;i<2;i++) if(hwm_preview_surfaces[i].context) CGContextRelease(hwm_preview_surfaces[i].context);
     puts("preview translation cache, multi-contact seams, click-through, retry, and fade tests passed");
 } return 0; }

@@ -10,6 +10,7 @@ static os_unfair_lock hwm_resize_hit_lock=OS_UNFAIR_LOCK_INIT;
 static HWMPlaneResizeHit hwm_resize_hits[512];
 static size_t hwm_resize_hit_count;
 static double hwm_published_scale=1;
+static bool hwm_click_published_animating;
 /* Below this zoom a click on a window opens it at 100% instead of reaching
  * the app; at or above it the app receives the click. 0 disables. */
 static double hwm_zoom_click_threshold=.5;
@@ -66,36 +67,88 @@ static void hwm_plane_resize_publish(struct view *view)
         if(count<512) hits[count++]=(HWMPlaneResizeHit){w->id,frame,w->strip_last_offset,
             w->strip_last_camera_y,w->strip_last_plane_scale,window_check_flag(w,WINDOW_RESIZABLE)};
     }
+    atomic_store(&hwm_click_published_focus,g_window_manager.focused_window_id);
     os_unfair_lock_lock(&hwm_resize_hit_lock);
+    hwm_click_published_animating=hwm_camera_animating;
     memcpy(hwm_resize_hits,hits,count*sizeof(*hits)); hwm_resize_hit_count=count; hwm_published_scale=hwm_plane_scale;
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
 }
-/* A click on a far zoomed-out window is a request to open it: the press is
- * captured, a click focuses it and zooms to it at 100%, and a drag moves it.
- * Closer than the threshold, the application receives its own clicks, unless
- * fn (🌐) is held: fn-click centers and focuses a window at any zoom.
- * The event tap reads a published snapshot, never mutable window objects. */
-static bool hwm_plane_center_click(CGEventRef event)
+/* Published geometry and deliberate interaction history decide whether a
+ * plain click selects a window or belongs to app content. The tap never
+ * queries Accessibility or reads mutable window objects. */
+/* Called once per native scroll burst, never once per render frame. */
+static void hwm_plane_click_native_scroll(CGEventRef event)
 {
-    if(hwm_suspended || hwm_overview_active || atomic_load(&hwm_resize_captured)) return false;
+    static double last;
+    double now=hwm_now();
+    if(now-last<.25 && !(CGEventGetIntegerValueField(event,kCGScrollWheelEventScrollPhase)&1)) return;
+    if(CGEventGetDoubleValueField(event,kCGScrollWheelEventPointDeltaAxis1)==0 &&
+       CGEventGetDoubleValueField(event,kCGScrollWheelEventPointDeltaAxis2)==0) return;
+    last=now;
+    CGPoint point=CGEventGetLocation(event),local; uint32_t id=0; int owner=0;
+    SLSFindWindowAndOwner(g_connection,0,1,0,&point,&local,&id,&owner);
+    if(owner==g_connection && hwm_plane_border_owns(id)) SLSFindWindowAndOwner(g_connection,id,-1,0,&point,&local,&id,&owner);
+    bool managed=false;
     os_unfair_lock_lock(&hwm_resize_hit_lock);
-    bool low=hwm_published_scale<hwm_zoom_click_threshold;
+    for(size_t i=0;i<hwm_resize_hit_count;i++) if(hwm_resize_hits[i].id==id) { managed=true; break; }
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
-    CGEventFlags flags=CGEventGetFlags(event);
-    bool fn=(flags&kCGEventFlagMaskSecondaryFn) &&
-            !(flags&(kCGEventFlagMaskAlternate|kCGEventFlagMaskControl|kCGEventFlagMaskCommand|kCGEventFlagMaskShift));
-    if(!low && !fn) return false;
+    if(managed) hwm_click_interaction(id,now);
+}
+/* Published hit geometry only: no synchronous Accessibility on the tap. */
+static bool hwm_plane_content_hit(CGEventRef event,uint32_t *window)
+{
     CGPoint point=CGEventGetLocation(event),local; uint32_t id=0; int owner=0;
     SLSFindWindowAndOwner(g_connection,0,1,0,&point,&local,&id,&owner);
     if(owner==g_connection) {
         if(!hwm_plane_border_owns(id)) return false;
         SLSFindWindowAndOwner(g_connection,id,-1,0,&point,&local,&id,&owner);
     }
-    bool managed=false;
+    HWMPlaneResizeHit hit={0};
     os_unfair_lock_lock(&hwm_resize_hit_lock);
-    for(size_t i=0;i<hwm_resize_hit_count;i++) if(hwm_resize_hits[i].id==id) { managed=true; break; }
+    for(size_t i=0;i<hwm_resize_hit_count;i++) if(hwm_resize_hits[i].id==id) { hit=hwm_resize_hits[i]; break; }
     os_unfair_lock_unlock(&hwm_resize_hit_lock);
-    return managed;
+    if(!hit.id || !CGRectContainsPoint(hit.frame,point)) return false;
+    double scale=hit.camera_scale>0?hit.camera_scale:1;
+    if(point.y<hit.frame.origin.y+fmax(8,32*scale) ||
+       hwm_plane_resize_hit_scaled((HWMPlaneRect){hit.frame.origin.x,hit.frame.origin.y,hit.frame.size.width,hit.frame.size.height},
+                                   (HWMPlanePoint){point.x,point.y},scale)) return false;
+    *window=id; return true;
+}
+static bool hwm_plane_center_click(CGEventRef event)
+{
+    if(hwm_suspended || hwm_overview_active || atomic_load(&hwm_resize_captured)) return false;
+    CGEventFlags flags=CGEventGetFlags(event);
+    bool modified=(flags&(kCGEventFlagMaskAlternate|kCGEventFlagMaskControl|kCGEventFlagMaskCommand|kCGEventFlagMaskShift))!=0;
+    CGPoint point=CGEventGetLocation(event),local; uint32_t id=0; int owner=0;
+    SLSFindWindowAndOwner(g_connection,0,1,0,&point,&local,&id,&owner);
+    if(owner==g_connection) {
+        if(!hwm_plane_border_owns(id)) return false;
+        SLSFindWindowAndOwner(g_connection,id,-1,0,&point,&local,&id,&owner);
+    }
+    HWMPlaneResizeHit hit={0}; double scale; bool animating;
+    os_unfair_lock_lock(&hwm_resize_hit_lock);
+    scale=hwm_published_scale; animating=hwm_click_published_animating;
+    for(size_t i=0;i<hwm_resize_hit_count;i++) if(hwm_resize_hits[i].id==id) { hit=hwm_resize_hits[i]; break; }
+    os_unfair_lock_unlock(&hwm_resize_hit_lock);
+    if(!hit.id) return false;
+    if(modified) { hwm_click_native_pending=id; return false; }
+    bool fn=(flags&kCGEventFlagMaskSecondaryFn)!=0;
+    // Native title bars, traffic lights, edges and corners retain their own
+    // click/drag semantics. This is geometry from the displayed frame, never
+    // an Accessibility query on the event-tap thread.
+    double shownScale=hit.camera_scale>0 ? hit.camera_scale : scale;
+    bool chrome=point.y<hit.frame.origin.y+fmax(8,32*shownScale);
+    unsigned edge=hwm_plane_resize_hit_scaled((HWMPlaneRect){hit.frame.origin.x,hit.frame.origin.y,hit.frame.size.width,hit.frame.size.height},(HWMPlanePoint){point.x,point.y},shownScale);
+    bool eligible=!chrome && !edge;
+    double now=hwm_now();
+    os_unfair_lock_lock(&hwm_click_history_lock);
+    bool landing=id==hwm_click_selected_window && animating && now>=hwm_click_selected_time && now-hwm_click_selected_time<.45;
+    bool single=CGEventGetIntegerValueField(event,kCGMouseEventClickState)<=1;
+    bool capture=(fn || (eligible && landing)) ||
+        hwm_plane_click_should_select(&hwm_click_history,(HWMPlaneClickContext){.window=id,.now=now,.scale=scale,.far_threshold=hwm_zoom_click_threshold,.eligible=eligible && single});
+    os_unfair_lock_unlock(&hwm_click_history_lock);
+    if(!capture) hwm_click_native_pending=id;
+    return capture;
 }
 static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
 {
@@ -123,18 +176,15 @@ static bool hwm_plane_resize_event(CGEventType type,CGEventRef event)
         os_unfair_lock_lock(&hwm_resize_hit_lock);
         for(size_t i=0;i<hwm_resize_hit_count;i++) if(hwm_resize_hits[i].id==id && hwm_resize_hits[i].resizable) {
             CGRect f=hwm_resize_hits[i].frame;
-            direction=hwm_plane_resize_hit((HWMPlaneRect){f.origin.x,f.origin.y,f.size.width,f.size.height},(HWMPlanePoint){point.x,point.y});
+            direction=hwm_plane_resize_hit_scaled((HWMPlaneRect){f.origin.x,f.origin.y,f.size.width,f.size.height},(HWMPlanePoint){point.x,point.y},hwm_resize_hits[i].camera_scale);
             camera_x=hwm_resize_hits[i].camera_x;
             camera_y=hwm_resize_hits[i].camera_y;
             camera_scale=hwm_resize_hits[i].camera_scale;
             break;
         }
         os_unfair_lock_unlock(&hwm_resize_hit_lock);
-        /* AppKit owns the title bar, including its top band. Capturing that
-         * press as resize steals the native drag's mouse-down; a zoomed-out
-         * title bar is only a few points tall. Side/bottom edges and
-         * zoomed-out top corners remain available. */
-        if((direction&HANDLE_TOP) && (camera_scale>=.70 || direction==HANDLE_TOP)) return false;
+        /* The narrow perimeter is resize chrome on every side. The rest of
+         * the title bar remains available for native dragging. */
         if(!direction) return false;
     }
     HWMPlaneResizeInput *input=malloc(sizeof(*input));
@@ -180,6 +230,10 @@ static void hwm_plane_resize_input(HWMPlaneResizeInput *input)
         }
     } else if(hwm_resize_owned && input->generation==hwm_resize_pointer_generation &&
               !hwm_pointer_sample_generation_is_aborted(input->generation)) {
+        /* The tap may publish mouse-up before an older queued drag reaches
+         * this thread. Once the terminal point is sampled, that drag cannot
+         * replace it and roll the accepted size back. */
+        if(hwm_resize_releasing && input->type==kCGEventLeftMouseDragged) { free(input); return; }
         hwm_resize_pointer=input->point;
         if(input->type==kCGEventLeftMouseUp) { hwm_resize_releasing=true; hwm_resize_released_at=hwm_now(); }
         hwm_wake();

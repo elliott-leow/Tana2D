@@ -96,7 +96,7 @@ static int menu_test_kill(pid_t pid, int signal)
 
 struct process_manager { pid_t front_pid; };
 struct window_manager { uint32_t focused_window_id; };
-struct window { uint32_t id; bool standard; };
+struct window { uint32_t id; bool standard, custom_role, managed; };
 static struct process_manager g_process_manager;
 static struct window_manager g_window_manager;
 static struct window popup_windows[4];
@@ -115,6 +115,11 @@ static struct window *window_manager_find_window(struct window_manager *wm, uint
     return NULL;
 }
 static bool window_is_standard(struct window *window) { return window->standard; }
+static bool window_is_real(struct window *window) { return !window->custom_role; }
+static void *window_manager_find_managed_window(struct window_manager *wm, struct window *window)
+{
+    (void)wm; return window->managed ? window : NULL;
+}
 /* WindowServer's on-screen list and its batched query, over the fixture's
  * window descriptions. */
 static CGError popup_test_window_ids(int cid, int owner, int max, uint32_t *list, int *count)
@@ -356,6 +361,13 @@ static void test_popup_classification_and_cache(void)
 
 int main(void)
 {
+    struct window custom_main={.id=99,.custom_role=true,.managed=true};
+    assert(!popup_focus_is_transient(1,1,0,&custom_main));
+    custom_main.managed=false;
+    assert(popup_focus_is_transient(1,1,0,&custom_main));
+    struct window managed_dialog={.id=100,.managed=true};
+    assert(popup_focus_is_transient(1,1,0,&managed_dialog));
+
     @autoreleasepool {
         test_menu_identity_and_automatic_cancellation();
         test_nested_unmatched_and_stale_menus();

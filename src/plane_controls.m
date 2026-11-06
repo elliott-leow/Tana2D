@@ -67,7 +67,7 @@ static void hwm_plane_controls_begin(void)
     background.wantsLayer=YES; background.layer.cornerRadius=12;
     panel.contentView=background;
     NSArray *titles=@[@"Workspace",@"100%"];
-    NSArray *help=@[@"Show the workspace (Control + Up)",@"Return to the focused window at actual size (Escape)"];
+    NSArray *help=@[@"Show the workspace",@"Return to the focused window at actual size"];
     for(NSUInteger i=0;i<titles.count;i++) {
         NSButton *button=[NSButton buttonWithTitle:titles[i] target:hwm_camera_controls action:@selector(performCameraAction:)];
         button.frame=NSMakeRect(8+i*96,7,92,30);

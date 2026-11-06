@@ -31,6 +31,12 @@ build/desktop_motion_probe: tests/desktop_motion_probe.m
 	$(CC) -fobjc-arc tests/desktop_motion_probe.m -framework Cocoa -F/System/Library/PrivateFrameworks -framework SkyLight -o $@
 test:
 	mkdir -p build
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/window_admission_test.c -o build/window_admission_test
+	./build/window_admission_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fsanitize=address,undefined tests/plane_fullscreen_test.m -framework Cocoa -o build/plane_fullscreen_test
+	./build/plane_fullscreen_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fno-objc-arc -fsanitize=address,undefined tests/plane_satellite_test.m -framework Cocoa -o build/plane_satellite_test
+	./build/plane_satellite_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-objc-arc -fsanitize=address,undefined tests/native_zoom_test.m -framework Cocoa -o build/native_zoom_test
 	./build/native_zoom_test
 	$(MAKE) test-input-shape
@@ -46,8 +52,14 @@ test:
 	./build/plane_geometry_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_gesture_test.c -o build/plane_gesture_test
 	./build/plane_gesture_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_click_intent_test.c -o build/plane_click_intent_test
+	./build/plane_click_intent_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_pan_resample_test.c -o build/plane_pan_resample_test
+	./build/plane_pan_resample_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_pinch_test.c -o build/plane_pinch_test
 	./build/plane_pinch_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined tests/plane_multitouch_test.m -framework Cocoa -o build/plane_multitouch_test
+	./build/plane_multitouch_test
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_transform_test.m -framework Cocoa -o build/plane_transform_test
 	./build/plane_transform_test
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_presentation_test.m -framework Cocoa -o build/plane_presentation_test
@@ -60,6 +72,10 @@ test:
 	./build/plane_ax_cancel_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_snap_runtime_test.m -framework Cocoa -o build/plane_snap_runtime_test
 	./build/plane_snap_runtime_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -g tests/plane_tile_runtime_test.m -framework Cocoa -o build/plane_tile_runtime_test
+	./build/plane_tile_runtime_test
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/plane_tile_intent_test.c -o build/plane_tile_intent_test
+	./build/plane_tile_intent_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fsanitize=address,undefined -fblocks -g tests/strip_visibility_discovery_test.m -framework Cocoa -o build/strip_visibility_discovery_test
 	./build/strip_visibility_discovery_test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O2 tests/strip_feedback_snapshot_test.m -framework Cocoa -o build/strip_feedback_snapshot_test

@@ -71,7 +71,12 @@ static void window_did_receive_focus(struct window_manager *wm, struct mouse_sta
 
     struct view *view = window_manager_find_managed_window(&g_window_manager, window);
     if (horizontal_hover_focus) horizontal_hover_received(window);
-    else horizontal_focused(window, view);
+    else {
+        // Keyboard/app activation is deliberate; hover must never rewrite
+        // click-intent history or turn an overview click into app content.
+        horizontal_deliberate_focus(window);
+        horizontal_focused(window, view);
+    }
     if (!view) return;
     struct window_node *node = view_find_window_node(view, window->id);
     if (!node || node->window_count <= 1) return;
@@ -851,6 +856,8 @@ static EVENT_HANDLER(WINDOW_RESIZED)
             struct view *view = space_manager_tile_window_on_space(&g_space_manager, window, window_space(window->id));
             window_manager_add_managed_window(&g_window_manager, window, view);
         }
+        // The plane puts the tile back where it was before fullscreen.
+        horizontal_fullscreen_exited(window);
     } else if (!was_fullscreen == !is_fullscreen) {
         if (g_mouse_state.current_action == MOUSE_MODE_MOVE && g_mouse_state.window == window) {
             g_mouse_state.window_frame.size = g_mouse_state.window->frame.size;

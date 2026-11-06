@@ -4,6 +4,17 @@ typedef struct {
     bool dragged;
     uint64_t generation,drag_serial;
 } HWMPlanePickInput;
+/* A body press may be a click-to-enter or an application drag. Retain its
+ * original native event until intent is known; never synthesize a new anchor. */
+static CGEventRef hwm_plane_content_down,hwm_plane_replay_down;
+static uint32_t hwm_plane_content_window;
+static uint64_t hwm_plane_content_generation;
+static bool hwm_plane_content_cancelled;
+static void hwm_plane_content_discard(void)
+{
+    if(hwm_plane_content_down) CFRelease(hwm_plane_content_down);
+    hwm_plane_content_down=NULL; hwm_plane_content_window=0;
+}
 static CGPoint hwm_plane_select_origin;
 static bool hwm_plane_select_dragged;
 /* The dispatcher arms this only around one accepted queued drag.  The pointer
@@ -58,14 +69,62 @@ static bool hwm_plane_pick_input_prepare(HWMPlanePickInput *input)
 }
 static bool hwm_plane_pick_event(CGEventType type,CGEventRef event)
 {
+    if(type==kCGEventTapDisabledByTimeout || type==kCGEventTapDisabledByUserInput ||
+       type==kCGEventLeftMouseDown) hwm_plane_content_discard();
+    if(type==kCGEventLeftMouseDown) hwm_plane_content_cancelled=false;
+    if(hwm_plane_content_down && hwm_pointer_sample_generation_is_aborted(hwm_plane_content_generation)) {
+        hwm_plane_content_discard(); hwm_plane_content_cancelled=true;
+    }
+    if(hwm_plane_content_cancelled && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp)) {
+        if(type==kCGEventLeftMouseUp) { hwm_plane_select_click=false; hwm_plane_content_cancelled=false; }
+        return true;
+    }
+    if(hwm_plane_content_down && type==kCGEventKeyDown && CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==53) {
+        HWMPlanePickInput *cancel=calloc(1,sizeof(*cancel));
+        if(cancel) {
+            *cancel=(HWMPlanePickInput){.type=kCGEventLeftMouseUp,.point=hwm_plane_select_origin,.dragged=true,.generation=hwm_plane_content_generation};
+            event_loop_post(&g_event_loop,HORIZONTAL_INPUT,cancel,HWM_PLANE_PICK);
+        }
+        hwm_plane_content_discard(); hwm_plane_content_cancelled=true; hwm_plane_select_dragged=true;
+        return true; // Keep consuming this press through its terminal up.
+    }
+    if(hwm_plane_content_down && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp)) {
+        CGPoint point=CGEventGetLocation(event);
+        bool moved=hypot(point.x-hwm_plane_select_origin.x,point.y-hwm_plane_select_origin.y)>=5;
+        if(moved) {
+            /* Retire the queued selection before the engine sees the native
+             * down. This cannot move/zoom the window, even under queue lag. */
+            HWMPlanePickInput *cancel=calloc(1,sizeof(*cancel));
+            if(!cancel) return true;
+            *cancel=(HWMPlanePickInput){.type=kCGEventLeftMouseUp,.point=point,.dragged=true,
+                .generation=hwm_pointer_sample_generation_for_event(type)};
+            event_loop_post(&g_event_loop,HORIZONTAL_INPUT,cancel,HWM_PLANE_PICK);
+            hwm_plane_replay_down=hwm_plane_content_down; hwm_plane_content_down=NULL;
+            hwm_click_interaction(hwm_plane_content_window,hwm_now()); hwm_plane_content_window=0;
+            hwm_plane_select_click=false;
+            return false; // The caller replays down before forwarding this event.
+        }
+        if(type==kCGEventLeftMouseDragged) return true; // Jitter is neither a window drag nor a click.
+        hwm_plane_content_discard();
+    }
     /* The native overview owns its complete pointer stream.  In particular,
      * an idle plane-selection mode must not reclaim a card press. */
     if(hwm_overview_active) return false;
-    if((type==kCGEventLeftMouseDown && (hwm_plane_selecting || hwm_plane_center_click(event))) ||
+    if((type==kCGEventLeftMouseDown && (hwm_plane_selecting || atomic_load(&hwm_workspace_browsing) || hwm_plane_center_click(event))) ||
        (hwm_plane_select_click && (type==kCGEventLeftMouseDragged || type==kCGEventLeftMouseUp))) {
         CGPoint point=CGEventGetLocation(event);
         uint64_t generation=hwm_pointer_sample_generation_for_event(type),drag_serial=0;
-        if(type==kCGEventLeftMouseDown) { hwm_plane_select_origin=point; hwm_plane_select_dragged=false; }
+        if(type==kCGEventLeftMouseDown) {
+            hwm_plane_select_origin=point; hwm_plane_select_dragged=false;
+            /* Explicit selection/overview and Fn retain window rearrangement.
+             * Ordinary body dragging always belongs to application content. */
+            if(!hwm_plane_selecting && !(CGEventGetFlags(event)&kCGEventFlagMaskSecondaryFn) &&
+               hwm_plane_content_hit(event,&hwm_plane_content_window))
+            {
+                hwm_plane_content_down=CGEventCreateCopy(event);
+                hwm_plane_content_generation=generation;
+            }
+        }
         else if(hypot(point.x-hwm_plane_select_origin.x,point.y-hwm_plane_select_origin.y)>=5) hwm_plane_select_dragged=true;
         hwm_plane_select_click=type!=kCGEventLeftMouseUp;
         if(type==kCGEventLeftMouseDragged) {
