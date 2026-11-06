@@ -1760,3 +1760,18 @@ untiled, and returned it to world (5236, 1043.5) 500x632 unchanged; synthetic
 Fn+F11 entered and left fullscreen with no Show Desktop. The user's five real
 windows stayed tiled through both installs. Physical trackpad swipes inside a
 fullscreen app were not exercised.
+
+Follow-up, same day: the window a pan rests on keeps its title bar on screen.
+Chosen to match what a regular window manager guarantees (macOS never lets a
+title bar under the menu bar) without anything new to learn: when a
+three-finger pan comes to rest at 100% with the window it mostly shows tucked
+above the menu bar by at most the auto-center reach, the camera finishes the
+last stretch so its title bar sits at the viewport top
+(`hwm_plane_title_reveal`, after auto-centering, under the same `autoCenter`
+setting and distance). That removes the top-edge hover offset for the window
+in use. A pan that pushed the plane upward is never pulled back, and a deeper
+look (a tall window's lower part, the row above) stays put; there the offset
+can remain. `plane_geometry_test` covers the reported two-row layout: reveal
+after a downward or horizontal pan, the 13-point menu-bar clearance, the
+reach limit, upward pans, the upper row approached from below, side windows,
+zoomed-out cameras and empty input. Physical trackpad feel was not tested.

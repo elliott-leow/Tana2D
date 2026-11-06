@@ -44,9 +44,9 @@ window's own frame matches where it is drawn, wherever it sits on screen, so
 hover and clicks land where the pointer is. Some applications track hover by
 polling the cursor position themselves (Firefox, for example). Their in-app
 hover effects, and menus they open at the pointer, can appear offset while
-zoomed out, and at 100% in a window whose title bar is above the menu bar:
-macOS will not let an application's frame go there, so its own record stays
-below the menu bar while the window is drawn higher.
+zoomed out, and at 100% in a window you have deliberately left with its title
+bar above the menu bar: macOS will not let an application's frame go there, so
+its own record stays below the menu bar while the window is drawn higher.
 
 Hover focuses the window the pointer settles on: once it slows over a window
 or stops (within a few hundredths of a second), not every window a quick
@@ -146,7 +146,11 @@ A three-finger pan that is still moving when the fingers lift carries on
 briefly and eases to rest; a pan that stops before lifting stays exactly where
 it is. At 100%, when a pan brings a window close to the center of the screen
 (within 200 points of its centered view, moving toward it), the camera finishes
-centering it. Small direct near-center passes also settle into place, including gentle overshoots. Ambiguous choices stay where released. Panning away from a centered window is never pulled back. Set
+centering it. Small direct near-center passes also settle into place, including gentle overshoots. Ambiguous choices stay where released. Panning away from a centered window is never pulled back. In the same way, as
+macOS keeps every title bar below the menu bar, a pan that comes to rest with
+the window it shows tucked just under the menu bar (within the same reach)
+finishes bringing its title bar on screen; a pan pushing the plane upward, or
+a deeper look at a tall window or the row above, stays where it was left. Set
 `"autoCenter": false` or `"panMomentum": false` to turn either off, and
 `"autoCenterDistance"` (20–400 points) to change the reach. The optional
 `"magneticCentering": true` setting restores a small nudge toward a nearby

@@ -325,7 +325,22 @@ static bool hwm_plane_pan_release(struct view *view,HWMPlaneCamera start,HWMPlan
         long chosen=hwm_plane_auto_center(start,landing,targets,count,hwm_auto_center_radius);
         if(chosen>=0) { target=targets[chosen]; centered=true; }
     }
-    if(!centered && !glide) return false;
+    // Otherwise the window the view rests on keeps its title bar on screen.
+    bool revealed=false;
+    if(hwm_auto_center && actual && !centered) {
+        HWMPlaneRect rects[64]; size_t count=0;
+        for(struct window_node *n=window_node_find_first_leaf(view->root);n && count<64;n=window_node_find_next_leaf(n))
+            for(int i=0;i<n->window_count && count<64;i++) {
+                struct window *w=window_manager_find_window(&g_window_manager,n->window_list[i]);
+                if(hwm_plane_window_selectable(view,w)) rects[count++]=(HWMPlaneRect){w->strip_world_x,w->strip_world_y,w->strip_width,w->strip_height};
+            }
+        HWMPlaneCamera title;
+        double clear=fmax(0,bounds.origin.y-hwm_screen(view).origin.y);
+        if(hwm_plane_title_reveal(start,landing,rects,count,bounds.size.width,bounds.size.height,clear,hwm_auto_center_radius,&title)>=0) {
+            target=(HWMPlanePoint){title.x,title.y}; revealed=true;
+        }
+    }
+    if(!centered && !revealed && !glide) return false;
     /* A slow pan into center hands its own speed to the centering spring
      * rather than stopping dead and starting again from rest. */
     if(centered && carries) velocity=fingers;

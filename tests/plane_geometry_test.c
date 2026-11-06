@@ -261,6 +261,34 @@ static void test_focus_intent(void)
     hwm_focus_intent_note(&b,0,0,t); assert(!hwm_focus_intent_sample(&b,9,30,0,t+.001));
 }
 
+/* The user's layout: two rows of ~1018-point windows, a 1686x1049 viewport
+ * whose top lies 13 points below the menu bar line, a 180-point reach. */
+static void test_title_reveal(void)
+{
+    HWMPlaneRect rows[]={{354,15.5,978,1018},{1344,15.5,1670,1032},{1344,-1014.5,978,1018}};
+    HWMPlaneCamera out, start={1000,300,1};
+    // Panned down toward the lower row and stopped with its title bar under
+    // the menu bar: finish so the bar sits at the viewport top.
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==1);
+    near(out.y,16); near(out.x,1000);
+    // Horizontal pans also finish; the clip is unchanged by them.
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){900,110,1},(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==1);
+    // Within the 13 points above the viewport the bar is already clear of the menu bar.
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,27,1},rows,3,1686,1049,13,180,&out)==-1);
+    // A deeper look (a tall window's lower part) is left where it rests.
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,250,1},rows,3,1686,1049,13,180,&out)==-1);
+    // Pushing the plane upward moves on past the bar: never pulled back.
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1000,20,1},(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==-1);
+    // Coming up from below onto the upper row stops with it tucked: revealed.
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1500,-300,1},(HWMPlaneCamera){1500,-900,1},rows,3,1686,1049,13,180,&out)==2);
+    near(out.y,-1015); // Whole points, as native frames are.
+    // A window mostly off to one side is not the one the view is showing.
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){-1100,110,1},rows,3,1686,1049,13,180,&out)==-1);
+    // Zoomed out, or without windows, nothing changes.
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,.5},rows,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,1},NULL,3,1686,1049,13,180,&out)==-1);
+}
+
 static void test_auto_center(void)
 {
     HWMPlanePoint target;
@@ -396,7 +424,7 @@ int main(void)
     double zoom=hwm_plane_camera_duration(from,to,1200,900);
     assert(hop>=.22 && hop<.26 && trip>hop && trip<=.42 && zoom>hop && zoom<=.42);
     near(hwm_plane_camera_duration((HWMPlaneCamera){0,0,0},to,1200,900),.36);
-    test_auto_center();
+    test_auto_center(); test_title_reveal();
     test_focus_intent();
     HWMPlaneCamera start=hwm_plane_camera_mix(from,to,1200,900,0),end=hwm_plane_camera_mix(from,to,1200,900,1);
     near(start.x,from.x); near(start.scale,from.scale); near(end.y,to.y); near(end.scale,1);

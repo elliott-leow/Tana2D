@@ -728,6 +728,41 @@ static inline long hwm_plane_auto_center(HWMPlaneCamera start,HWMPlaneCamera end
     return best;
 }
 
+/* macOS keeps every title bar below the menu bar; an application's own frame
+ * can never sit higher (an Accessibility move is clamped there), so a window
+ * drawn higher disagrees with its frame and cursor-polling apps hover offset.
+ * When a pan comes to rest at 100% with the window it is mostly showing
+ * tucked above the menu bar by at most `reach` points, the camera finishes
+ * bringing its title bar to the viewport top. `clear` is how far above the
+ * viewport top the menu bar line lies (a top within it is already fine).
+ * A pan that pushed the plane upward, past that title bar, is never pulled
+ * back, and a deeper look (the lower part of a tall window, the row above)
+ * stays where it was left. The camera is the world point at the viewport's
+ * top-left. Returns the window revealed, or -1. */
+static inline long hwm_plane_title_reveal(HWMPlaneCamera start,HWMPlaneCamera end,const HWMPlaneRect *windows,size_t count,
+                                          double width,double height,double clear,double reach,HWMPlaneCamera *out)
+{
+    if(!out || !windows || !hwm_plane_camera_valid(start) || !hwm_plane_camera_valid(end) || fabs(end.scale-1)>.001 ||
+       !isfinite(width) || !isfinite(height) || width<=0 || height<=0 || !isfinite(clear) || clear<0 ||
+       !isfinite(reach) || reach<=0) return -1;
+    if(end.y-start.y>4) return -1;
+    long best=-1; double best_area=0;
+    for(size_t i=0;i<count;i++) {
+        HWMPlaneRect w=windows[i];
+        if(!hwm_plane_rect_valid(w)) continue;
+        double top=w.y-end.y;
+        if(top>=-clear-.5 || top<-reach) continue;
+        double shown_width=fmin(w.x+w.width,end.x+width)-fmax(w.x,end.x);
+        double shown_height=fmin(w.y+w.height,end.y+height)-end.y;
+        if(shown_width<fmin(w.width,width)*.5 || shown_height<fmin(w.height,height)*.5) continue;
+        double area=shown_width*shown_height;
+        if(area>best_area) { best_area=area; best=(long)i; }
+    }
+    if(best<0) return -1;
+    *out=end; out->y=round(windows[best].y);
+    return best;
+}
+
 /* A release can gently approach center, but cannot pull against an escape pan.
  * Distances and the 12-point cap are in display points at every zoom. */
 static inline HWMPlaneCamera hwm_plane_magnetic_camera(HWMPlaneCamera start,HWMPlaneCamera end,HWMPlanePoint center)
