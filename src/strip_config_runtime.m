@@ -54,7 +54,12 @@ static bool hwm_config_reload(bool announce)
     hwm_magnetic_centering=[snapshot boolAt:@"magneticCentering" fallback:NO];
     hwm_auto_center=[snapshot boolAt:@"autoCenter" fallback:YES];
     hwm_pan_momentum=[snapshot boolAt:@"panMomentum" fallback:YES];
-    hwm_auto_center_radius=[snapshot numberAt:@"autoCenterDistance" fallback:180 minimum:20 maximum:400];
+    NSString *gestureActivation=[[snapshot stringAt:@"gestureActivation" fallback:@"unmodified"] lowercaseString];
+    atomic_store(&hwm_gesture_requires_fn,![gestureActivation isEqual:@"unmodified"]);
+    if(![@[@"fn",@"unmodified"] containsObject:gestureActivation])
+        [problems addObject:@"settings.gestureActivation must be fn or unmodified"];
+
+    hwm_auto_center_radius=[snapshot numberAt:@"autoCenterDistance" fallback:200 minimum:20 maximum:400];
     hwm_zoom_click_threshold=[snapshot numberAt:@"zoomClickThreshold" fallback:.5 minimum:0 maximum:1];
     hwm_swipe_gain=[snapshot numberAt:@"swipeGain" fallback:1.15 minimum:.4 maximum:3];
     hwm_pinch_gain=[snapshot numberAt:@"pinchGain" fallback:1.35 minimum:.4 maximum:3];
@@ -330,6 +335,11 @@ static void hwm_apply_rule(struct window *w,bool full,bool late)
 {
     if(!w) return;
     struct view *view=hwm_view(); if(!view) return;
+    /* AppKit can attach a window to its parent after it was first seen. A
+     * dialog, panel or child window takes no app rule (a width or a floating
+     * frame is meant for main windows); it keeps its place by its owner. */
+    if(!late) hwm_satellite_refresh_parent(w,window_parent(w->id));
+    if(window_manager_is_secondary_window(w)) { hwm_satellite_adopt(w); return; }
     TanaConfigSnapshot *snapshot=[hwm_config copySnapshot];
     NSDictionary *rule=hwm_rule_for(w,snapshot);
     bool by_title=snapshot.hasTitleRules || hwm_auto_pip;
@@ -500,6 +510,9 @@ static bool hwm_named_action(const char *name)
     if(strcmp(name,"setup")==0) {
         dispatch_async(dispatch_get_main_queue(),^{ [[TanaSetup shared] showForStartup:NO preview:NO]; }); return true;
     }
+    // Native fullscreen belongs to the focused window, wherever the plane is:
+    // it must work from inside a fullscreen Space and mid-gesture alike.
+    if(strcmp(name,"fullscreen")==0) { if(!hwm_paused) hwm_fullscreen_toggle(); return true; }
     // Every recognized command below acts on the window the cursor reached.
     // Do not flush while probing an unknown or read-only daemon token.
     if(!hwm_named_action_requires_navigation_flush(name)) return false;
@@ -512,7 +525,7 @@ static bool hwm_named_action(const char *name)
         if(hwm_paused || hwm_suspended) return true;
         hwm_plane_pointer_finish(false);
         // Toggle: zoom out to the whole workspace, or back to the focused window at 100%.
-        if(hwm_plane_scale<1) { hwm_plane_actual_size(hwm_view()); return true; }
+        if(atomic_load(&hwm_workspace_browsing)) { hwm_plane_actual_size(hwm_view()); return true; }
         hwm_hold_focus(); hwm_plane_fit_all(hwm_view()); return true;
     }
     if(strcmp(name,"fit-all")==0) { hwm_plane_pointer_finish(false); hwm_plane_fit_all(hwm_view()); return true; }

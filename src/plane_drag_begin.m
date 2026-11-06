@@ -1,16 +1,47 @@
 #include "plane_presentation.h"
 static void hwm_drag_snap_reset(void);
+static void hwm_tile_reset(void);
+static void hwm_drag_docking_begin(void);
 static void hwm_snap_ease_reset(void);
 /* Set only from the event that opened a normal titlebar/controller drag.
  * A queued callback is then matched to that original press, not whichever
  * button happened most recently at the event tap. */
 static uint64_t hwm_drag_pointer_generation;
 static bool hwm_drag_native_recovered;
+static bool hwm_drag_native_finishing;
 static bool hwm_drag_native_projected;
 static bool hwm_drag_native_unscaled;
 static bool hwm_drag_committed;
 static int hwm_drag_restore_layer;
 static CGRect hwm_drag_native_displayed;
+/* AppKit alone moves a window during a native title-bar drag; the observer
+ * only follows. A body selection must therefore read as stationary however
+ * the compositor's rectangle relates to the renderer's cache: device-pixel
+ * rounding leaves a half-point gap, and a placement the application clamped
+ * leaves a large one. The displayed origin is sampled at the press as a
+ * second baseline, and both comparisons allow a small slack. A real drag
+ * moves the surface well beyond it before the session opens. */
+static const double hwm_drag_native_slack=1.5;
+static CGPoint hwm_drag_native_press_shown;
+static bool hwm_drag_native_press_sampled;
+static bool hwm_drag_native_near(CGPoint a,CGPoint b)
+{
+    return isfinite(a.x) && isfinite(a.y) && isfinite(b.x) && isfinite(b.y) &&
+           hypot(a.x-b.x,a.y-b.y)<=hwm_drag_native_slack;
+}
+static void hwm_drag_native_press_sample(struct window *window)
+{
+    CGRect displayed;
+    hwm_drag_native_press_sampled=window && hwm_plane_displayed_frame(window->id,&displayed);
+    hwm_drag_native_press_shown=hwm_drag_native_press_sampled ? displayed.origin : CGPointZero;
+}
+/* The surface is where the press found it: at the renderer's cached origin,
+ * or at the origin sampled when the button went down. */
+static bool hwm_drag_native_shown_still(struct window *window,CGPoint displayed)
+{
+    return hwm_drag_native_near(displayed,window->strip_last_frame.origin) ||
+           (hwm_drag_native_press_sampled && hwm_drag_native_near(displayed,hwm_drag_native_press_shown));
+}
 static void hwm_drag_commit_interaction(struct window *window)
 {
     if(hwm_drag_committed) return;
@@ -47,7 +78,7 @@ static void hwm_drag_started(struct window *window)
     hwm_drag_native_moved=false;
     hwm_drag_native_recovered=false;
     hwm_drag_native_projected=false;
-    hwm_drag_snap_reset(); hwm_snap_ease_reset();
+    hwm_drag_docking_begin(); hwm_tile_reset(); hwm_drag_snap_reset(); hwm_snap_ease_reset();
     /* Assigned by the controller that owns a concrete queued drag event.
      * Other entry points leave this at zero rather than consulting the newest
      * global press, which could belong to a later physical click. */

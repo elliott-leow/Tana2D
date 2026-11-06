@@ -65,7 +65,7 @@ static void hwm_shelf_assign(struct view *view,struct window *w,int shelf,double
  * unless it is sticky. Its resting place is noted when its strip first moves. */
 static bool hwm_shelf_float(struct window *w)
 {
-    return w->is_root && window_check_flag(w,WINDOW_FLOAT) && !w->strip_sticky && window_is_standard(w) &&
+    return w->is_root && window_check_flag(w,WINDOW_FLOAT) && !w->strip_sticky && window_manager_is_plane_window(w) &&
            window_manager_is_window_eligible(w) && !window_check_flag(w,WINDOW_MINIMIZE) && !window_check_flag(w,WINDOW_FULLSCREEN) &&
            !w->application->is_hidden && !window_manager_find_managed_window(&g_window_manager,w);
 }
@@ -236,7 +236,7 @@ static void hwm_jump(NSString *bundle,NSString *launch)
     for(NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle]) [pids addObject:@(app.processIdentifier)];
     enum { LIMIT=64 }; struct window *found[LIMIT]; double keys[LIMIT]; int count=0;
     if(pids.count) table_for(struct window *w,g_window_manager.window, {
-        if(count==LIMIT || !w->is_root || ![pids containsObject:@(w->application->pid)] || !window_is_standard(w) ||
+        if(count==LIMIT || !w->is_root || ![pids containsObject:@(w->application->pid)] || !window_manager_is_plane_window(w) ||
            !window_manager_is_window_eligible(w) || w->strip_close_ghost || w->strip_ordered_out) continue;
         // Strip order: the strip in view first, left to right, then the strips below and above.
         int distance=abs(hwm_shelf_of(w)-hwm_shelf);
@@ -488,7 +488,7 @@ static void hwm_attention_apps(NSArray *pids)
 {
     struct window *focused=window_manager_find_window(&g_window_manager,g_window_manager.focused_window_id);
     table_for(struct window *w,g_window_manager.window, {
-        if(!w->is_root || !window_is_standard(w) || ![pids containsObject:@(w->application->pid)] || (focused && focused->application==w->application)) continue;
+        if(!w->is_root || !window_manager_is_plane_window(w) || ![pids containsObject:@(w->application->pid)] || (focused && focused->application==w->application)) continue;
         hwm_attention_set(w,true);
     })
 }

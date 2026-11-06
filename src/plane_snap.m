@@ -10,7 +10,9 @@ static CGPoint hwm_snap_point;
 /* Axes the engaged target actually moved; only these resist release. */
 static bool hwm_snap_lock_x,hwm_snap_lock_y;
 /* Command held while dragging places the window freely. */
-static bool hwm_snap_free;
+static bool hwm_snap_free,hwm_snap_declined;
+static void hwm_drag_docking_begin(void) { hwm_snap_declined=false; }
+static void hwm_drag_decline_docking(void) { hwm_snap_declined=true; hwm_snap_free=true; }
 static uint64_t hwm_snap_engagements,hwm_snap_commits;
 /* Engage within 12 screen points; once engaged, hold until 20. */
 static const double HWMSnapEngage=12,HWMSnapRelease=20;
@@ -123,8 +125,11 @@ static bool hwm_drag_snap_target(struct view *view,struct window *moving,CGPoint
     if(point) *point=snap.point;
     return true;
 }
+#include "plane_tile.m"
+
 static void hwm_drag_preview_apply(struct view *view,struct window *window,CGPoint raw,const HWMDragSnap *snap)
 {
+    if(hwm_tile_preview(view,window,raw)) return;
     if(hwm_drag_window!=window->id || !snap) {
         hwm_drag_snap_reset(); hwm_preview_hide_immediately(); return;
     }
@@ -162,4 +167,4 @@ static void hwm_drag_preview_update(struct view *view,struct window *window)
 {
     hwm_drag_preview_update_at(view,window,CGPointMake(window->strip_world_x,window->strip_world_y));
 }
-static void hwm_drag_snap_commit(struct view *view,struct window *window);
+static bool hwm_drag_snap_commit(struct view *view,struct window *window);

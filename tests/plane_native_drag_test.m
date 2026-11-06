@@ -22,11 +22,13 @@ static void native_begin(struct window *w,CGPoint shown,CGPoint anchor)
     g_mouse_state.current_action=MOUSE_MODE_NONE;
     g_mouse_state.down_location=CGPointMake(shown.x+70,shown.y+14);
     CGEventRef down=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDown,g_mouse_state.down_location,kCGMouseButtonLeft);
+    CGEventSetFlags(down,0); // Synthetic native drags must not inherit held desktop modifiers.
     CGEventSetTimestamp(down,native_timestamp+=10);
     hwm_pointer_sample_event(kCGEventLeftMouseDown,down); CFRelease(down);
     actual[index].origin=anchor; projected[index].origin=shown;
     CGEventRef event=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDragged,
         CGPointMake(g_mouse_state.down_location.x+8,g_mouse_state.down_location.y+6),kCGMouseButtonLeft);
+    CGEventSetFlags(event,0);
     CGEventSetTimestamp(event,native_timestamp+=1);
     hwm_pointer_sample_event(kCGEventLeftMouseDragged,event);
     assert(horizontal_drag(event)); CFRelease(event);
@@ -117,13 +119,14 @@ static void native_press_and_motion(struct window *w,CGPoint point)
     g_mouse_state.window=w; g_mouse_state.window_frame=actual[w->id-1];
     g_mouse_state.current_action=MOUSE_MODE_NONE; g_mouse_state.down_location=point;
     CGEventRef down=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDown,point,kCGMouseButtonLeft);
+    CGEventSetFlags(down,0); // Synthetic native drags must not inherit held desktop modifiers.
     CGEventSetTimestamp(down,native_timestamp+=10);
     hwm_pointer_sample_event(kCGEventLeftMouseDown,down);
     hwm_mouse_pointer_button=kCGMouseButtonLeft;
     hwm_mouse_pointer_generation=hwm_pointer_sample_generation_for_event_ref(down);
     CFRelease(down);
     horizontal_mouse_down(w,point);
-    assert(!hwm_edge_window); // A normal-scale top-band press remains native.
+    assert(!hwm_edge_window); // The title-bar interior remains native.
     CGEventRef drag=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseDragged,CGPointMake(point.x+20,point.y+10),kCGMouseButtonLeft);
     CGEventSetTimestamp(drag,native_timestamp+=1);
     hwm_pointer_sample_event(kCGEventLeftMouseDragged,drag);
@@ -137,7 +140,7 @@ static void test_display_moves_before_native_anchor(void)
     struct window *w=&windows[0];
     CGRect anchor=actual[0],first=projected[0];
     w->layer=7; // An explicit layer survives the temporary drag layer.
-    native_press_and_motion(w,CGPointMake(CGRectGetMidX(first),first.origin.y+2));
+    native_press_and_motion(w,CGPointMake(CGRectGetMidX(first),first.origin.y+12));
     assert(!hwm_drag_native_moved && !hwm_drag_committed);
     projected[0].origin=CGPointMake(300,250);
     assert(hwm_drag_native_sync(&view,w));
@@ -173,6 +176,40 @@ static void test_body_selection_is_only_observed(void)
     hwm_render(&view,clock_now);
     assert(!hwm_drag_window && undo_captures==0 && scale_calls==calls);
     assert(CGRectEqualToRect(projected[0],shown));
+}
+
+/* Selecting text in a window body opens a native observation session. The
+ * compositor's displayed rectangle can differ from the renderer's cache (a
+ * half-pixel from device rounding, or a placement the application clamped)
+ * while the window never moved. Neither difference is a title-bar drag: the
+ * window stays put, even with a neighbour inside the snap threshold. */
+static void test_body_selection_with_stale_cache_never_moves(void)
+{
+    const double drifts[]={.5,20};
+    for(size_t d=0;d<sizeof drifts/sizeof *drifts;d++) {
+        reset(); hwm_render(&view,clock_now);
+        struct window *w=&windows[0];
+        windows[1].strip_initialized=true;
+        windows[2].strip_initialized=windows[3].strip_initialized=false;
+        windows[1].strip_width=400; windows[1].strip_height=600;
+        windows[1].strip_world_x=w->strip_world_x+w->strip_width+view.window_gap+10;
+        windows[1].strip_world_y=w->strip_world_y;
+        CGPoint target;
+        assert(hwm_drag_snap_target(&view,w,&target));
+        projected[0].origin.x+=drifts[d]; projected[0].origin.y+=drifts[d];
+        CGRect shown=projected[0]; CGPoint held=CGPointMake(w->strip_world_x,w->strip_world_y);
+        int calls=plane_transform_calls[0],commits=test_haptic_commits;
+        native_press_and_motion(w,CGPointMake(CGRectGetMidX(shown),CGRectGetMidY(shown)));
+        assert(!hwm_drag_native_moved && !hwm_drag_committed && undo_captures==0);
+        clock_now+=.02; hwm_drag_autoscroll(&view,clock_now);
+        assert(!hwm_drag_native_moved && !hwm_drag_committed);
+        assert(horizontal_drop(w,CGPointZero));
+        clock_now+=.151; hwm_drag_autoscroll(&view,clock_now);
+        hwm_render(&view,clock_now);
+        assert(!hwm_drag_window && undo_captures==0 && plane_transform_calls[0]==calls && test_haptic_commits==commits);
+        assert(CGRectEqualToRect(projected[0],shown));
+        assert(w->strip_world_x==held.x && w->strip_world_y==held.y);
+    }
 }
 
 static void test_border_failure_does_not_discard_native_sample(void)
@@ -376,6 +413,7 @@ int main(void)
         test_native_deadline_does_not_snap_without_a_displayed_sample();
         test_display_moves_before_native_anchor();
         test_body_selection_is_only_observed();
+        test_body_selection_with_stale_cache_never_moves();
         test_border_failure_does_not_discard_native_sample();
         test_tap_disable_retains_held_native_drag_until_physical_up();
         test_recovered_native_drag_yields_to_next_press();

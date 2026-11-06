@@ -28,8 +28,55 @@ static void fixture_event_log(NSEvent *event,NSWindow *window)
 }
 - (void)sendEvent:(NSEvent *)event { fixture_event_log(event,self); [super sendEvent:event]; }
 @end
+/* Opt-in native file drag/drop surface. Existing click tests keep their
+ * original button until the disposable fixture receives drag-mode. */
+@interface FixtureFileDragView : NSView <NSDraggingSource,NSDraggingDestination>
+@property BOOL dragging;
+@end
+@implementation FixtureFileDragView
+- (instancetype)initWithFrame:(NSRect)frame {
+    if((self=[super initWithFrame:frame])) [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    return self;
+}
+- (void)drawRect:(NSRect)rect {
+    [[NSColor colorWithRed:.15 green:.3 blue:.5 alpha:1] setFill]; NSRectFill(rect);
+    [@"Drag this test file to another fixture window" drawAtPoint:NSMakePoint(24,80)
+      withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:18],NSForegroundColorAttributeName:NSColor.whiteColor}];
+}
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
+- (void)mouseDown:(NSEvent *)event { (void)event; self.dragging=NO; }
+- (void)mouseDragged:(NSEvent *)event {
+    if(self.dragging) return; self.dragging=YES;
+    NSString *path=@"/tmp/tana2d_hci_drag_source.txt";
+    [@"Tana2D native file drag verification\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    NSDraggingItem *item=[[NSDraggingItem alloc] initWithPasteboardWriter:[NSURL fileURLWithPath:path]];
+    NSPoint p=[self convertPoint:event.locationInWindow fromView:nil];
+    [item setDraggingFrame:NSMakeRect(p.x,p.y,48,48) contents:[[NSWorkspace sharedWorkspace]iconForFile:path]];
+    [self beginDraggingSessionWithItems:@[item] event:event source:self]; [item release];
+    FILE *f=fopen(fixture_event_log_path,"a"); if(f) { fprintf(f,"{\"kind\":\"file-drag-begin\",\"window\":%ld}\n",(long)self.window.windowNumber);fclose(f); }
+}
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    (void)session; (void)context; return NSDragOperationCopy;
+}
+- (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)point operation:(NSDragOperation)operation {
+    (void)session; (void)point; (void)operation; self.dragging=NO;
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender { (void)sender; return NSDragOperationCopy; }
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender { (void)sender; return NSDragOperationCopy; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSArray *urls=[sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+    NSURL *url=urls.firstObject;
+    if(![url.path isEqual:@"/tmp/tana2d_hci_drag_source.txt"]) return NO;
+    NSString *destination=@"/tmp/tana2d_hci_drag_received.txt";
+    [[NSFileManager defaultManager]removeItemAtPath:destination error:NULL];
+    BOOL copied=[[NSFileManager defaultManager]copyItemAtPath:url.path toPath:destination error:NULL];
+    FILE *f=fopen(fixture_event_log_path,"a");if(f) { fprintf(f,"{\"kind\":\"file-drop\",\"window\":%ld,\"copied\":%s}\n",(long)self.window.windowNumber,copied?"true":"false");fclose(f); }
+    return copied;
+}
+@end
 @interface Fixture : NSObject
 @property(nonatomic,retain) NSMutableArray *windows;
+@property(nonatomic,retain) NSMutableArray *extras;
 - (void)command:(NSNotification *)notification;
 - (void)add;
 - (void)button:(NSButton *)sender;
@@ -87,6 +134,13 @@ static void fixture_event_log(NSEvent *event,NSWindow *window)
         [data writeToFile:@"/tmp/tana2d_fixture_app_coordinates.json" atomically:YES];return;
     }
     if ([command isEqual:@"trace-reset"]) { unlink(fixture_event_log_path); return; }
+    if([command isEqual:@"drag-mode"]) {
+        for(NSWindow *w in self.windows) {
+            FixtureFileDragView *v=[[FixtureFileDragView alloc]initWithFrame:w.contentView.bounds];
+            w.contentView=v; [v release];
+        }
+        return;
+    }
     if ([command isEqual:@"new"]) [self add];
     if ([command isEqual:@"move"]) {
         NSWindow *w=self.windows.lastObject;
@@ -104,6 +158,37 @@ static void fixture_event_log(NSEvent *event,NSWindow *window)
             NSRect frame=w.frame; frame.origin.y+=frame.size.height-size.height; frame.size=size;
             [w setFrame:frame display:YES];
         }
+    }
+    /* Native fullscreen through AppKit, the same path as the green button
+     * and View > Enter Full Screen. */
+    if ([command isEqual:@"fullscreen"]) [self.windows.lastObject toggleFullScreen:nil];
+    /* Secondary windows that belong to a main window and must stay out of
+     * the plane: a dialog panel, a utility panel, an attached child window
+     * and an app-modal window. They are kept apart from self.windows so the
+     * plane commands above keep addressing main windows only. */
+    if ([command isEqual:@"dialog"] || [command isEqual:@"panel"] || [command isEqual:@"child"] || [command isEqual:@"modal"]) {
+        NSWindow *parent=self.windows.lastObject;
+        NSRect frame=NSMakeRect(NSMinX(parent.frame)+40,NSMaxY(parent.frame)-260,320,200);
+        NSWindow *w;
+        if([command isEqual:@"dialog"])
+            w=[[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+        else if([command isEqual:@"panel"]) {
+            NSPanel *p=[[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskUtilityWindow|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+            p.floatingPanel=NO; p.hidesOnDeactivate=NO; w=p; // Normal level: only its role marks it secondary.
+        } else
+            w=[[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+        w.title=[NSString stringWithFormat:@"Tana2D Test %@",command]; w.releasedWhenClosed=NO;
+        if(!self.extras) self.extras=[NSMutableArray array];
+        [self.extras addObject:w]; [w release];
+        if([command isEqual:@"child"]) [parent addChildWindow:w ordered:NSWindowAbove];
+        if([command isEqual:@"modal"]) { [w center]; dispatch_async(dispatch_get_main_queue(),^{ [NSApp runModalForWindow:w]; }); }
+        else [w makeKeyAndOrderFront:nil];
+        return;
+    }
+    if ([command isEqual:@"close-extras"]) {
+        if([NSApp modalWindow]) [NSApp stopModal];
+        for(NSWindow *w in self.extras) { [w.parentWindow removeChildWindow:w]; [w close]; }
+        [self.extras removeAllObjects]; return;
     }
     if ([command isEqual:@"close"]) { [self.windows.lastObject close]; [self.windows removeLastObject]; }
     if ([command isEqual:@"minimize"]) [self.windows.lastObject miniaturize:nil];
@@ -127,6 +212,8 @@ int main(int argc,char **argv) { @autoreleasepool {
     [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     Fixture *fixture=[Fixture new]; fixture.windows=[NSMutableArray array];
     [[NSDistributedNotificationCenter defaultCenter] addObserver:fixture selector:@selector(command:) name:@"dev.tana2d.fixture" object:nil];
-    for(int i=0;i<3;++i) [fixture add];
+    const char *count=getenv("TANA2D_FIXTURE_WINDOWS");
+    int windows=count?atoi(count):3; if(windows<1 || windows>8) windows=3;
+    for(int i=0;i<windows;++i) [fixture add];
     [NSApp activateIgnoringOtherApps:YES]; [NSApp run];
 } return 0; }

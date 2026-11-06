@@ -6,24 +6,47 @@ A macOS window manager with an unbounded two-dimensional workspace. Derived from
 Experimental. See the [verification record](docs/VERIFICATION.md) for tested
 behavior and remaining limits.
 
-Pinch to zoom, swipe to pan. The pinch is read from the fingers' separation,
+Choose **Show workspace** from the Tana2D menu to browse with one hand: scroll
+with two fingers or drag the background to pan, pinch to zoom, and click a
+window to enter it. Three-finger panning and pinching also work directly,
+without holding a key. Fn/🌐 activation is available as an opt-in setting.
+
+While browsing, pinch to zoom, swipe to pan. The pinch is read from the fingers' separation,
 so the thumb may rest or both fingers drift while they part; the fingers need
-not move against each other. Zoom stays anchored at the pointer all the way
+not move against each other. A pair of fingers zooms once its spread has
+matched its shared travel for a few hundredths of a second, both overall and
+in the latest motion, so a scroll whose fingers set off one before the other
+is still a scroll; a pair decided a scroll stays one until it lifts, so a
+scroll in an application never turns into a zoom part-way. Clicks and drags
+(including screenshot selections) exclude their contacts from zoom until
+every finger lifts; rotations also stay separate from pinch zoom. A pinch the
+system's own recogniser reports zooms at once. Zoom stays anchored at the pointer all the way
 back to **100%** and preserves every window's size. A pinch toward 100% that
 comes to rest at 90% or more finishes the zoom to exactly 100% about the same
 point. There are no workspace walls. A pinch zooms out until every window
 fits on screen (or to 20%, whichever is further) and no further, and it comes
 to rest exactly where the fingers stopped.
 
-Applications stay usable while zoomed out. From 50% up, clicks, drags,
-scrolling, and typing go to the window under the pointer. Below 50%, clicking
-a window focuses it and zooms in on it at 100% (the click is not passed to the
-app), and dragging it moves it. Set `"zoomClickThreshold"` (0–1; default 0.5,
-0 disables) to change that cutoff. At every zoom, hovering a window focuses it
-and moves the focus border, just as at 100%. Zoom never remaps the pointer or
-changes display configuration. Some applications track hover by polling the
-cursor position themselves (Firefox, for example). Their in-app hover effects,
-and menus they open at the pointer, can appear offset while zoomed out.
+Clicks use recent deliberate interactions rather than hover focus alone.
+After panning or pinching out, a plain click on a window's body focuses it
+and returns it to 100%. A click while continuing work in the same app stays
+native; native scrolling, typing, modified clicks, and explicit app activation
+establish that history. Switching to another window while zoomed out selects
+it. Unknown or expired history preserves native clicks above the far-view
+cutoff (`"zoomClickThreshold"`, default 0.5); below it, plain body clicks select.
+Title bars, native window controls and resize edges retain their own behavior
+outside explicit workspace mode. Selection commits on release; dragging application content keeps its native
+drag behavior instead. Recent interaction history expires after 30 seconds.
+
+Zoom never remaps the pointer or
+changes display configuration. At 100%, once the camera rests, every visible
+window's own frame matches where it is drawn, wherever it sits on screen, so
+hover and clicks land where the pointer is. Some applications track hover by
+polling the cursor position themselves (Firefox, for example). Their in-app
+hover effects, and menus they open at the pointer, can appear offset while
+zoomed out, and at 100% in a window whose title bar is above the menu bar:
+macOS will not let an application's frame go there, so its own record stays
+below the menu bar while the window is drawn higher.
 
 Hover focuses the window the pointer settles on: once it slows over a window
 or stops (within a few hundredths of a second), not every window a quick
@@ -57,39 +80,73 @@ require testing on the target Mac.
 
 | Input | Action |
 | --- | --- |
-| Command + Shift + Return | Reset zoom to 100% and resize the active window to fill the usable screen |
+| Tana2D menu → Show workspace | Enter one-handed workspace browsing; choose again to return |
+| Two-finger scroll or background drag in workspace mode | Pan in any direction |
+| Click a window in workspace mode | Enter the window at 100% and resume native app gestures |
+| Right-click in workspace mode | Return to the focused window and resume native app gestures |
+| F11 (Fn + F11 on a laptop) | Enter or leave native fullscreen for the focused window |
+| Control + Option + Command + M | Reset zoom to 100% and resize the active window to fill the usable screen |
 | Three-finger swipe | Browse the workspace in any direction, including diagonals |
 | Pinch | Zoom out or return up to 100% |
-| Control + Return / Control + Up | Zoom out to the whole workspace; press again to return to the focused window at 100% |
+| Control + Option + Command + Return (or S) | Zoom out to the whole workspace; press again to return to the focused window at 100% |
 | Four-finger swipe down | Center the active window at 100% without resizing it |
 | Four-finger swipe up | Open the same click-to-center mode |
-| Command + Return | Open a new Ghostty window |
-| Command + Shift + W | Open Firefox |
-| Option + Command + arrow | Focus the nearest window in that direction |
-| Shift + Option + Command + arrow | Move the focused window one grid step |
-| Click a window below 50% zoom | Focus it and zoom in on it at 100%; dragging moves it |
-| Drag a title bar, or Option-drag a window | Follow the pointer; dock beside nearby windows, with a blue bar in the gap for every docked edge |
+| Control + Option + Command + T | Open a new Ghostty window |
+| Control + Option + Command + B | Open Firefox |
+| Control + Option + Command + arrow | Focus the nearest window in that direction |
+| Control + Shift + Option + Command + arrow | Move the focused window one grid step |
+| Click a window after panning or pinching out | Focus it and zoom to 100%; body drags stay with the app |
+| Drag a title bar, or Fn-drag a window | Follow the pointer; dock beside nearby windows, with a blue bar in the gap for every docked edge |
+| Deliberately overlap another window and pause briefly | Preview two side-by-side halves; release to accept, move away or Escape to cancel |
 | Hold Command while dragging | Place the window freely, without docking |
 | Drag a window edge or corner | Resize in plane coordinates, preserving the opposite edge |
-| Option + Command + F | Return to the focused window at native size |
-| Option + Command + 0 | Return to actual size |
-| Option + Command + Z | Undo an arrangement change |
-| Control + Option + P | Open the command palette |
+| Control + Option + Command + F | Return to the focused window at native size |
+| Control + Option + Command + 0 | Return to actual size |
+| Control + Option + Command + Z | Undo an arrangement change |
+| Control + Option + Command + P | Open the command palette |
+
+Workspace mode shows a hand in the menu bar. Within it, drag a title bar to
+rearrange a window or drag its side/bottom edge to resize it. Ordinary
+scrolls and rotations stay with macOS and the app;
+Option-click/drag, Control-click, Shift-click, and Command-click retain their
+app meanings. Set `settings.gestureActivation` to `"unmodified"` (the default) for
+one-handed global workspace gestures, or `"fn"` to opt into requiring Fn
+outside workspace mode. Existing custom keyboard shortcuts remain configured as
+written; remove an override to adopt its new default.
 
 On first launch, windows start in a grid. Later launches in the same login session restore the saved plane for surviving windows.
 **Arrange in grid** in the menu or palette resets the arrangement; it does not
 create boundaries. New windows find a nearby free position without repacking
-existing windows.
+existing windows. Movable, normal-level main windows join the workspace at their native size,
+including fixed-size windows and applications with custom accessibility roles
+such as Adobe Audition. Windows that belong to another window are never tiles:
+dialogs and alerts, inspectors and utility panels, windows attached to a parent
+window, and modal windows. Each floats above the plane and keeps its place
+beside the window it belongs to, panning and zooming with it. Drag one to give
+it a new place; the owner is its parent window, or else its application's
+window under it. App rules (`appRules`) apply to main windows only. Elevated
+system surfaces retain their separate behavior.
+
+Native fullscreen works as it does without Tana2D: the green button, View >
+Enter Full Screen, Control + Command + F, or **F11** (Fn + F11 on a laptop
+keyboard; Tana2D takes the key before macOS's Show Desktop). The window goes to
+its own Space and its tile leaves the plane until it returns, to the same place.
+While a fullscreen application is in front, its trackpad gestures, scrolling
+and clicks are its own: swipe between Spaces, pinch to zoom the page, or open
+Mission Control as usual. Change the key with `"fullscreen"` in `shortcuts`.
 
 Camera commands animate position and zoom together. Zoom preserves native
-window dimensions. Command + Shift + Return explicitly resizes the active
+window dimensions. Control + Option + Command + M explicitly resizes the active
 window to fill the screen. macOS Reduce Motion disables camera transitions.
+
+Three-finger pan speed gets a smooth boost toward 100% zoom: 20% at native
+size, 10% at 50%, and 5% at 25%, multiplied by `swipeGain`.
 
 A three-finger pan that is still moving when the fingers lift carries on
 briefly and eases to rest; a pan that stops before lifting stays exactly where
 it is. At 100%, when a pan brings a window close to the center of the screen
-(within 180 points of its centered view, moving toward it), the camera finishes
-centering it. Panning away from a centered window is never pulled back. Set
+(within 200 points of its centered view, moving toward it), the camera finishes
+centering it. Small direct near-center passes also settle into place, including gentle overshoots. Ambiguous choices stay where released. Panning away from a centered window is never pulled back. Set
 `"autoCenter": false` or `"panMomentum": false` to turn either off, and
 `"autoCenterDistance"` (20–400 points) to change the reach. The optional
 `"magneticCentering": true` setting restores a small nudge toward a nearby
@@ -102,9 +159,9 @@ still moving (a second arrow press, or a glide interrupted by a shortcut)
 keeps the part of that motion heading toward the new target, instead of
 stopping and restarting.
 
-**Show workspace** (Control + Return) preserves every window's world position and
+**Show workspace** (Control + Option + Command + Return) preserves every window's world position and
 uses the tight bounding rectangle of the arrangement, with a small screen margin.
-**Return to window (100%)** (Option + Command + 0) returns to the focused window
+**Return to window (100%)** (Control + Option + Command + 0) returns to the focused window
 at **100%**.
 
 ## Separate from Tana
@@ -147,3 +204,23 @@ See [verification](docs/VERIFICATION.md) for the checks performed on this fork.
 
 MIT. Includes the MIT-licensed [yabai](https://github.com/asmvik/yabai) foundation.
 The packaged app includes its third-party license notice.
+
+### Content drags and overlap tiling
+
+A zoomed-out body press can still click to enter a window. Once it moves five
+display points, the original press is handed to the application so files, text,
+and tabs retain native drag-and-drop behavior. Title bars and explicit Fn-drags
+move whole windows.
+
+During a window drag, a deliberate approach with substantial overlap offers
+**Release to share screen**. Release to resize both apps into equal side-by-side
+halves. At 100% the pair fills the usable screen; while zoomed out, the same
+native screen-sized pair is arranged around the target. Neither app changes
+size before release, and zoom stays unchanged.
+
+Passing over a window, grazing its edge, or making a small adjustment does not
+tile. Moving back away from the target withdraws the offer. Move away, press Escape, or hold
+Command to decline. Fixed-size apps do not offer the split. Past resize hints cannot veto it;
+the application’s actual accepted size determines whether the halves fit. If an app refuses the requested size, both
+released frames are restored. Ordinary edge docking remains available as its
+own gesture.

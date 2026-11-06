@@ -177,6 +177,9 @@ static NSInteger hwm_fuzzy_score(NSString *query,NSString *candidate) { return h
 @property(nonatomic) NSInteger selected;
 @property(nonatomic,assign) TanaPalette *owner;
 @property(nonatomic) CGFloat scrollCarry;
+@property(nonatomic) NSInteger pressedRow;
+@property(nonatomic) BOOL pressValid;
+@property(nonatomic) NSPoint pressPoint;
 - (NSInteger)first;
 - (NSRect)rectForRow:(NSInteger)row;
 @end
@@ -251,7 +254,7 @@ static const NSInteger TanaPaletteVisible=9;
         if(element.row==self.selected) return @[element];
     return @[];
 }
-- (void)setRows:(NSArray *)rows { [_rows release]; _rows=[rows retain]; self.axElements=nil; [self setNeedsDisplay:YES]; NSAccessibilityPostNotification(self,NSAccessibilityLayoutChangedNotification); }
+- (void)setRows:(NSArray *)rows { self.pressValid=NO; self.scrollCarry=0; [_rows release]; _rows=[rows retain]; self.axElements=nil; [self setNeedsDisplay:YES]; NSAccessibilityPostNotification(self,NSAccessibilityLayoutChangedNotification); }
 - (void)setSelected:(NSInteger)selected
 {
     if(_selected==selected) return;
@@ -316,11 +319,25 @@ static const NSInteger TanaPaletteVisible=9;
 }
 - (void)mouseDown:(NSEvent *)event
 {
-    NSInteger row=[self rowAtEvent:event];
-    if(row>=0) [self.owner activate:row];
+    self.pressedRow=[self rowAtEvent:event]; self.pressValid=self.pressedRow>=0;
+    self.pressPoint=[self convertPoint:event.locationInWindow fromView:nil];
+}
+- (void)mouseDragged:(NSEvent *)event
+{
+    NSPoint point=[self convertPoint:event.locationInWindow fromView:nil];
+    if(hypot(point.x-self.pressPoint.x,point.y-self.pressPoint.y)>=5) self.pressValid=NO;
+}
+- (void)mouseUp:(NSEvent *)event
+{
+    BOOL activate=self.pressValid && [self rowAtEvent:event]==self.pressedRow;
+    self.pressValid=NO;
+    if(activate) [self.owner activate:self.pressedRow];
 }
 - (void)scrollWheel:(NSEvent *)event
 {
+    self.pressValid=NO;
+    if(event.phase==NSEventPhaseBegan || event.phase==NSEventPhaseCancelled) self.scrollCarry=0;
+    if(event.phase==NSEventPhaseCancelled) return;
     NSInteger count=(NSInteger)self.rows.count;
     if(!count) return;
     CGFloat delta=event.hasPreciseScrollingDeltas ? event.scrollingDeltaY/TanaPaletteRow : event.scrollingDeltaY;
@@ -448,6 +465,7 @@ static const NSInteger TanaPaletteVisible=9;
 {
     /* Close at once: keyboard focus must return to the user's window before
      * the command runs, so no fade may keep this panel key. */
+    self.list.pressValid=NO;
     if(!self.panel.visible) return;
     [self.panel orderOut:nil]; self.run=nil;
 }

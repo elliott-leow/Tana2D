@@ -592,13 +592,13 @@ function screens() {
       title:"Open Tana2D when you log in?", body:"Your windows are arranged and ready the moment you sign in.",
       primary:{label:"Open at Login", act:"login", value:true, then:"tour1"}, secondary:{label:"Not Now", act:"login", value:false, then:"tour1"}}),
     tour1: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 1 of 3",
-      title:"Move around", body: style === "keyboard" ? "Press <kbd>⌥</kbd><kbd>⌘</kbd> and an arrow key to go to the next window. Try it here, or drag the background." : "In Tana2D, <b>swipe with three fingers</b>. In this preview, scroll with two fingers or drag the background.",
+      title:"Move around", body: style === "keyboard" ? "Press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd> and an arrow key to go to the next window. Try it here, or drag the background." : "Choose <b>Show workspace</b> from the Tana2D menu. Then <b>scroll with two fingers</b> or drag the background to move. Try it in this preview.",
       primary:{label:"Next", go:"tour2", pulse:tourDone.pan}, secondary:{label:"Skip Tour", go:"done"}}),
     tour2: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 2 of 3",
-      title:"See everything at once", body:"<b>Pinch</b> with two fingers, or press <kbd>⌃</kbd><kbd>↩</kbd> (Control + Return). Press it again to come back.",
+      title:"See everything at once", body:"In workspace mode, <b>pinch</b> with two fingers. Pinch also works directly outside workspace mode. Or press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd> (Control + Option + Command + Return). Press it again to come back.",
       primary:{label:"Next", go:"tour3", pulse:tourDone.overview}, secondary:{label:"Skip Tour", go:"done"}}),
     tour3: () => ({scene:"tour", compact:true, eyebrow:"Quick tour · 3 of 3",
-      title:"Jump to any window", body:"While zoomed out, <b>click a window</b>. Tana2D flies you straight into it.",
+      title:"Jump to any window", body:"In workspace mode, <b>click a window</b> to enter it. Your usual app gestures resume. Drag a window to arrange it, or right-click to return to your focused window.",
       primary:{label:"Next", go:"done", pulse:tourDone.jump}, secondary:{label:"Back", go:"tour2"}}),
     done: () => ({scene:"done", eyebrow: s.step === "ready" ? `<span class="check">✓</span> All set` : "Almost",
       title: s.step === "ready" ? "Tana2D is ready" : "One step left",
@@ -618,7 +618,7 @@ function screens() {
 function cheatSheet() {
   const row = (keys, what) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0;font-size:13.5px;color:var(--ink-2)"><span>${what}</span><span>${keys}</span></div>`;
   return `<div style="margin-top:2px;padding:10px 14px;border-radius:14px;background:rgba(255,255,255,.06)">
-    ${row("three-finger swipe", "Move around")}${row("pinch · <kbd>⌃</kbd><kbd>↩</kbd>", "See everything")}${row("<kbd>⌥</kbd><kbd>⌘</kbd><kbd>←</kbd>", "Next window")}${row(`<kbd>⌃</kbd><kbd>${style === "keyboard" || (st && st.keyboardMode) ? "⌘" : "⌥"}</kbd><kbd>P</kbd>`, "All commands")}</div>`;
+    ${row("menu → Show workspace", "Start browsing")}${row("two-finger scroll · background drag", "Move around")}${row("pinch · <kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd>", "See everything")}${row("<kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd><kbd>←</kbd>", "Next window")}${row(`<kbd>⌃</kbd>${style === "keyboard" || (st && st.keyboardMode) ? "" : "<kbd>⌥</kbd>"}<kbd>⌘</kbd><kbd>P</kbd>`, "All commands")}</div>`;
 }
 let style = "trackpad";
 let tourDone = {pan: false, overview: false, jump: false};
@@ -722,7 +722,7 @@ function drawChoices(on) {
   wrap.innerHTML = `
     <button class="choice" data-style="trackpad"><svg viewBox="0 0 200 130"><rect x="30" y="18" width="140" height="94" rx="14" fill="rgba(255,255,255,.1)" stroke="rgba(255,255,255,.3)"/>
       ${[0,1,2].map(i => `<circle cx="${82 + i*18}" cy="64" r="7" fill="#7aa8ff"><animate attributeName="cx" values="${82+i*18};${102+i*18};${82+i*18}" dur="2.2s" repeatCount="indefinite"/></circle>`).join("")}</svg>
-      <strong>Trackpad</strong><span>Swipe and pinch, hover to focus</span></button>
+      <strong>Trackpad</strong><span>Browse with one hand, then click to enter a window</span></button>
     <button class="choice" data-style="keyboard"><svg viewBox="0 0 200 130"><rect x="18" y="30" width="164" height="72" rx="10" fill="rgba(255,255,255,.1)" stroke="rgba(255,255,255,.3)"/>
       ${Array.from({length:3},(_,r)=>Array.from({length:9},(_,c)=>`<rect x="${28+c*17}" y="${40+r*17}" width="13" height="12" rx="3" fill="rgba(255,255,255,${(r===2&&c>2&&c<6)?".55":".22"})"/>`).join("")).join("")}</svg>
       <strong>Keyboard</strong><span>Shortcuts, less motion, works with VoiceOver</span></button>`;
@@ -752,8 +752,8 @@ function placeHint(id) {
   const sc = document.querySelector("#stage .scene:last-child"); if (!sc) return;
   sc.querySelectorAll(".plane-hint").forEach(x => x.remove());
   if (tourDone[TOUR_GOAL[id]]) return;
-  const text = {tour1: style === "keyboard" ? "Try <kbd>⌥</kbd><kbd>⌘</kbd><kbd>→</kbd>, or drag" : "Scroll or drag to move",
-    tour2: "Pinch, or press <kbd>⌃</kbd><kbd>↩</kbd>", tour3: "Click any window"}[id];
+  const text = {tour1: style === "keyboard" ? "Try <kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd><kbd>→</kbd>, or drag" : "Scroll or drag to move",
+    tour2: "Pinch, or press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd>", tour3: "Click any window"}[id];
   const hint = document.createElement("div"); hint.className = "plane-hint"; hint.innerHTML = text; sc.appendChild(hint);
 }
 let typeTimer = null;
@@ -793,8 +793,8 @@ window.tanaReset = () => { plan = []; screen = null; currentScene = null; tourDo
 /* Return activates the main button; Escape goes back. */
 addEventListener("keydown", e => {
   if (screen && screen.startsWith("tour") && plane) {
-    if (e.ctrlKey && (e.key === "Enter" || e.key === "ArrowUp")) { e.preventDefault(); plane.toggleOverview(); return; }
-    if (e.altKey && e.metaKey && e.key.startsWith("Arrow")) {
+    if (e.ctrlKey && e.altKey && e.metaKey && !e.shiftKey && (e.key === "Enter" || e.key.toLowerCase() === "s")) { e.preventDefault(); plane.toggleOverview(); return; }
+    if (e.ctrlKey && e.altKey && e.metaKey && !e.shiftKey && e.key.startsWith("Arrow")) {
       e.preventDefault(); const a = APPS[plane.focus], cx = a.x + a.w / 2, cy = a.y + a.h / 2;
       const dir = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]}[e.key];
       let best = -1, bestD = Infinity;

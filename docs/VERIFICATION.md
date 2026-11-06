@@ -3,6 +3,49 @@
 This record covers the separate Tana2D fork. Historical Tana evidence is retained
 in [TANA-VERIFICATION.md](TANA-VERIFICATION.md).
 
+## Native gestures excluded from pinch — October 28, 2026
+
+Screenshot-region dragging exposed an ownership gap: raw two-finger separation
+could engage zoom while a mouse button was held outside a managed window.
+The touch callback now checks mouse-button state, cancels any pending pinch,
+and excludes those contacts until a complete lift. Mouse down/drag events also
+invalidate queued raw and system zoom samples. Rendering stops pending pinch
+motion and the 100% detent when a native interaction interrupts it.
+
+Scroll decisions survive partial lifts and contact replacement. Angular motion
+that dominates separation is classified as rotation and cannot become zoom
+later in the same contact sequence. System magnify hints from an earlier pair
+cannot start a new pinch.
+
+`plane_pinch_test` covers native drag cancellation before/after engagement,
+partial lifts, contact replacement, clockwise/counterclockwise rotation with
+separation wobble, and stale hints, alongside the existing natural-pinch cases.
+`plane_multitouch_test` exercises the production callback, including button
+release without a lift, missed mouse-down delivery, queued-sample invalidation,
+and recovery on the next gesture. `make test` passed (including all 21 Python
+tests), and the production build and installation succeeded. The installed
+binary matches the signed package; runtime status reports `ready:true`,
+`backend:true`, and `paused:false`. These are synthetic input tests; physical
+screenshot dragging and trackpad feel still require live user verification.
+
+## Scroll never a pinch — October 19, 2026
+
+A two-finger scroll whose fingers set off one before the other, or whose
+second fingertip shifts as it lands, read as a pinch and zoomed the plane.
+The recogniser now requires the spread to match the travel in the recent
+motion as well as overall, and to keep doing so for 60 ms (30 ms for fingers
+moving against each other) before it zooms; the zoom accrued meanwhile is
+paid out over 60 ms rather than in one step. A magnify reported by the
+system's own recogniser while the pair is undecided zooms at once. Unit
+tests (`tests/plane_pinch_test.c`, 15 cases) cover a leading finger in a
+fast, a slow and a diagonal scroll, a landing shift, two fingers moving the
+same way at different speeds (a scroll), the system hint, and that the
+opposing, thumb-resting and thumb-drifting pinches still zoom within a few
+millimetres. Each live decision is logged with its distances for later
+checking. `make test` passes; `make all` builds clean. Feel on the trackpad
+is pending the user's own use; the user reported the first pass still too
+ready to zoom.
+
 ## Natural pinch — October 19, 2026
 
 The pinch is now read from the two fingers' separation in the raw trackpad
@@ -167,6 +210,12 @@ which were consolidated before repair:
   samples the public displayed rectangle, including when the anchor is unchanged.
   The outline uses that exact rectangle. Passive text selection does not capture
   undo, change window layers, snap, or trigger a drop layout.
+- A body press is stationary unless AppKit really moved the surface. The
+  displayed origin is compared, with 1.5 points of slack, against both the
+  renderer's cache and a sample taken at the press, so a half-pixel rounding
+  gap or an application-clamped placement no longer reads as a title-bar
+  drag that then snapped the window to the pointer. Regression:
+  `tests/plane_native_drag_test.m`, body selection with a stale cache.
 - Native release retains ownership for the full 150 ms grace period. Missing
   displayed-frame data defers reconciliation instead of restoring stale world
   geometry. Normal title-bar presses in the top-edge band pass through to AppKit.
@@ -1496,3 +1545,218 @@ query now reports `snapSeams`, `snapPreviewMargin` and `snapFree`. The live
 feedback scripts account for the gutter margin. `make all test` passed. The
 change has not yet been installed or run through the live CGEvent scripts.
 
+
+### 2026-11-01: Audition and custom-role windows follow the plane
+
+Audition's main window (2972) reported `AXLayoutArea` / `AXFloatingWindow`,
+normal level, movable and resizable. It was tracked but floated and omitted
+from the plane. Admission now uses movable, normal-level root-window
+capabilities across creation eligibility and management. Layout persistence,
+app navigation and overview use the same predicate. Custom-role managed main
+windows no longer trigger the transient-popup focus hold; actual AX dialogs
+retain that hold.
+
+Validation: `make all test` passed, including the admission and popup-guard
+regressions and 21 Python tests. The native-drag harness now clears modifiers
+on its synthetic events so a physically held Command key cannot disable its
+snap assertions. The signed app was installed and restarted; installed and
+packaged executable hashes match. Live WindowServer metrics showed Audition
+visible at alpha 1 before and after a camera pan, moving exactly (-140, -90)
+points for a (140, 90) camera change, retaining its world frame. The camera was
+restored afterward. Runtime reported ready/backend true, paused false and zero
+move failures. Evidence: `build/audition-fix-build-test.log`,
+`build/audition-fix-install.log`, `build/audition-fix-live-pan.json`.
+This verifies real-window motion driven through IPC; physical trackpad feel
+was not tested in this pass.
+
+## 2026-11-02: Content dragging, centering, and overlap tiling
+
+Zoomed-out body presses retain their original native event until the gesture
+is known. A click still selects/enters; movement of five display points hands
+the original press to AppKit before the drag. Titlebar/Fn rearrangement remains
+available. Escape, interrupted presses, and later press generations cannot
+turn a cancelled content gesture into a window move.
+
+The default centering reach is now 200 display points (previously 180), with
+bounded near-center crossing capture and ambiguity rejection. Escape pans,
+tiny movements, and empty canvas remain free. Centering still applies at 100%.
+
+A window overlap of at least 35% plus a 240 ms pause offers an explicit
+“Release to tile” preview. It preserves native sizes and the target's position.
+Side hysteresis prevents diagonal flicker; occupied or mostly offscreen
+landings are excluded. Moving away, Escape, or Command declines. Offers are
+committed only on normal release, after native frame settling when necessary.
+
+Validation: `make all test` passed, including sanitized runtime/geometry,
+content handoff/cancellation, overlap offer/release, preview cache tests and
+21 Python tests. Preview raster output was inspected. Packaging tests now
+isolate process discovery so temporary installations cannot stop the real WM.
+The signed app was installed at `/Applications/Tana2D.app`; packaged/installed
+executables match and strict signature verification passed.
+
+Installed-app native acceptance passed in disposable fixture windows:
+`tests/live_content_drag.py` copied a real temporary file between AppKit
+windows at 40% and 70% zoom without moving/resizing either window or changing
+zoom. `tests/live_overlap_tiling.py` used a native titlebar drag, observed the
+fully faded-in preview while held through WindowServer metrics, and verified the
+release landing, unchanged peer, and preserved dimensions. Evidence is in
+`build/content-drag-report.json` and `build/overlap-tiling-report.json`.
+Fixtures were closed and the camera restored. Physical one-handed trackpad
+feel and behavior in third-party applications remain user acceptance.
+
+## 2026-11-02 follow-up: Intent-aware screen sharing and vertical resizing
+
+Overlap tiling now distinguishes two operations. At near-native zoom (95% or
+higher), a substantially visible target that occupies much of the relevant
+screen axis, or a pair too large to fit comfortably, proposes equal screen
+halves. A pair that fits at native sizes, and zoomed-out arrangements, retain
+native-size placement beside the target. Both split slots are shown before
+release, with “Release to share screen”; docking says “Release to tile beside.”
+The camera and zoom are preserved. Fixed-size windows are never forced into a
+split, and known size limits and third-window collisions reject unsafe plans.
+If a resize is refused by an app, the settled native dimensions trigger a
+fallback that restores the peer and docks the held app beside it. New input
+on either participant owns the geometry and cancels that reconciliation.
+
+Vertical resize root causes: the top edge was explicitly rejected in both
+input paths, and an older queued drag could overwrite the terminal mouse-up
+position after release sampling. The top perimeter is now available, its
+inside reach scales down with zoom to preserve titlebar interaction, and late
+drag callbacks cannot roll back the released size. Top/bottom edges, all
+vertical corners, opposite-edge anchoring, accepted minimum sizes and native
+screen-edge growth constraints have deterministic production-path coverage.
+
+Validation: `make all test` passed, including the intent planner, shared
+production commit policy, both-slot preview/cache/raster checks, native AppKit
+handoff sizing of both split apps, minimum-size fallback, cancellation, and
+vertical resize ordering regressions, with address/undefined sanitizers and
+21 Python tests. The preview raster was inspected. Per the user's instruction,
+no UI automation, injected input, or computer-use acceptance tests were run
+for this follow-up. Automated evidence verifies the implemented state and
+geometry behavior; it does not establish subjective physical gesture feel.
+
+## 2026-11-02 clarification: Overlap always means two horizontal halves
+
+This supersedes the earlier size/zoom-based choice of split versus docking.
+A deliberate overlap now offers only a two-window, side-by-side equal split.
+Initial window size never substitutes native-size docking, and vertical
+approaches still choose left/right halves. At 100% the split fills the usable
+screen. Zoomed out, the native screen-sized pair is centered near the target;
+the camera and zoom remain unchanged rather than inflating native app sizes.
+
+Intent is inferred from actual drag movement and overlap: entering a substantial
+overlap, or deliberately deepening an existing one, followed by a 240 ms pause.
+Stationary existing overlaps and small adjustments do not arm the offer. Fully
+stacked windows require a larger move. Continuing to move withdraws the offer;
+no new offer may arm after physical release during native reconciliation.
+Both final slots are previewed, and only normal release accepts them. Escape,
+Command, and moving away still decline. Ordinary edge docking is separate.
+
+Background apps retain their geometry and no longer veto the previewed pair;
+the accepted pair is raised together. Known minimum sizes/fixed-size apps
+suppress an impossible split. If an app refuses the requested halves, both
+released frames are restored instead of substituting a different arrangement.
+
+Validation: `make all test` passed, including small-window and reduced-zoom
+split plans, both-window commit/resizing, stable side selection, pass-through,
+existing-overlap adjustments, resumed movement, no post-release arming,
+cancellation, minimum-size rollback, native size handoff, and the earlier
+vertical-resize regressions. This includes sanitized native tests and 21 Python
+tests. The optional native harness was updated but was not run. No computer-use
+or injected-input tests were used for this correction.
+
+## 2026-11-03: Three-finger speed taper and reported overlap failure
+
+Three-finger pan gain now adds a continuous `1 + 0.20 * zoom` multiplier to
+`swipeGain`: +20% at 100%, +10% at 50%, and +5% at 25%. It applies identically
+to both axes, before the existing screen-to-world conversion. Finger intent,
+identity tracking, resampling, and the release decay are retained. Release
+velocity is measured from the resulting camera movement.
+
+The overlap failure report exposed two rejection paths. First, a past resize
+mismatch cached the whole accepted width as a supposed minimum, even when only
+height differed. The planner then vetoed a half-screen split using that hint.
+Only rejected width shrinkage now learns a width hint, and hints no longer
+veto an explicit split; actual accepted native sizes remain authoritative.
+A regression uses the reported browser/terminal proportions and stale full-width
+hints and verifies that both apps can reach the equal-half commit.
+
+Second, requiring an exact stationary pause and an extra 10% overlap increase
+excluded gentle approaches that began with existing overlap. One trajectory
+tracker now evaluates meaningful movement, substantial overlap, approach and
+settling over 150 ms, allowing gentle ongoing motion. Nearly centered stacked
+starts use a larger movement and 200 ms interval. A sustained retreat cancels
+without rearming as the drag crosses the target's middle. Physical release and
+native finishing both prevent new arming, while late native frames can still
+withdraw a stale preview. Presentation diagnostics expose `tileReason` and
+`minimumWidthHint` for read-only diagnosis.
+
+Validation uses deterministic production-path and sanitized tests, including
+zoom-dependent screen travel, equal x/y gain, the width-hint producer, the
+reported pair proportions, partial-overlap approaches, fast pass-throughs,
+slow retreats, side crossing, release timing and native ownership. No desktop
+input, app-driving, or human-style computer-use tests are used for this pass.
+
+## 2026-11-05: Native fullscreen, F11, and windows that belong to windows
+
+Reported: apps could not go into fullscreen naturally; no fullscreen toggle
+key; windows inside windows were tiled; a floating panel stayed fixed to the
+screen instead of following its application; hover coordinates in windows
+away from the centre.
+
+**Fullscreen.** Reproduced on installed 0.6.5 with the fixture: after the green
+button the window sat alone on fullscreen Space 2, but Tana2D still listed it
+as a tile, `is-native-fullscreen` read false, and the tile adopted the
+1710x1074 fullscreen frame as its size. The resize hook absorbs a tile's resize
+notifications, the 2 Hz sweep and both renderers adopted the display-sized
+frame, and the engine's own check then debounced against the cached frame.
+Trackpad pans, raw pinches and pointer picking also kept acting on the hidden
+plane while the fullscreen Space was in front (this Mac swipes between Spaces
+with three fingers). `src/plane_fullscreen.m` now hands the tile to macOS when
+its frame covers the display or it leaves the plane's Space and Accessibility
+reports AXFullScreen, keeping its world rect. The renderers never adopt a
+display-sized frame before that check, which runs after the frame's batch
+(an Option-zoomed window is asked once and then adopted). Leaving fullscreen
+re-tiles the window at the same world rect and adopts AppKit's restored size;
+the Space change and the sweep catch either transition if notifications were
+absorbed. While another Space covers the plane, gestures, scrolling and clicks
+pass to macOS; keys still reach shortcuts. New `fullscreen` action (palette
+and menu: "Enter / exit full screen"), default **F11**: F1-F20 parse as keys
+and, like arrows, match with or without the Function flag a laptop adds.
+
+**Secondary windows.** Reproduced: a fixture AXDialog, a normal-level
+AXFloatingWindow panel and an attached child window all became plane tiles,
+because the 2026-11-01 admission admitted any movable, normal-level root. They
+are now secondary (`window_admission.h`): an AXWindow must be AXStandardWindow,
+a custom role is a main window unless it says it is a dialog (Audition stays
+admitted), and attached (WindowServer-parented) and AXModal windows are
+secondary. AppKit attached the child's parent after Tana2D first saw it, so the
+parent is read again when rules apply and in the sweep. Clearing the float flag
+(an app rule, the float toggle) no longer drops a secondary window below the
+tiles, and app rules apply to main windows only. `src/plane_satellite.m` keeps
+each secondary window at its offset from its owner tile (its parent, else the
+application's tile under it, preferring the focused one): it rides natively in
+the frame's plane transaction at 100%, is transformed when zoomed out or above
+the menu bar, is hidden with its owner off screen, receives an Accessibility
+move at rest so AppKit agrees, and takes a new offset when dragged.
+
+**Hover coordinates.** Measured at rest at 100% with `Tana2DFixture inspect`:
+off-centre, past the right edge and past the left edge, AppKit's frame equalled
+the WindowServer frame and the plane's displayed origin. With the title bar
+above the menu bar (drawn at y=-119), AppKit's frame stayed clamped at y=38
+while the native frame was -119: Accessibility moves cannot place a frame
+there. Delivered event coordinates follow the drawn surface (2026-10 notes),
+but applications that poll the cursor and convert it with their own frame are
+offset in that case. This remains unsolved; the README states it.
+
+Validation: `make all test` passed with the new `plane_fullscreen_test`
+(entry, renderer probe, exit, missed exit, Space changes, toggle) and
+`plane_satellite_test` (pan, zoom, hiding, user drag, top-edge transform and
+retries, release, late parent), the extended admission and config tests, and
+21 Python tests. Installed and live on the fixture: the dialog, panel and child
+floated; a (-180,-110) camera pan moved all three AppKit frames by exactly
+(180,110) with their owner; the green-button path put the window on Space 2,
+untiled, and returned it to world (5236, 1043.5) 500x632 unchanged; synthetic
+Fn+F11 entered and left fullscreen with no Show Desktop. The user's five real
+windows stayed tiled through both installs. Physical trackpad swipes inside a
+fullscreen app were not exercised.

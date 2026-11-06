@@ -14,7 +14,13 @@ static bool popup_focus_is_transient(pid_t front_pid, pid_t owner_pid,
                                      int layer, struct window *window)
 {
     if (owner_pid != front_pid) return false;
-    if (window) return !window_is_standard(window);
+    if (window) {
+        // A custom-role application window admitted to the plane (Audition,
+        // for example) is not a popup. Actual AX dialogs/panels retain the
+        // focus hold even when their normal-level root joins the plane.
+        if (!window_is_real(window) && window_manager_find_managed_window(&g_window_manager,window)) return false;
+        return !window_is_standard(window);
+    }
 
     // Unknown normal-level windows include ordinary documents that yabai has
     // not discovered yet.  Elevated, front-app surfaces are the conservative

@@ -54,6 +54,7 @@ static void hwm_plane_clear_legacy_pointer(struct window *w)
     legacy_pointer_generation=0; legacy_pointer_button=-1;
 }
 
+static void hwm_workspace_cancel(void) {}
 #include "../src/plane_interaction_lifecycle.m"
 
 static void reset(void)

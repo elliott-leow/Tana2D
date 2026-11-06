@@ -681,11 +681,30 @@ static inline bool hwm_plane_center_camera(HWMPlaneRect window,double width,doub
     return true;
 }
 
-/* Auto-centering at 100%. When a pan ends with some window's centered view
- * within `radius` display points, and the pan moved toward that view, the
- * camera finishes the job. Panning away from a centered window, a touch that
- * barely moved, and windows that are already centered are left alone.
- * Returns the index of the chosen candidate, or -1. */
+/* A near miss can still express an intention to center: allow a small,
+ * mostly direct crossing, but never pull a pan that starts at the center
+ * back toward it. The ordinary approach rule remains deliberately broader. */
+static inline bool hwm_plane_center_approached(HWMPlaneCamera start,HWMPlaneCamera end,
+                                              HWMPlanePoint target,double distance)
+{
+    double sx=target.x-start.x,sy=target.y-start.y;
+    double mx=end.x-start.x,my=end.y-start.y;
+    double movement=hypot(mx,my),previous=hypot(sx,sy);
+    if(previous>=distance+4) return true;
+    if(previous<12 || distance>32 || movement<6) return false;
+    double along=(sx*mx+sy*my)/movement;
+    if(along<4 || along<previous*.5) return false;
+    if(previous>distance+1) return true;
+    /* The projected closest point must lie on the pan, and close to the
+     * target. Limit overshoot relative to the distance at gesture start. */
+    double fraction=(sx*mx+sy*my)/(movement*movement);
+    double cross=fabs(sx*my-sy*mx)/movement;
+    return fraction>0 && fraction<1 && cross<=12 && distance<=previous*1.25;
+}
+
+/* Auto-centering at 100%. When a pan ends near a centered view and approaches
+ * it, finish centering. Tiny touches, escape pans, and already centered views
+ * are left alone. Equally plausible distinct targets do not capture the pan. */
 static inline long hwm_plane_auto_center(HWMPlaneCamera start,HWMPlaneCamera end,
                                          const HWMPlanePoint *targets,size_t count,double radius)
 {
@@ -695,9 +714,16 @@ static inline long hwm_plane_auto_center(HWMPlaneCamera start,HWMPlaneCamera end
     long best=-1; double nearest=radius;
     for(size_t i=0;i<count;i++) {
         double distance=hypot(targets[i].x-end.x,targets[i].y-end.y);
-        if(!isfinite(distance) || distance<.5 || distance>=nearest) continue;
-        if(hypot(targets[i].x-start.x,targets[i].y-start.y)<distance+4) continue;
+        if(!isfinite(distance) || distance<.5 || distance>=nearest ||
+           !hwm_plane_center_approached(start,end,targets[i],distance)) continue;
         nearest=distance; best=(long)i;
+    }
+    if(best<0) return -1;
+    for(size_t i=0;i<count;i++) {
+        double distance=hypot(targets[i].x-end.x,targets[i].y-end.y);
+        if(i!=(size_t)best && isfinite(distance) && distance>=.5 && distance<radius &&
+           distance<nearest+8 && hypot(targets[i].x-targets[best].x,targets[i].y-targets[best].y)>1 &&
+           hwm_plane_center_approached(start,end,targets[i],distance)) return -1;
     }
     return best;
 }

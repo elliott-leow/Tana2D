@@ -277,7 +277,8 @@ static void hwm_plane_choose_window(struct view *view,struct window *target)
 #ifdef HWM_NATIVE_ZOOM
     hwm_zoom_cancel_native();
 #endif
-    hwm_plane_selecting=false; hwm_hold_focus();
+    hwm_click_selection(target->id,hwm_now());
+    hwm_plane_selecting=false; atomic_store(&hwm_workspace_browsing,false); hwm_menu_status(); hwm_hold_focus();
     CGRect bounds=hwm_bounds(view);
     hwm_focus_queue_enqueue(&hwm_nav_window,&hwm_nav_pending,&hwm_nav_automatic,target->id,false); hwm_nav_time=hwm_now();
     hwm_last_input=hwm_now(); hwm_preserve_focus_window=target->id; hwm_preserve_focus_until=hwm_now()+1;

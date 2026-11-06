@@ -2,6 +2,8 @@
  * never receives a half-click; each movement presents immediately. */
 static bool hwm_plane_pick_take_queued_drag_allowance(void);
 static uint64_t hwm_plane_pick_current_dispatch_generation(void);
+static CGPoint hwm_plane_background_camera;
+static bool hwm_plane_background_dragged;
 static void hwm_plane_pointer_finish(bool choose)
 {
     struct view *view=hwm_view();
@@ -11,6 +13,12 @@ static void hwm_plane_pointer_finish(bool choose)
     hwm_plane_pick_window=0;
     if(choose && !dragged && (hwm_plane_selecting || hwm_plane_pick_automatic)) hwm_plane_choose_window(view,w);
     hwm_plane_pick_automatic=false;
+}
+static void hwm_plane_pointer_release_at(CGPoint point,bool choose)
+{
+    struct window *released=hwm_plane_window_at(hwm_view(),point);
+    bool same=released && released->id==hwm_plane_pick_window;
+    hwm_plane_pointer_finish(choose && same);
 }
 static void hwm_plane_pointer(CGEventType type,CGPoint point)
 {
@@ -27,11 +35,24 @@ static void hwm_plane_pointer(CGEventType type,CGPoint point)
         // Freeze the view at the frame being grabbed, including a fit animation.
         hwm_plane_camera_stop(view,hwm_now());
         hwm_plane_set_camera(view,hwm_offset(view,hwm_now()),hwm_plane_camera_y(hwm_now()),false);
+        hwm_plane_background_dragged=false;
+        hwm_plane_background_camera=CGPointMake(hwm_offset(view,hwm_now()),hwm_plane_camera_y(hwm_now()));
         return;
     }
     struct window *w=window_manager_find_window(&g_window_manager,hwm_plane_pick_window);
     bool queued=hwm_plane_pick_take_queued_drag_allowance();
-    if(!w) return;
+    if(!w) {
+        if(type==kCGEventLeftMouseDragged && atomic_load(&hwm_workspace_browsing) &&
+           (!atomic_load(&hwm_drag_release_pending) || queued)) {
+            if(hypot(point.x-hwm_plane_pick_origin.x,point.y-hwm_plane_pick_origin.y)>=5)
+                hwm_plane_background_dragged=true;
+            if(hwm_plane_background_dragged) hwm_plane_set_camera(view,
+                hwm_plane_background_camera.x-(point.x-hwm_plane_pick_origin.x)/hwm_plane_scale,
+                hwm_plane_background_camera.y-(point.y-hwm_plane_pick_origin.y)/hwm_plane_scale,false);
+        }
+        if(type==kCGEventLeftMouseUp) hwm_plane_pointer_finish(false);
+        return;
+    }
     if(type==kCGEventLeftMouseDragged && (hwm_plane_selecting || hwm_plane_pick_automatic) &&
        (!atomic_load(&hwm_drag_release_pending) || queued)) {
         if(!hwm_drag_window && hypot(point.x-hwm_plane_pick_origin.x,point.y-hwm_plane_pick_origin.y)>=5) {
@@ -46,5 +67,5 @@ static void hwm_plane_pointer(CGEventType type,CGPoint point)
             ++hwm_prof_drag_events; hwm_wake();
         }
     }
-    if(type==kCGEventLeftMouseUp) hwm_plane_pointer_finish(true);
+    if(type==kCGEventLeftMouseUp) hwm_plane_pointer_release_at(point,true);
 }

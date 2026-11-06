@@ -20,7 +20,8 @@ static dispatch_queue_t hwm_preview_queue(void)
  * already sits at its landing, so tinting it would only muddy the
  * application's content. */
 typedef struct {
-    bool snap;
+    bool snap,tile,split;
+    CGRect moving,peer;
     HWMPlaneSnapSeam seams[HWM_PLANE_SNAP_SEAMS];
     size_t seam_count;
     double gutter,color[4];
@@ -43,7 +44,8 @@ static _Atomic bool hwm_preview_painted;
 static HWMPreviewSurface *hwm_preview_surface(void) { return &hwm_preview_surfaces[hwm_preview_front<0 ? 0 : hwm_preview_front]; }
 #define hwm_preview_id (hwm_preview_surface()->id)
 static bool hwm_preview_ordered;
-static bool hwm_preview_snap_mode;
+static bool hwm_preview_snap_mode,hwm_preview_tile_mode,hwm_preview_split_mode;
+static CGRect hwm_preview_tile_moving,hwm_preview_tile_peer;
 static HWMPlaneSnapSeam hwm_preview_seams[HWM_PLANE_SNAP_SEAMS];
 static size_t hwm_preview_seam_count;
 static double hwm_preview_gutter;
@@ -118,9 +120,47 @@ static void hwm_preview_draw(CGContextRef context,CGSize size)
     CGContextAddPath(context,path); CGContextDrawPath(context,kCGPathFillStroke);
     CGPathRelease(path);
 }
+static void hwm_preview_draw_tile_label(CGContextRef context,CGSize size,NSString *label)
+{
+    hwm_preview_draw(context,size);
+    if(size.width<110 || size.height<48 || !label.length) return;
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithCGContext:context flipped:NO]];
+    NSDictionary *attrs=@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+                          NSForegroundColorAttributeName:NSColor.whiteColor};
+    NSSize text=[label sizeWithAttributes:attrs];
+    if(text.width+20>size.width) {
+        label=@"Release to tile";
+        attrs=@{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
+                NSForegroundColorAttributeName:NSColor.whiteColor};
+        text=[label sizeWithAttributes:attrs];
+    }
+    if(text.width+20>size.width) { [NSGraphicsContext restoreGraphicsState]; return; }
+    NSRect pill=NSMakeRect((size.width-text.width-20)*.5,size.height-36,text.width+20,26);
+    [[NSColor colorWithWhite:.10 alpha:.94] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:8 yRadius:8] fill];
+    [label drawAtPoint:NSMakePoint(pill.origin.x+10,pill.origin.y+6) withAttributes:attrs];
+    [NSGraphicsContext restoreGraphicsState];
+}
+static void hwm_preview_draw_tile(CGContextRef context,CGSize size)
+{
+    hwm_preview_draw_tile_label(context,size,@"Release to tile beside");
+}
+static void hwm_preview_draw_split(CGContextRef context,CGSize size,CGRect moving,CGRect peer)
+{
+    CGRect frames[]={moving,peer};
+    for(int i=0;i<2;i++) {
+        CGRect r=frames[i];
+        CGContextSaveGState(context);
+        CGContextTranslateCTM(context,r.origin.x,size.height-CGRectGetMaxY(r));
+        hwm_preview_draw_tile_label(context,r.size,i==0?@"Release to share screen":nil);
+        CGContextRestoreGState(context);
+    }
+}
 static HWMPreviewContent hwm_preview_wanted(void)
 {
-    HWMPreviewContent c={.snap=hwm_preview_snap_mode};
+    HWMPreviewContent c={.snap=hwm_preview_snap_mode,.tile=hwm_preview_tile_mode,.split=hwm_preview_split_mode,
+        .moving=hwm_preview_tile_moving,.peer=hwm_preview_tile_peer};
     if(c.snap) {
         c.seam_count=hwm_preview_seam_count; c.gutter=hwm_preview_gutter;
         memcpy(c.seams,hwm_preview_seams,sizeof(c.seams)); memcpy(c.color,hwm_border_active,sizeof(c.color));
@@ -129,7 +169,8 @@ static HWMPreviewContent hwm_preview_wanted(void)
 }
 static bool hwm_preview_same(const HWMPreviewContent *a,const HWMPreviewContent *b)
 {
-    if(a->snap!=b->snap) return false;
+    if(a->snap!=b->snap || a->tile!=b->tile || a->split!=b->split) return false;
+    if(a->split) return CGRectEqualToRect(a->moving,b->moving) && CGRectEqualToRect(a->peer,b->peer);
     if(!a->snap) return true;
     if(a->gutter!=b->gutter || a->seam_count!=b->seam_count || memcmp(a->color,b->color,sizeof(a->color))) return false;
     for(size_t i=0;i<a->seam_count;i++)
@@ -184,6 +225,8 @@ static bool hwm_preview_paint(const HWMPreviewPaint *job)
     CGContextClearRect(context,CGRectMake(0,0,room.width,room.height));
     CGContextTranslateCTM(context,0,room.height-canvas.height);
     if(job->content.snap) hwm_preview_stroke_seams(context,canvas,job->content.seams,job->content.seam_count,job->content.gutter,job->content.color);
+    else if(job->content.split) hwm_preview_draw_split(context,canvas,job->content.moving,job->content.peer);
+    else if(job->content.tile) hwm_preview_draw_tile(context,canvas);
     else hwm_preview_draw(context,canvas);
     CGContextRestoreGState(context);
     CGContextFlush(context);
@@ -291,7 +334,7 @@ static bool hwm_preview_render(double now)
 }
 static void hwm_preview_show(CGRect target,CGRect start,bool animate)
 {
-    hwm_preview_snap_mode=false;
+    hwm_preview_snap_mode=false; hwm_preview_tile_mode=false; hwm_preview_split_mode=false;
     if(hwm_preview_visible && !hwm_preview_hiding && CGRectEqualToRect(target,hwm_preview_target)) return;
     double now=hwm_now();
     if(hwm_preview_visible && !hwm_preview_hiding && !animate) {
@@ -317,4 +360,21 @@ static void hwm_preview_snap_show(CGRect frame,const HWMPlaneSnapSeam *seams,siz
     if(count) memcpy(hwm_preview_seams,seams,count*sizeof(*seams));
     // Present alongside the accepted pointer sample, without waiting a tick.
     hwm_preview_render(hwm_now());
+}
+
+static void hwm_preview_tile_show(CGRect target)
+{
+    hwm_preview_show(target,CGRectInset(target,4,4),true);
+    hwm_preview_tile_mode=true;
+}
+
+/* One click-through surface shows both final slots. Its content is relative
+ * to the shared viewport, so translating a proposal does not repaint it. */
+static void hwm_preview_split_show(CGRect moving,CGRect peer)
+{
+    CGRect whole=CGRectUnion(moving,peer);
+    hwm_preview_show(whole,CGRectInset(whole,4,4),true);
+    hwm_preview_tile_mode=hwm_preview_split_mode=true;
+    hwm_preview_tile_moving=CGRectOffset(moving,-whole.origin.x,-whole.origin.y);
+    hwm_preview_tile_peer=CGRectOffset(peer,-whole.origin.x,-whole.origin.y);
 }

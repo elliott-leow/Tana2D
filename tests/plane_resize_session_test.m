@@ -78,7 +78,7 @@ static void test_native_and_plane_edge_policy_match(void)
     shown.size.width*=w->strip_last_plane_scale;
     shown.size.height*=w->strip_last_plane_scale;
     CGPoint p=CGPointMake(CGRectGetMinX(shown)+HWM_PLANE_RESIZE_EDGE_SLOP,CGRectGetMinY(shown)+HWM_PLANE_RESIZE_EDGE_SLOP);
-    unsigned expected=hwm_plane_resize_hit((HWMPlaneRect){shown.origin.x,shown.origin.y,shown.size.width,shown.size.height},(HWMPlanePoint){p.x,p.y});
+    unsigned expected=hwm_plane_resize_hit_scaled((HWMPlaneRect){shown.origin.x,shown.origin.y,shown.size.width,shown.size.height},(HWMPlanePoint){p.x,p.y},.5);
     g_mouse_state.window=w; g_mouse_state.window_frame=w->frame; g_mouse_state.current_action=MOUSE_MODE_NONE;
     horizontal_mouse_down(w,p);
     assert(expected==hwm_edge_direction && hwm_edge_window==w->id);
@@ -222,6 +222,131 @@ static void test_replacement_body_press_passes_through_after_missing_up(void)
     assert(!resize_event(kCGEventLeftMouseUp,CGPointMake(body.x+40,body.y),0));
 }
 
+static void test_vertical_edges_and_corners(void)
+{
+    const unsigned directions[]={HANDLE_TOP,HANDLE_BOTTOM,HANDLE_TOP|HANDLE_LEFT,
+        HANDLE_TOP|HANDLE_RIGHT,HANDLE_BOTTOM|HANDLE_LEFT,HANDLE_BOTTOM|HANDLE_RIGHT};
+    const double scales[]={1,.5};
+    for(size_t s=0;s<sizeof(scales)/sizeof(*scales);s++)
+        for(size_t i=0;i<sizeof(directions)/sizeof(*directions);i++) {
+            reset(); struct window *w=&windows[0]; unsigned edge=directions[i];
+            hwm_plane_scale=scales[s]; hwm_render(&view,clock_now);
+            hwm_plane_resize_publish(&view); CGRect shown=hwm_feedback_plane_frame(&view,w);
+            CGPoint down=CGPointMake((edge&HANDLE_LEFT)?CGRectGetMinX(shown):
+                                     (edge&HANDLE_RIGHT)?CGRectGetMaxX(shown):CGRectGetMidX(shown),
+                                     (edge&HANDLE_TOP)?CGRectGetMinY(shown):CGRectGetMaxY(shown));
+            double start_x=w->strip_world_x,start_y=w->strip_world_y;
+            CGSize start=actual[0].size;
+            CGPoint up=CGPointMake(down.x+((edge&HANDLE_LEFT)?-30:(edge&HANDLE_RIGHT)?30:0)*scales[s],
+                                   down.y+((edge&HANDLE_TOP)?-70:70)*scales[s]);
+            assert(resize_event(kCGEventLeftMouseDown,down,0));
+            assert(hwm_edge_direction==edge);
+            assert(resize_event(kCGEventLeftMouseDragged,up,0));
+            hwm_plane_resize_tick(&view,clock_now);
+            assert(w->strip_height==start.height+70);
+            assert(w->strip_width==start.width+((edge&(HANDLE_LEFT|HANDLE_RIGHT))?30:0));
+            assert(w->strip_world_y==start_y-((edge&HANDLE_TOP)?70:0));
+            assert(w->strip_world_x==start_x-((edge&HANDLE_LEFT)?30:0));
+            assert(resize_event(kCGEventLeftMouseUp,up,0));
+            hwm_plane_resize_tick(&view,clock_now+.2);
+            assert(!hwm_resize_owned && w->strip_height==start.height+70);
+        }
+}
+
+static void test_vertical_clamp_anchors_accepted_size(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.5; hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+    CGRect shown=hwm_feedback_plane_frame(&view,w);
+    CGPoint down=CGPointMake(CGRectGetMidX(shown),CGRectGetMinY(shown));
+    double bottom=w->strip_world_y+actual[0].size.height;
+    assert(resize_event(kCGEventLeftMouseDown,down,0));
+    assert(resize_event(kCGEventLeftMouseDragged,CGPointMake(down.x,down.y+500),0));
+    hwm_plane_resize_tick(&view,clock_now);
+    assert(w->strip_height==100 && w->strip_world_y+100==bottom);
+    /* Model an app that accepts a larger minimum than the plane's own limit. */
+    actual[0].size.height=230;
+    hwm_plane_resize_tick(&view,clock_now+.01);
+    assert(w->strip_height==230 && w->strip_world_y+230==bottom);
+}
+
+static void test_vertical_release_and_titlebar(void)
+{
+    reset(); struct window *w=&windows[0]; hwm_plane_resize_publish(&view);
+    CGRect shown=hwm_feedback_plane_frame(&view,w);
+    CGPoint title=CGPointMake(CGRectGetMidX(shown),CGRectGetMinY(shown)+12);
+    assert(!resize_event(kCGEventLeftMouseDown,title,0));
+    CGPoint down=CGPointMake(CGRectGetMidX(shown),CGRectGetMaxY(shown));
+    CGPoint drag=CGPointMake(down.x,down.y+20),up=CGPointMake(down.x,down.y+80);
+    double start=w->strip_height,origin=w->strip_world_y;
+    assert(resize_event(kCGEventLeftMouseDown,down,0));
+    assert(resize_event(kCGEventLeftMouseDragged,drag,0));
+    hwm_plane_resize_tick(&view,clock_now);
+    CGEventRef terminal=CGEventCreateMouseEvent(NULL,kCGEventLeftMouseUp,up,kCGMouseButtonLeft);
+    hwm_pointer_sample_event(kCGEventLeftMouseUp,terminal); CFRelease(terminal);
+    atomic_store(&hwm_resize_captured,false);
+    hwm_plane_resize_tick(&view,clock_now+.01);
+    assert(hwm_resize_releasing && w->strip_height==start+80 && w->strip_world_y==origin);
+    HWMPlaneResizeInput *late_drag=malloc(sizeof(*late_drag)); assert(late_drag);
+    *late_drag=(HWMPlaneResizeInput){.type=kCGEventLeftMouseDragged,.point=drag,
+                                    .generation=hwm_resize_pointer_generation};
+    hwm_plane_resize_input(late_drag);
+    hwm_plane_resize_tick(&view,clock_now+.02);
+    assert(w->strip_height==start+80);
+    hwm_plane_resize_tick(&view,clock_now+.2);
+    assert(!hwm_resize_owned && w->strip_height==start+80);
+}
+
+static void test_bottom_growth_at_native_screen_edge(void)
+{
+    reset(); struct window *w=&windows[0];
+    /* Native AX growth is screen-constrained even when its transformed surface
+     * is visible elsewhere. The production path moves the native anchor first. */
+    actual[0].origin.y=800; w->frame.origin.y=800; clamp_native_sizes=true;
+    hwm_plane_resize_publish(&view);
+    CGRect shown=hwm_feedback_plane_frame(&view,w);
+    CGPoint down=CGPointMake(CGRectGetMidX(shown),CGRectGetMaxY(shown));
+    double start=w->strip_height,world_y=w->strip_world_y;
+    assert(resize_event(kCGEventLeftMouseDown,down,0));
+    assert(resize_event(kCGEventLeftMouseDragged,CGPointMake(down.x,down.y+100),0));
+    hwm_plane_resize_tick(&view,clock_now);
+    assert(actual[0].origin.y==hwm_bounds(&view).origin.y);
+    assert(w->strip_height==start+100 && w->strip_world_y==world_y);
+}
+
+static void test_bottom_shrink(void)
+{
+    for(int i=0;i<2;i++) {
+        reset(); struct window *w=&windows[0];
+        hwm_plane_scale=i?.5:1; hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+        CGRect shown=hwm_feedback_plane_frame(&view,w);
+        CGPoint down=CGPointMake(CGRectGetMidX(shown),CGRectGetMaxY(shown));
+        double start=w->strip_height,top=w->strip_world_y;
+        assert(resize_event(kCGEventLeftMouseDown,down,0));
+        assert(resize_event(kCGEventLeftMouseDragged,CGPointMake(down.x,down.y-90*hwm_plane_scale),0));
+        hwm_plane_resize_tick(&view,clock_now);
+        assert(w->strip_height==start-90 && w->strip_world_y==top);
+    }
+}
+
+static void test_zoomed_out_top_band_preserves_titlebar(void)
+{
+    reset(); struct window *w=&windows[0];
+    hwm_plane_scale=.25; hwm_render(&view,clock_now); hwm_plane_resize_publish(&view);
+    CGRect shown=hwm_feedback_plane_frame(&view,w);
+    CGPoint title=CGPointMake(CGRectGetMidX(shown),CGRectGetMinY(shown)+2);
+    assert(!resize_event(kCGEventLeftMouseDown,title,0));
+    g_mouse_state.window=w; g_mouse_state.window_frame=w->frame; g_mouse_state.current_action=MOUSE_MODE_NONE;
+    horizontal_mouse_down(w,title); assert(hwm_edge_window==0);
+    CGPoint edge=CGPointMake(CGRectGetMidX(shown),CGRectGetMinY(shown)+1);
+    assert(resize_event(kCGEventLeftMouseDown,edge,0));
+    assert(hwm_edge_direction==HANDLE_TOP);
+    HWMPlaneRect rect={shown.origin.x,shown.origin.y,shown.size.width,shown.size.height};
+    assert(hwm_plane_resize_hit_scaled(rect,(HWMPlanePoint){edge.x,shown.origin.y-5},.25)==HANDLE_TOP);
+    assert((hwm_plane_resize_hit_scaled(rect,(HWMPlanePoint){shown.origin.x,shown.origin.y},.25)&
+            (HANDLE_LEFT|HANDLE_TOP))==(HANDLE_LEFT|HANDLE_TOP));
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -237,6 +362,12 @@ int main(void)
         test_old_queued_up_cannot_release_new_resize_press();
         test_replacement_edge_press_replaces_captured_missing_up();
         test_replacement_body_press_passes_through_after_missing_up();
+        test_vertical_edges_and_corners();
+        test_vertical_clamp_anchors_accepted_size();
+        test_vertical_release_and_titlebar();
+        test_bottom_growth_at_native_screen_edge();
+        test_bottom_shrink();
+        test_zoomed_out_top_band_preserves_titlebar();
         puts("plane resize session tests passed");
     }
     return 0;
