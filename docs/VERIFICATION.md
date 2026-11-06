@@ -1775,3 +1775,13 @@ can remain. `plane_geometry_test` covers the reported two-row layout: reveal
 after a downward or horizontal pan, the 13-point menu-bar clearance, the
 reach limit, upward pans, the upper row approached from below, side windows,
 zoomed-out cameras and empty input. Physical trackpad feel was not tested.
+
+Follow-up: the camera sometimes jumped back briefly while panning. The settle
+above also ran after a pan stopped before lifting, and after sideways glides,
+pulling the camera vertically against the user's last motion and breaking
+"a pan that stops before lifting stays exactly where it is". It now only
+extends a release still gliding toward the title bar (camera velocity at
+least 120 points/s carrying the plane down), from the glide's own landing and
+in its own direction, so it can never move the camera backward, sideways or
+after a stopped pan. `plane_geometry_test` adds the stopped, slow, sideways
+and upward releases; all leave the camera where it was released.

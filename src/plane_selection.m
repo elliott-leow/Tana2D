@@ -325,9 +325,10 @@ static bool hwm_plane_pan_release(struct view *view,HWMPlaneCamera start,HWMPlan
         long chosen=hwm_plane_auto_center(start,landing,targets,count,hwm_auto_center_radius);
         if(chosen>=0) { target=targets[chosen]; centered=true; }
     }
-    // Otherwise the window the view rests on keeps its title bar on screen.
+    // Otherwise a glide carrying the plane down finishes revealing the title
+    // bar it would leave tucked under the menu bar. Never a stopped pan.
     bool revealed=false;
-    if(hwm_auto_center && actual && !centered) {
+    if(hwm_auto_center && actual && !centered && glide) {
         HWMPlaneRect rects[64]; size_t count=0;
         for(struct window_node *n=window_node_find_first_leaf(view->root);n && count<64;n=window_node_find_next_leaf(n))
             for(int i=0;i<n->window_count && count<64;i++) {
@@ -336,7 +337,7 @@ static bool hwm_plane_pan_release(struct view *view,HWMPlaneCamera start,HWMPlan
             }
         HWMPlaneCamera title;
         double clear=fmax(0,bounds.origin.y-hwm_screen(view).origin.y);
-        if(hwm_plane_title_reveal(start,landing,rects,count,bounds.size.width,bounds.size.height,clear,hwm_auto_center_radius,&title)>=0) {
+        if(hwm_plane_title_reveal(landing,velocity.y,rects,count,bounds.size.width,bounds.size.height,clear,hwm_auto_center_radius,&title)>=0) {
             target=(HWMPlanePoint){title.x,title.y}; revealed=true;
         }
     }

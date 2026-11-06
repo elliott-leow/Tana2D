@@ -266,27 +266,28 @@ static void test_focus_intent(void)
 static void test_title_reveal(void)
 {
     HWMPlaneRect rows[]={{354,15.5,978,1018},{1344,15.5,1670,1032},{1344,-1014.5,978,1018}};
-    HWMPlaneCamera out, start={1000,300,1};
-    // Panned down toward the lower row and stopped with its title bar under
-    // the menu bar: finish so the bar sits at the viewport top.
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==1);
-    near(out.y,16); near(out.x,1000);
-    // Horizontal pans also finish; the clip is unchanged by them.
-    assert(hwm_plane_title_reveal((HWMPlaneCamera){900,110,1},(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==1);
+    HWMPlaneCamera out,landing={1000,110,1};
+    // A glide carrying the plane down would land with the lower row's title
+    // bar under the menu bar: it carries on, the same way, to show it.
+    assert(hwm_plane_title_reveal(landing,-600,rows,3,1686,1049,13,180,&out)==1);
+    near(out.y,16); near(out.x,1000); assert(out.y<landing.y);
+    // The camera never moves back or sideways into a reveal: a pan stopped
+    // before lifting, a sideways glide and an upward glide stay as released.
+    assert(hwm_plane_title_reveal(landing,0,rows,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal(landing,-40,rows,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal(landing,600,rows,3,1686,1049,13,180,&out)==-1);
     // Within the 13 points above the viewport the bar is already clear of the menu bar.
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,27,1},rows,3,1686,1049,13,180,&out)==-1);
-    // A deeper look (a tall window's lower part) is left where it rests.
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,250,1},rows,3,1686,1049,13,180,&out)==-1);
-    // Pushing the plane upward moves on past the bar: never pulled back.
-    assert(hwm_plane_title_reveal((HWMPlaneCamera){1000,20,1},(HWMPlaneCamera){1000,110,1},rows,3,1686,1049,13,180,&out)==-1);
-    // Coming up from below onto the upper row stops with it tucked: revealed.
-    assert(hwm_plane_title_reveal((HWMPlaneCamera){1500,-300,1},(HWMPlaneCamera){1500,-900,1},rows,3,1686,1049,13,180,&out)==2);
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1000,27,1},-600,rows,3,1686,1049,13,180,&out)==-1);
+    // A deeper look (a tall window's lower part) lands where it would have.
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1000,250,1},-600,rows,3,1686,1049,13,180,&out)==-1);
+    // Gliding up onto the upper row and landing with it tucked: revealed.
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1500,-900,1},-800,rows,3,1686,1049,13,180,&out)==2);
     near(out.y,-1015); // Whole points, as native frames are.
     // A window mostly off to one side is not the one the view is showing.
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){-1100,110,1},rows,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){-1100,110,1},-600,rows,3,1686,1049,13,180,&out)==-1);
     // Zoomed out, or without windows, nothing changes.
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,.5},rows,3,1686,1049,13,180,&out)==-1);
-    assert(hwm_plane_title_reveal(start,(HWMPlaneCamera){1000,110,1},NULL,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal((HWMPlaneCamera){1000,110,.5},-600,rows,3,1686,1049,13,180,&out)==-1);
+    assert(hwm_plane_title_reveal(landing,-600,NULL,3,1686,1049,13,180,&out)==-1);
 }
 
 static void test_auto_center(void)
