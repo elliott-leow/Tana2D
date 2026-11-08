@@ -1785,3 +1785,85 @@ least 120 points/s carrying the plane down), from the glide's own landing and
 in its own direction, so it can never move the camera backward, sideways or
 after a stopped pan. `plane_geometry_test` adds the stopped, slow, sideways
 and upward releases; all leave the camera where it was released.
+
+### Windows under the menu bar
+
+Reported: with the standard macOS menu bar, windows carried above its lower
+edge looked cut off. Measured on macOS 27.2 (2026-11-07): the menu bar
+(`Window Server | Menubar`, level 24) is transparent until a window lies
+under it. Then, 0.4 s later (`tunables::animation_delay`; leaving is
+immediate), it shows a capture of the wallpaper behind its items
+(`MenuBarContext::perform_desktop_capture`), hiding every window below
+level 24. A borderless test window at level 0 brought the capture in. AppKit
+windows at levels 3, 19 and 23 did not. WindowServer's own test
+(`PKGPerformBlockForMenuBarIntersections`, run from every display update)
+counts a window only if it is ordered in, carries tag bit 0 (document), sits
+below the menu bar's level and its screen content shape meets the menu bar
+rectangle. Window level alone made no difference: a normal window moved to
+level 3 or sublevel 3 still brought the capture in. A normal window whose
+document tag was cleared before it moved under the menu bar did not, and nor
+did an AppKit floating window lowered to level 0. Clearing the tag on a
+window already under the menu bar changes nothing until the next display
+update re-runs the test. Clients may change bit 0 (`set_window_list_tags`
+protects only bit 32). The "Show menu bar background" preference
+(`SLSMenuBarUseBlurredAppearance`) only makes the capture frosted, and the
+menu bar's override alpha fades text and capture together.
+
+Change: helper 0.5.11 accepts a document-tag record
+(`HWM_PLANE_TRANSFORM_DOCUMENT`, `OSAX_ATTRIB_PLANE_DOCUMENT`) in the frame's
+plane transaction (`SLSTransactionSetWindowTags`). `src/menu_bar_underlap.m`
+compares the drawn rectangles of the windows Tana2D places with the menu bar,
+at most ten times a second while frames are drawn, from one
+`SLSWindowQueryWindows`. It clears the tag on any window under the menu bar and
+restores it once the window leaves, Tana2D stops placing it, Tana2D pauses or
+quits, or the menu bar is hidden. At rest it watches only the windows whose
+tag it holds. A tile left with neither the document nor the floating tag by
+an earlier run is adopted and restored. While any window is under the menu
+bar, a panel at `NSMainMenuWindowLevel - 1`, on Tana2D's Space only, backs
+it like the soft scroll edge effect under a toolbar. It is a `CABackdropLayer`
+(`windowServerAware`, half-resolution sampling) with Core Animation's
+`variableBlur` filter (radius 22) and a `colorMatrix`. The panel reaches 18
+points below the menu bar. A smoothstep ramp keeps it whole over the top 74%
+of the menu bar, then thins the blur and fades its opacity to nothing at the
+panel's foot (a layer shows the ramp upright; the filter reads its mask the
+other way up). The colour matrix raises saturation (1.6) and compresses
+brightness: to half under light menu items (white content turns mid-grey), and
+to 0.55 plus 0.45 under dark ones. Reduce Transparency compresses it to 0.2.
+The appearance is read from Tana2D's status item while that is on screen, and
+otherwise from the system setting: a status item that macOS keeps out of the
+menu bar always reports light. Without the private classes the panel falls
+back to `NSVisualEffectView` (HUD or menu material) with the same ramp as a
+mask image. The panel overrides `constrainFrameRect:toScreen:`; without that,
+AppKit placed it at y=38, below the menu bar.
+
+Iterations, compared on screen over a terminal and a white test document:
+a uniform material ending at the menu bar's edge left a visible line; an
+alpha fade crossfaded a blurred copy over the sharp content; a saturation
+filter alone tinted its whole rectangle, leaving a box edge. The progressive
+blur with the opacity ramp left no edge over either. White and black sample
+menu text stayed readable over the white page in both appearances. On the
+real menu bar, the wallpaper's lines and a window's corner ran up into the
+glass and softened gradually. A second full-width strip of the same glass
+moved WindowServer from 17.4% to 17.9% CPU (10-second samples; 17.5% after).
+`plane_transform_test` covers the record's encoding and validation.
+
+Live, installed (2026-11-07): the root helper copy was still 0.5.8 from
+2026-10-18. Startup reloads only that pinned copy, so the helper had to be
+reinstalled with `tana2d --install-helper <uid>` as root and Dock restarted
+before `--check-backend` reported attributes 3968 (0x800 set). With
+ChatGPT's window drawn at y=-962..56, it alone lacked the document tag, and
+the six windows clear of the menu bar kept theirs. Its lower part showed
+through a dark translucent bar under white menu items, where before it was
+cut off at y=38. Quitting returned every tag (the relaunch found all of them
+set). At rest Tana2D used 0.2% CPU in `top`; the sweep averaged 0.49 ms.
+A 5-minute monitor (20 Hz, `SLSWindowQueryWindows`) while the user worked
+saw windows go under the menu bar and leave it. No window lay under the menu
+bar with its document tag for longer than 0.05 s; WindowServer waits 0.4 s.
+No window clear of the menu bar lacked both tags for longer than 0.06 s, and
+none was left that way at the end.
+
+The Dock restart exposed an older problem: the presentation overrides the
+helper had set went with the old Dock, and every window fell back to its
+native anchor at the top left. Nothing moved in the plane, so the reconnect
+redrew nothing. On reconnect the tick now marks every tile's transform dirty
+and every satellite's scale stale, so the next frame places them all again.

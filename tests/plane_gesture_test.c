@@ -75,7 +75,12 @@ static void test_scroll_ownership(void) {
     assert(!hwm_plane_scroll_claim(&s,1,0,false)); // Fresh native stream.
 }
 static void test_zoom_taper_measures_actual_pan_distance(void) {
-    const double scales[]={.25,.5,.75,1},expected[]={1.05,1.10,1.15,1.20};
+    // Quick at actual size, gentler (below the fingers' own travel) far out.
+    const double scales[]={.25,.5,.75,1};
+    double expected[4];
+    for(int j=0;j<4;j++) expected[j]=1.55*pow(scales[j],.4);
+    assert(fabs(expected[0]-.890241)<1e-6 && fabs(expected[1]-1.17468)<1e-5 && fabs(expected[2]-1.381517)<1e-6);
+    for(int j=0;j<4;j++) near(hwm_plane_pan_speed(scales[j]),expected[j]);
     double previous=0;
     for(int j=0;j<4;j++) {
         HWMPlaneGesture g={0};HWMPlaneCamera camera={0,0,scales[j]},out;
@@ -91,6 +96,11 @@ static void test_zoom_taper_measures_actual_pan_distance(void) {
         near(out.x,camera.x);near(out.y,camera.y);
     }
     assert(fabs(hwm_plane_pan_speed(.9999)-hwm_plane_pan_speed(1))<.0001);
+    // Workspace scrolls share the curve; nothing past actual size or below
+    // the zoom floor runs away.
+    near(hwm_plane_scroll_pan_speed(1)/hwm_plane_scroll_pan_speed(.5),hwm_plane_pan_speed(1)/hwm_plane_pan_speed(.5));
+    near(hwm_plane_pan_speed(2),hwm_plane_pan_speed(1));
+    assert(hwm_plane_pan_speed(0)>0 && isfinite(hwm_plane_pan_speed(NAN)));
 }
 int main(void) {
     test_scroll_ownership();
@@ -103,7 +113,7 @@ int main(void) {
     near(result.x,0); near(result.y,0); // Resting drift has no visible effect.
     for(int i=0;i<3;i++) restingContacts[i].x+=.005;
     assert(hwm_plane_gesture_sample(&resting,1,restingContacts,3,1.02,1600,.625,1,still,&result));
-    near(result.x,-.006*1600*1.2); // Initial deliberate travel is preserved.
+    near(result.x,-.006*1600*hwm_plane_pan_speed(1)); // Initial deliberate travel is preserved.
     HWMPlaneSelectionGesture oneFinger={0};
     HWMPlaneContact four[4]={{1,.2,.3},{2,.4,.3},{3,.6,.3},{4,.8,.3}};
     assert(!hwm_plane_selection_gesture_sample(&oneFinger,1,four,4,1));
@@ -152,6 +162,6 @@ int main(void) {
     assert(hwm_plane_gesture_sample(&fast,1,fingers,3,1,1600,.625,1,camera,&out));
     for(int i=0;i<3;i++) fingers[i].x+=.2;
     assert(hwm_plane_gesture_sample(&fast,1,fingers,3,1.01,1600,.625,1,camera,&out));
-    near(out.x,-384);
+    near(out.x,-.2*1600*hwm_plane_pan_speed(1));
     puts("plane gesture tests passed: 24 directions, both zooms, fast motion, contact transitions");
 }

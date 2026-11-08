@@ -34,6 +34,8 @@ bool scripting_addition_plane_supported(void);
 bool scripting_addition_plane_native_supported(void);
 bool scripting_addition_plane_alpha_supported(void);
 bool scripting_addition_set_plane_native(uint32_t wid, double x, double y);
+bool scripting_addition_plane_document_supported(void);
+bool scripting_addition_set_document(uint32_t wid, bool document);
 bool scripting_addition_input_shape_supported(void);
 bool scripting_addition_set_input_shape(uint32_t wid, CGRect local_rect);
 bool scripting_addition_clear_input_shape(void);

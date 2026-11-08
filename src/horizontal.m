@@ -19,6 +19,7 @@ extern volatile uint64_t __last_gesture_time;
 
 static _Atomic bool hwm_ready, hwm_paused;
 static double hwm_screen_stamp=-10; // Usable-screen cache; reset whenever the display, Dock or menu bar reports a change.
+static _Atomic unsigned hwm_workspace_frame_epoch; // The visible-frame cache (plane_controls.m); bumped with that reset.
 static double hwm_display_left;
 static bool hwm_backend_ok = true;
 static uint64_t hwm_space;
@@ -305,6 +306,11 @@ static uint64_t hwm_tick_late, hwm_frames_dropped, hwm_stalls;
 static double hwm_tick_latency_max_ms, hwm_tick_latency_total_ms, hwm_frame_gap_max_ms, hwm_stall_max_ms;
 static double hwm_tick_previous; static bool hwm_tick_previous_active;
 static double hwm_drawn_time; // When a frame was last actually drawn.
+// Windows under the menu bar (menu_bar_underlap.m).
+static double hwm_underlap_bar_stamp;
+static void hwm_underlap_sync(struct view *view,double now,bool frame);
+static void hwm_underlap_rest(double now);
+static void hwm_underlap_release_all(void);
 static int hwm_stall_type=-1;
 static struct { uint64_t count; double total_ms, max_ms; } hwm_event_prof[64];
 static const char *hwm_event_names[] = {
@@ -335,7 +341,10 @@ static void horizontal_event_timed(int type,double ms)
 {
     if(type<0 || type>=64) return;
     if((type>=DISPLAY_ADDED && type<=DISPLAY_CHANGED) || type==SPACE_CHANGED || type==DOCK_DID_RESTART || type==MENU_BAR_HIDDEN_CHANGED ||
-       type==DOCK_DID_CHANGE_PREF || type==SYSTEM_WOKE) hwm_screen_stamp=hwm_space_visible_stamp=-10;
+       type==DOCK_DID_CHANGE_PREF || type==SYSTEM_WOKE) {
+        hwm_screen_stamp=hwm_space_visible_stamp=hwm_underlap_bar_stamp=-10;
+        atomic_fetch_add(&hwm_workspace_frame_epoch,1);
+    }
     if((type>=DISPLAY_ADDED && type<=DISPLAY_CHANGED) || type==SPACE_CHANGED || type==SYSTEM_WOKE)
         dispatch_async(dispatch_get_main_queue(),^{ if(hwm_ready) hwm_ca_rebind(); });
     // The helper went with the old Dock; give the new one a moment to come up.
@@ -1097,6 +1106,13 @@ static void horizontal_tick(void)
         if (!hwm_backend_ok) { if (++hwm_backend_misses >= 3) hwm_helper_reload(); hwm_tick_idle(wake_generation); return; }
         hwm_backend_misses = 0;
         if(hwm_helper_attempts || hwm_helper_lost_shown) { hwm_helper_attempts=0; hwm_helper_lost_shown=false; hwm_hud(@"Window helper reconnected"); hwm_menu_status(); }
+        /* A Dock that restarted took with it every presentation override its
+         * helper had set, and windows fell back to their native anchors.
+         * Nothing moved in the plane, so place every window again. */
+        table_for(struct window *w,g_window_manager.window, {
+            if(w->strip_initialized) w->strip_transform_dirty=true;
+            if(w->strip_owner) w->strip_sat_scale=0;
+        })
         hwm_layout(view, false);
     }
     if (__atomic_load_n(&__pending_gesture,__ATOMIC_RELAXED) && start-view->strip_last_time > .8) {
@@ -1161,6 +1177,7 @@ static void horizontal_tick(void)
     active |= hwm_plane_border_tick(view,frame);
     segment=hwm_prof_mark(HWM_PROF_BORDER,segment);
     hwm_plane_resize_publish(view);
+    hwm_underlap_sync(view,start,true);
     hwm_batch_release();
     hwm_visibility_flush_reveals();
     if(hwm_fullscreen_probe_count) { hwm_fullscreen_probe_drain(); active=true; }
@@ -2165,7 +2182,8 @@ static void horizontal_input(void *context, int action)
             if(!isfinite(dx) || !isfinite(dy)) { CFRelease(event); return; }
             if(dx || dy) hwm_click_navigation(now);
             hwm_zoom_workspace=true;
-            hwm_plane_set_camera(view,view->strip_target_offset+dx/hwm_plane_scale,hwm_plane_y_target+dy/hwm_plane_scale,false);
+            double gain=hwm_plane_scroll_pan_speed(hwm_plane_scale);
+            hwm_plane_set_camera(view,view->strip_target_offset+dx*gain/hwm_plane_scale,hwm_plane_y_target+dy*gain/hwm_plane_scale,false);
             hwm_last_input=now; CFRelease(event); return;
         }
         if (CGEventGetFlags(event)&kCGEventFlagMaskShift) {
@@ -2911,6 +2929,7 @@ static void horizontal_window_added(struct window *window)
     hwm_apply_app_rule(window);
     if (window_check_flag(window,WINDOW_FLOAT)) scripting_addition_set_layer(window->id,LAYER_ABOVE);
 }
+#include "menu_bar_underlap.m"
 static void hwm_shutdown(void)
 {
     if (!hwm_ready) return;
@@ -2922,6 +2941,7 @@ static void hwm_shutdown(void)
     hwm_feedback_hide();
     hwm_cancel_closing();
     hwm_cancel_pops();
+    hwm_underlap_release_all(); // Every window leaves with its document tag.
     hwm_plane_reset_all_transforms();
     hwm_visibility_restore_all();
     hwm_alpha_sync(true);
@@ -3071,13 +3091,10 @@ static void hwm_start_clock(void)
     dispatch_async(dispatch_get_main_queue(), ^{ hwm_ca_start(); });
 }
 
-static void horizontal_ordered(uint32_t wid)
+/* Acts on whether WindowServer has a window ordered in. */
+static void horizontal_ordered_as(struct window *w,bool ordered)
 {
-    if(!hwm_ready || hwm_suspended) return;
-    struct window *w=window_manager_find_window(&g_window_manager,wid);
-    if(!w || window_check_flag(w,WINDOW_FULLSCREEN)) return;
-    uint8_t ordered=0;
-    if(SLSWindowIsOrderedIn(g_connection,wid,&ordered)!=kCGErrorSuccess) return;
+    uint32_t wid=w->id;
     struct view *view=window_manager_find_managed_window(&g_window_manager,w);
     if(!ordered && view && view->layout==VIEW_STRIP) {
         if(!hwm_plane_reset_transform(w)) return;
@@ -3096,6 +3113,15 @@ static void horizontal_ordered(uint32_t wid)
         }
     }
 }
+static void horizontal_ordered(uint32_t wid)
+{
+    if(!hwm_ready || hwm_suspended) return;
+    struct window *w=window_manager_find_window(&g_window_manager,wid);
+    if(!w || window_check_flag(w,WINDOW_FULLSCREEN)) return;
+    uint8_t ordered=0;
+    if(SLSWindowIsOrderedIn(g_connection,wid,&ordered)!=kCGErrorSuccess) return;
+    horizontal_ordered_as(w,ordered);
+}
 
 /* An application's window-created notification can be lost, or arrive before
  * the window answers Accessibility (Chrome, opening a window while busy). Such
@@ -3103,12 +3129,10 @@ static void horizontal_ordered(uint32_t wid)
  * past it. WindowServer still lists it: ask its application again, backing off
  * for windows that never resolve (helper surfaces with no Accessibility). */
 static bool hwm_adopt_in_flight;
-static void hwm_adopt_missed_windows(double now)
+static void hwm_adopt_missed_windows(double now,const uint32_t *list,int count)
 {
     enum { MISSED = 64 };
     static struct { uint32_t wid; double next, delay; } missed[MISSED];
-    int count=0;
-    uint32_t *list=space_window_list(hwm_space,&count,false);
     if(!list) return;
     // Forget windows that closed or left this desktop.
     for(int j=0;j<MISSED;++j) {
@@ -3165,7 +3189,7 @@ extern CGRect SLSWindowIteratorGetBounds(CFTypeRef iterator);
 static void horizontal_reconcile(void)
 {
     __atomic_store_n(&hwm_reconcile_pending,false,__ATOMIC_RELEASE);
-    if(hwm_ready && !hwm_suspended) { hwm_config_poll(); hwm_helper_tick(hwm_now()); hwm_attention_poll(hwm_now()); }
+    if(hwm_ready && !hwm_suspended) { hwm_config_poll(); hwm_helper_tick(hwm_now()); hwm_attention_poll(hwm_now()); hwm_underlap_rest(hwm_now()); }
     if(!hwm_ready || hwm_suspended || hwm_paused || hwm_overview_active || mission_control_is_active()) return;
     double now=hwm_now();
     // This sweep asks WindowServer about every window. It waits while frames
@@ -3182,7 +3206,13 @@ static void horizontal_reconcile(void)
     table_for(struct window *w,g_window_manager.window, {
         if(!w->strip_owner && hwm_satellite_valid(w)) hwm_satellite_adopt(w);
     })
-    hwm_adopt_missed_windows(now);
+    /* The windows on the plane's desktop. WindowServer lists a window there
+     * only while it is ordered in, so those listed need not be asked again
+     * below, one window and two round trips at a time. */
+    int listed_count=0;
+    uint32_t *listed=space_window_list(hwm_space,&listed_count,false);
+    if(!listed) listed_count=0;
+    hwm_adopt_missed_windows(now,listed,listed_count);
     if(hwm_borders_external) hwm_visibility_prepare(hwm_view(),now);
     /* Settled tiles whose native frame is compared below. Their bounds come
      * from one WindowServer query rather than a round trip per window, which
@@ -3198,7 +3228,13 @@ static void horizontal_reconcile(void)
             struct view *home=window_manager_find_managed_window(&g_window_manager,w);
             if(home && home->layout==VIEW_STRIP) hwm_layout(home,true);
         }
-        if(w->strip_initialized || w->strip_ordered_out) horizontal_ordered(w->id);
+        if(w->strip_initialized || w->strip_ordered_out) {
+            bool ordered_in=false;
+            for(int k=0;k<listed_count && !ordered_in;k++) ordered_in=listed[k]==w->id;
+            // Listed, it is ordered in: only a window coming back has anything to do.
+            if(!ordered_in) horizontal_ordered(w->id);
+            else if(w->strip_ordered_out && !window_check_flag(w,WINDOW_FULLSCREEN)) horizontal_ordered_as(w,true);
+        }
         struct view *view=window_manager_find_managed_window(&g_window_manager,w);
         if(w->strip_offscreen && (!view || view->layout!=VIEW_STRIP) && !w->strip_float_homed)
             hwm_visibility_set(w,false,CGRectNull);

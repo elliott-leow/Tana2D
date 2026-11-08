@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <time.h>
 
+#include <poll.h>
 #include <pthread.h>
 #include <pthread/qos.h>
 #include <stdlib.h>
@@ -85,6 +86,8 @@ extern void SLSTransactionSetWindowEventShape(CFTypeRef transaction, uint32_t wi
 extern CGError SLSTransactionOrderWindowGroup(CFTypeRef transaction, uint32_t wid, int order, uint32_t rel_wid);
 extern CGError SLSTransactionSetWindowSystemAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
 extern CGError SLSTransactionSetWindowAlpha(CFTypeRef transaction, uint32_t wid, float alpha);
+/* tags is two 32-bit words; clear removes the given bits instead of adding them. */
+extern void SLSTransactionSetWindowTags(CFTypeRef transaction, uint32_t wid, uint32_t *tags, int tag_size, bool clear);
 extern CGError SLSSetWindowSubLevel(int cid, uint32_t wid, int level);
 
 struct window_fade_context
@@ -679,7 +682,8 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
      * is lost by not checking which records still name a live window. */
     bool need_bounds = false;
     for (uint16_t index = 0; index < count; ++index) {
-        present[index] = hwm_plane_transform_native(transforms[index]) || hwm_plane_transform_alpha(transforms[index]);
+        present[index] = hwm_plane_transform_native(transforms[index]) || hwm_plane_transform_alpha(transforms[index]) ||
+                         hwm_plane_transform_document(transforms[index]);
         if (!present[index]) need_bounds = true;
     }
     if (need_bounds) {
@@ -705,6 +709,7 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     }
     for (uint16_t index = 0; index < count; ++index) {
         if (present[index] && !hwm_plane_transform_native(transforms[index]) && !hwm_plane_transform_alpha(transforms[index]) &&
+            !hwm_plane_transform_document(transforms[index]) &&
             !hwm_plane_transform_bounds(transforms[index], native[index], &displayed[index], &reset[index])) return false;
     }
     CFTypeRef transaction = SLSTransactionCreate(cid);
@@ -713,7 +718,10 @@ static bool do_window_plane_transform(const unsigned char *message, size_t lengt
     for (uint16_t index = 0; index < count; ++index) {
         if (!present[index]) continue;
         uint32_t wid = hwm_plane_transform_wid(transforms[index]);
-        if (hwm_plane_transform_alpha(transforms[index])) {
+        if (hwm_plane_transform_document(transforms[index])) {
+            uint32_t tags[2] = { 1u << 0, 0 }; // kCGSDocumentWindowTagBit
+            SLSTransactionSetWindowTags(transaction, wid, tags, 64, transforms[index].x == 0);
+        } else if (hwm_plane_transform_alpha(transforms[index])) {
             /* As do_window_opacity: a running fade owns this window's alpha
              * and lands on the new value itself. */
             float alpha = (float) transforms[index].x;
@@ -1071,6 +1079,8 @@ static void do_handshake(int sockfd)
     attrib |= OSAX_ATTRIB_INPUT_SHAPE;
     attrib |= OSAX_ATTRIB_PLANE_NATIVE;
     attrib |= OSAX_ATTRIB_PLANE_ALPHA;
+    attrib |= OSAX_ATTRIB_PLANE_DOCUMENT;
+    attrib |= OSAX_ATTRIB_PLANE_STREAM;
 
     char bytes[BUFSIZ] = {};
     int version_length = strlen(OSAX_VERSION);
@@ -1183,22 +1193,66 @@ static inline bool read_message(int sockfd, char *message, size_t *message_lengt
     return false;
 }
 
-static void *handle_connection(void *unused)
-{
-    /* Every frame the manager draws is applied here, and the manager keeps
-     * no more than two frames waiting on this thread. At the default
-     * priority a busy CPU ran it late, and the frames queued behind it. */
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-    for (;;) {
-        int sockfd = accept(daemon_sockfd, NULL, 0);
-        if (sockfd == -1) continue;
+/* Connections kept open with SA_OPCODE_PLANE_STREAM: one per manager thread
+ * that draws frames, so a frame costs no connect, accept and close. They are
+ * served on the same thread as every other connection, so no two commands
+ * ever run at once in Dock. */
+enum { PLANE_STREAM_MAX = 8 };
+static int plane_stream_fds[PLANE_STREAM_MAX];
+static pid_t plane_stream_pids[PLANE_STREAM_MAX];
+static int plane_stream_count;
 
-        char message[SA_SOCKET_BUFF_LEN]; size_t message_length = 0;
-        pid_t peer_pid = 0;
-        socklen_t peer_pid_length = sizeof(peer_pid);
-        bool have_peer_pid = getsockopt(sockfd, SOL_LOCAL, LOCAL_PEERPID, &peer_pid, &peer_pid_length) == 0 &&
-                             peer_pid_length == sizeof(peer_pid) && peer_pid > 0;
-        if (read_message(sockfd, message, &message_length)) {
+static void plane_stream_close(int index)
+{
+    shutdown(plane_stream_fds[index], SHUT_RDWR);
+    close(plane_stream_fds[index]);
+    --plane_stream_count;
+    plane_stream_fds[index] = plane_stream_fds[plane_stream_count];
+    plane_stream_pids[index] = plane_stream_pids[plane_stream_count];
+}
+
+/* One packet from a kept-open connection, answered with one byte. Only the
+ * packets that are always answered that way are taken here: a reply of any
+ * other shape would leave the manager reading the wrong bytes. */
+static void plane_stream_serve(int index)
+{
+    int sockfd = plane_stream_fds[index];
+    char message[SA_SOCKET_BUFF_LEN]; size_t message_length = 0;
+    if (!read_message(sockfd, message, &message_length)) { plane_stream_close(index); return; }
+    unsigned char opcode = (unsigned char) message[0];
+    bool success = (opcode == SA_OPCODE_WINDOW_PLANE_TRANSFORM || opcode == SA_OPCODE_WINDOW_INPUT_SHAPE) &&
+                   handle_message(sockfd, plane_stream_pids[index], message, message_length);
+    unsigned char acknowledgement = success ? 1 : 0;
+    if (send(sockfd, &acknowledgement, sizeof(acknowledgement), 0) != sizeof(acknowledgement)) plane_stream_close(index);
+}
+
+static void serve_connection(void)
+{
+    int sockfd = accept(daemon_sockfd, NULL, 0);
+    if (sockfd == -1) return;
+
+    /* A manager that gave up waiting has closed its end: replying must
+     * fail quietly rather than raise SIGPIPE in Dock. */
+    int enabled = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+    char message[SA_SOCKET_BUFF_LEN]; size_t message_length = 0;
+    pid_t peer_pid = 0;
+    socklen_t peer_pid_length = sizeof(peer_pid);
+    bool have_peer_pid = getsockopt(sockfd, SOL_LOCAL, LOCAL_PEERPID, &peer_pid, &peer_pid_length) == 0 &&
+                         peer_pid_length == sizeof(peer_pid) && peer_pid > 0;
+    if (read_message(sockfd, message, &message_length)) {
+        if ((unsigned char) message[0] == SA_OPCODE_PLANE_STREAM) {
+            unsigned char acknowledgement = message_length == 1 && plane_stream_count < PLANE_STREAM_MAX;
+            /* Bounded, so a peer that stalls partway through a packet
+             * cannot hold this thread. */
+            struct timeval timeout = { 1, 0 };
+            if (acknowledgement && setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) acknowledgement = 0;
+            if (send(sockfd, &acknowledgement, sizeof(acknowledgement), 0) == sizeof(acknowledgement) && acknowledgement) {
+                plane_stream_fds[plane_stream_count] = sockfd;
+                plane_stream_pids[plane_stream_count++] = have_peer_pid ? peer_pid : 0;
+                return;
+            }
+        } else {
             /* Legacy commands retain their existing socket contract. Only the
              * lease command rejects a missing authenticated peer credential. */
             bool success = handle_message(sockfd, have_peer_pid ? peer_pid : 0, message, message_length);
@@ -1208,9 +1262,36 @@ static void *handle_connection(void *unused)
                 send(sockfd, &acknowledgement, sizeof(acknowledgement), 0);
             }
         }
+    }
 
-        shutdown(sockfd, SHUT_RDWR);
-        close(sockfd);
+    shutdown(sockfd, SHUT_RDWR);
+    close(sockfd);
+}
+
+static void *handle_connection(void *unused)
+{
+    /* Every frame the manager draws is applied here, and the manager keeps
+     * no more than two frames waiting on this thread. At the default
+     * priority a busy CPU ran it late, and the frames queued behind it. */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    for (;;) {
+        struct pollfd descriptors[PLANE_STREAM_MAX + 1];
+        int count = plane_stream_count;
+        for (int index = 0; index < count; ++index) descriptors[index] = (struct pollfd) { plane_stream_fds[index], POLLIN, 0 };
+        descriptors[count] = (struct pollfd) { daemon_sockfd, POLLIN, 0 };
+        if (poll(descriptors, (nfds_t) count + 1, -1) <= 0) continue;
+
+        /* Packets already on a kept-open connection go before any connection
+         * made after them, as connections are served in the order they were
+         * made. Look again before accepting one. Backwards, so closing a
+         * stream (which moves the last one into its place) skips nothing. */
+        bool served = false;
+        for (int index = count - 1; index >= 0; --index) {
+            if (!descriptors[index].revents) continue;
+            plane_stream_serve(index);
+            served = true;
+        }
+        if (!served && (descriptors[count].revents & POLLIN)) serve_connection();
     }
 
     return NULL;

@@ -57,6 +57,17 @@ and the window under the pointer is focused once the camera rests. All windows
 move together in one compositor transaction per frame, and windows above the
 top edge stay visible. Native windows keep accepting clicks during panning.
 
+With the standard macOS menu bar showing, windows the plane carries under it
+stay visible there, behind soft glass that keeps the menu bar readable. Its
+blur thins out below the menu bar's lower edge, so it has no visible edge. On macOS
+26 and later the menu bar would otherwise put a copy of the wallpaper behind
+itself and cut those windows off. To prevent that, Tana2D removes
+WindowServer's document tag from a window while the window is under the menu
+bar, and gives it back once the window leaves, Tana2D pauses or Tana2D quits.
+Without that tag a window counts as a floating panel to WindowServer. This
+needs window helper 0.5.11 or later; with an older helper the menu bar keeps
+the macOS behavior.
+
 There is no on-screen camera panel. Use the gestures and shortcuts below, the
 menu, or the command palette.
 
@@ -139,8 +150,11 @@ Camera commands animate position and zoom together. Zoom preserves native
 window dimensions. Control + Option + Command + M explicitly resizes the active
 window to fill the screen. macOS Reduce Motion disables camera transitions.
 
-Three-finger pan speed gets a smooth boost toward 100% zoom: 20% at native
-size, 10% at 50%, and 5% at 25%, multiplied by `swipeGain`.
+Pan speed follows the zoom: quick among full-size windows, gentler and easier
+to aim across a zoomed-out plane. A three-finger pan moves the plane 1.55 times
+the fingers' travel at 100%, 1.17 times at 50% and 0.89 times at 25%,
+multiplied by `swipeGain`. Two-finger scrolls in workspace mode follow the same
+curve from 1.25 times macOS's own scroll distance at 100%.
 
 A three-finger pan that is still moving when the fingers lift carries on
 briefly and eases to rest; a pan that stops before lifting stays exactly where

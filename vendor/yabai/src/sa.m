@@ -240,12 +240,14 @@ cleanup:
  * report a slow reply as a lost helper. */
 #define HWM_SA_TIMEOUT_MS 250
 static bool hwm_sa_plane_settle(void);
+static void hwm_sa_plane_stream_close(void);
 static void sa_recent_layers_forget(void);
 
 static bool scripting_addition_request_handshake(char *version, size_t capacity, uint32_t *attrib)
 {
     const char bytes[] = { 0x01, 0x00, SA_OPCODE_HANDSHAKE };
     (void) hwm_sa_plane_settle();
+    hwm_sa_plane_stream_close(); // Opened again only if this helper offers it.
     bool result = hwm_sa_handshake(g_sa_socket_file, bytes, sizeof(bytes), version, capacity, attrib, HWM_SA_TIMEOUT_MS);
     hwm_sa_capabilities_known = result;
     hwm_sa_capabilities = result ? *attrib : 0;
@@ -439,32 +441,103 @@ static __thread long long hwm_sa_ack_wait_total_ms,hwm_sa_ack_wait_max_ms;
 
 static bool hwm_sa_plane_flush(void);
 
-/* Read the oldest outstanding reply, waiting for it. */
-static void hwm_sa_plane_collect_oldest(void)
+/* A helper that offers it keeps one connection open per thread for these
+ * packets: a frame then costs a send and a read on each side instead of a
+ * connect, an accept and two closes as well. A frame awaiting its reply on
+ * that connection is marked HWM_SA_PLANE_ON_STREAM in place of a socket of
+ * its own; replies come back on it in the order the frames were sent. */
+enum { HWM_SA_PLANE_ON_STREAM = -1 };
+static __thread int hwm_sa_plane_stream = -1;
+static __thread long long hwm_sa_plane_stream_retry; // After a refused or failed open, not tried again before this.
+static pthread_key_t hwm_sa_plane_stream_key; // Closes a thread's connection when the thread exits.
+static pthread_once_t hwm_sa_plane_stream_once = PTHREAD_ONCE_INIT;
+
+static void hwm_sa_plane_stream_release(void *value) { close((int) (intptr_t) value - 1); }
+static void hwm_sa_plane_stream_key_create(void) { pthread_key_create(&hwm_sa_plane_stream_key, hwm_sa_plane_stream_release); }
+
+/* Close this thread's connection. Frames still awaiting a reply on it are
+ * counted as lost, as with a helper that closed their own sockets. */
+static void hwm_sa_plane_stream_close(void)
 {
-    if (hwm_sa_plane_pending_count <= 0) return;
+    if (hwm_sa_plane_stream < 0) return;
+    close(hwm_sa_plane_stream);
+    hwm_sa_plane_stream = -1;
+    pthread_setspecific(hwm_sa_plane_stream_key, NULL);
+    int kept = 0;
+    for (int index = 0; index < hwm_sa_plane_pending_count; ++index) {
+        if (hwm_sa_plane_pending_fds[index] == HWM_SA_PLANE_ON_STREAM) { hwm_sa_plane_pending_failed = true; continue; }
+        hwm_sa_plane_pending_fds[kept] = hwm_sa_plane_pending_fds[index];
+        hwm_sa_plane_pending_deadlines[kept++] = hwm_sa_plane_pending_deadlines[index];
+    }
+    hwm_sa_plane_pending_count = kept;
+}
+
+/* This thread's open connection, opening it if the helper offers one. */
+static int hwm_sa_plane_stream_open(long long deadline)
+{
+    if (hwm_sa_plane_stream >= 0) return hwm_sa_plane_stream;
+    if (!hwm_sa_capabilities_known || !(hwm_sa_capabilities & OSAX_ATTRIB_PLANE_STREAM)) return -1;
+    long long now = hwm_sa_monotonic_ms();
+    if (now < 0 || now < hwm_sa_plane_stream_retry) return -1;
+    pthread_once(&hwm_sa_plane_stream_once, hwm_sa_plane_stream_key_create);
+    const unsigned char hello[] = { 0x01, 0x00, SA_OPCODE_PLANE_STREAM };
+    unsigned char acknowledgement = 0;
+    /* Made after any frame still waiting in the helper's queue and answered
+     * once those are applied, so nothing sent on it can overtake them. */
+    int fd = hwm_sa_connect(g_sa_socket_file, deadline);
+    if (fd >= 0 && hwm_sa_send_all(fd, hello, sizeof(hello), deadline) &&
+        hwm_sa_receive_byte(fd, &acknowledgement, deadline) && acknowledgement == 1) {
+        hwm_sa_plane_stream = fd;
+        pthread_setspecific(hwm_sa_plane_stream_key, (void *) (intptr_t) (fd + 1));
+        return fd;
+    }
+    if (fd >= 0) close(fd);
+    // Refused, as when every slot is taken, or no helper: a connection per frame for now.
+    hwm_sa_plane_stream_retry = now + 1000;
+    return -1;
+}
+
+/* Retire the oldest outstanding frame with the reply read for it. */
+static void hwm_sa_plane_retire_oldest(bool received, unsigned char acknowledgement, long long waited)
+{
     int fd = hwm_sa_plane_pending_fds[0];
-    long long deadline = hwm_sa_plane_pending_deadlines[0];
     --hwm_sa_plane_pending_count;
     memmove(hwm_sa_plane_pending_fds, hwm_sa_plane_pending_fds + 1, sizeof(*hwm_sa_plane_pending_fds) * (size_t) hwm_sa_plane_pending_count);
     memmove(hwm_sa_plane_pending_deadlines, hwm_sa_plane_pending_deadlines + 1, sizeof(*hwm_sa_plane_pending_deadlines) * (size_t) hwm_sa_plane_pending_count);
+    if (!received || acknowledgement != 1) hwm_sa_plane_pending_failed = true;
+    if(waited>0) { hwm_sa_ack_wait_total_ms+=waited; if(waited>hwm_sa_ack_wait_max_ms) hwm_sa_ack_wait_max_ms=waited; }
+    ++hwm_sa_replies;
+    if (fd != HWM_SA_PLANE_ON_STREAM) close(fd);
+    /* A reply that never came would otherwise be read as a later frame's. */
+    else if (!received) hwm_sa_plane_stream_close();
+}
+/* Read the oldest outstanding reply, waiting for it. One that has arrived
+ * (usually so by the next frame) is read without asking first whether it has. */
+static void hwm_sa_plane_collect_oldest(void)
+{
+    if (hwm_sa_plane_pending_count <= 0) return;
+    int fd = hwm_sa_plane_pending_fds[0] == HWM_SA_PLANE_ON_STREAM ? hwm_sa_plane_stream : hwm_sa_plane_pending_fds[0];
+    long long deadline = hwm_sa_plane_pending_deadlines[0];
     /* Collected after the clock slept, the reply has long been waiting: its
      * deadline passing meanwhile says nothing about the helper. Still look. */
     long long now = hwm_sa_monotonic_ms();
     if (now >= 0 && deadline <= now) deadline = now + 1;
     unsigned char acknowledgement = 0;
-    if (!hwm_sa_receive_byte(fd, &acknowledgement, deadline) || acknowledgement != 1) hwm_sa_plane_pending_failed = true;
-    long long waited=hwm_sa_monotonic_ms()-now;
-    if(waited>0) { hwm_sa_ack_wait_total_ms+=waited; if(waited>hwm_sa_ack_wait_max_ms) hwm_sa_ack_wait_max_ms=waited; }
-    ++hwm_sa_replies;
-    close(fd);
+    int arrived = hwm_sa_try_receive_byte(fd, &acknowledgement);
+    bool received = arrived > 0 || (arrived < 0 && hwm_sa_receive_byte(fd, &acknowledgement, deadline));
+    hwm_sa_plane_retire_oldest(received, acknowledgement, hwm_sa_monotonic_ms()-now);
 }
 /* Read the replies that have already arrived, without waiting for the rest. */
 static void hwm_sa_plane_reap(void)
 {
     while (hwm_sa_plane_pending_count > 0) {
+        unsigned char acknowledgement = 0;
+        int fd = hwm_sa_plane_pending_fds[0] == HWM_SA_PLANE_ON_STREAM ? hwm_sa_plane_stream : hwm_sa_plane_pending_fds[0];
+        int arrived = hwm_sa_try_receive_byte(fd, &acknowledgement);
+        // A reply, or the helper closing the socket without one.
+        if (arrived >= 0) { hwm_sa_plane_retire_oldest(arrived > 0, acknowledgement, 0); continue; }
         long long now = hwm_sa_monotonic_ms();
-        if (!hwm_sa_ready(hwm_sa_plane_pending_fds[0]) && !(now >= 0 && hwm_sa_plane_pending_deadlines[0] <= now)) return;
+        if (!(now >= 0 && hwm_sa_plane_pending_deadlines[0] <= now)) return;
         hwm_sa_plane_collect_oldest();
     }
 }
@@ -554,6 +627,24 @@ static bool hwm_sa_plane_send(const unsigned char *bytes, size_t length, bool de
     long long start = hwm_sa_monotonic_ms();
     if (!bytes || !length || start < 0 || start > LLONG_MAX - HWM_SA_TIMEOUT_MS) return false;
     long long deadline = start + HWM_SA_TIMEOUT_MS;
+    int stream = hwm_sa_plane_stream_open(deadline);
+    if (stream >= 0) {
+        if (hwm_sa_send_all(stream, bytes, length, deadline)) {
+            ++hwm_sa_frames_sent;
+            if (defer) {
+                hwm_sa_plane_pending_fds[hwm_sa_plane_pending_count] = HWM_SA_PLANE_ON_STREAM;
+                hwm_sa_plane_pending_deadlines[hwm_sa_plane_pending_count++] = deadline;
+                return true;
+            }
+            unsigned char acknowledgement = 0;
+            if (hwm_sa_receive_byte(stream, &acknowledgement, deadline)) return acknowledgement == 1;
+            hwm_sa_plane_stream_close();
+            return false;
+        }
+        /* Closed by a Dock that restarted, or backed up past the deadline:
+         * this frame goes on a connection of its own. */
+        hwm_sa_plane_stream_close();
+    }
     int fd = hwm_sa_connect(g_sa_socket_file, deadline);
     if (fd < 0) return false;
     bool success = hwm_sa_send_all(fd, bytes, length, deadline);
@@ -642,6 +733,19 @@ bool scripting_addition_plane_native_supported(void)
 bool scripting_addition_plane_alpha_supported(void)
 {
     return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_ALPHA);
+}
+
+bool scripting_addition_plane_document_supported(void)
+{
+    return hwm_sa_capabilities_known && (hwm_sa_capabilities & OSAX_ATTRIB_PLANE_DOCUMENT);
+}
+
+/* Joins the frame's compositor transaction, like an immediate alpha. */
+bool scripting_addition_set_document(uint32_t wid, bool document)
+{
+    if (!wid || (wid & HWM_PLANE_TRANSFORM_FLAGS) || !scripting_addition_plane_document_supported()) return false;
+    HwmPlaneTransform transform = { wid | HWM_PLANE_TRANSFORM_DOCUMENT, document ? 1 : 0, 0, 1, 1 };
+    return hwm_plane_transform_valid(transform) && hwm_sa_plane_queue(transform);
 }
 
 bool scripting_addition_input_shape_supported(void)

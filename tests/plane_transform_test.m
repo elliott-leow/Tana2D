@@ -89,5 +89,21 @@ int main(void)
     HwmPlaneTransform alpha_only = { HWM_PLANE_TRANSFORM_ALPHA, 1, 0, 1, 1 };
     assert(!hwm_plane_transform_valid(bright) && !hwm_plane_transform_valid(undefined) && !hwm_plane_transform_valid(scaled_alpha) &&
            !hwm_plane_transform_valid(both) && !hwm_plane_transform_valid(alpha_only));
+    // A document-tag record rides the same packet: take (0) or give back (1).
+    HwmPlaneTransform tag[3] = { { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT, 0, 0, 1, 1 }, { 6673 | HWM_PLANE_TRANSFORM_DOCUMENT, 1, 0, 1, 1 }, ride };
+    assert(hwm_plane_transform_valid(tag[0]) && hwm_plane_transform_valid(tag[1]) && hwm_plane_transform_document(tag[0]) &&
+           !hwm_plane_transform_alpha(tag[0]) && !hwm_plane_transform_native(tag[0]) && hwm_plane_transform_wid(tag[0]) == 6672);
+    assert(hwm_plane_transform_packet_encode(packet, sizeof(packet), tag, 3, &length));
+    assert(hwm_plane_transform_packet_decode(packet + 1, length - 1, decoded, SA_PLANE_TRANSFORM_MAX_RECORDS, &count) && count == 3);
+    assert(hwm_plane_transform_document(decoded[0]) && decoded[0].x == 0 && hwm_plane_transform_document(decoded[1]) && decoded[1].x == 1 &&
+           hwm_plane_transform_wid(decoded[1]) == 6673 && !hwm_plane_transform_document(decoded[2]) && hwm_plane_transform_native(decoded[2]));
+    HwmPlaneTransform half_tag = { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT, .5, 0, 1, 1 };
+    HwmPlaneTransform moved_tag = { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT, 1, 4, 1, 1 };
+    HwmPlaneTransform scaled_tag = { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT, 1, 0, .5, .5 };
+    HwmPlaneTransform alpha_tag = { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT | HWM_PLANE_TRANSFORM_ALPHA, 1, 0, 1, 1 };
+    HwmPlaneTransform native_tag = { 6672 | HWM_PLANE_TRANSFORM_DOCUMENT | HWM_PLANE_TRANSFORM_NATIVE, 1, 0, 1, 1 };
+    HwmPlaneTransform tag_only = { HWM_PLANE_TRANSFORM_DOCUMENT, 1, 0, 1, 1 };
+    assert(!hwm_plane_transform_valid(half_tag) && !hwm_plane_transform_valid(moved_tag) && !hwm_plane_transform_valid(scaled_tag) &&
+           !hwm_plane_transform_valid(alpha_tag) && !hwm_plane_transform_valid(native_tag) && !hwm_plane_transform_valid(tag_only));
     puts("absolute plane transform packet tests passed");
 }

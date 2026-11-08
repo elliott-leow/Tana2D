@@ -31,7 +31,14 @@ typedef struct {
  * that moves it there. y is 0 and both scales are 1. Only helpers
  * advertising OSAX_ATTRIB_PLANE_ALPHA accept it. */
 #define HWM_PLANE_TRANSFORM_ALPHA 0x40000000u
-#define HWM_PLANE_TRANSFORM_FLAGS (HWM_PLANE_TRANSFORM_NATIVE | HWM_PLANE_TRANSFORM_ALPHA)
+/* Set in a record's window id: give the window WindowServer's document tag
+ * (x is 1) or take it away (x is 0) in the same transaction. On macOS 26 and
+ * later the menu bar shows a copy of the wallpaper behind itself whenever a
+ * document window lies under it, hiding that window; one without the tag is
+ * drawn there like any floating panel. y is 0 and both scales are 1. Only
+ * helpers advertising OSAX_ATTRIB_PLANE_DOCUMENT accept it. */
+#define HWM_PLANE_TRANSFORM_DOCUMENT 0x20000000u
+#define HWM_PLANE_TRANSFORM_FLAGS (HWM_PLANE_TRANSFORM_NATIVE | HWM_PLANE_TRANSFORM_ALPHA | HWM_PLANE_TRANSFORM_DOCUMENT)
 static inline uint32_t hwm_plane_transform_wid(HwmPlaneTransform transform)
 {
     return transform.wid & ~HWM_PLANE_TRANSFORM_FLAGS;
@@ -44,9 +51,17 @@ static inline bool hwm_plane_transform_alpha(HwmPlaneTransform transform)
 {
     return (transform.wid & HWM_PLANE_TRANSFORM_ALPHA) != 0;
 }
+static inline bool hwm_plane_transform_document(HwmPlaneTransform transform)
+{
+    return (transform.wid & HWM_PLANE_TRANSFORM_DOCUMENT) != 0;
+}
 
 static inline bool hwm_plane_transform_valid(HwmPlaneTransform transform)
 {
+    if (hwm_plane_transform_document(transform))
+        return !hwm_plane_transform_native(transform) && !hwm_plane_transform_alpha(transform) &&
+               hwm_plane_transform_wid(transform) && (transform.x == 0 || transform.x == 1) &&
+               transform.y == 0 && transform.scale_x == 1 && transform.scale_y == 1;
     if (hwm_plane_transform_alpha(transform))
         return !hwm_plane_transform_native(transform) && hwm_plane_transform_wid(transform) &&
                transform.x >= 0 && transform.x <= 1 && transform.y == 0 &&

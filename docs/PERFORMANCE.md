@@ -498,3 +498,105 @@ first (helper 0.5.10); only scaled records need the native size. Folding the
 focus ring's four strips into one surface would save another 1.5% but
 reintroduces the window-sized repaint and reshape cost that the strips were
 introduced to avoid, and was not done.
+
+## Idle, pan and input-latency pass (2026-11-07)
+
+Measured on the development Mac (M5 MacBook Air, macOS 27.2, 60 Hz) against
+the user's own windows, with Instruments' Time Profiler attached to the
+installed app (`xcrun xctrace record --template 'Time Profiler' --attach`),
+which counts only time on the CPU; `sample` also counts time spent waiting.
+Pans were 30 `strip pan` glides of ±160/±60 points, 0.27 s apart, at 100% from
+the same camera position. These are single runs on a live desktop: the window
+set changed a little between them, and a terminal spinner was running.
+
+| Finding | Before | After |
+| --- | --- | --- |
+| Tana2D CPU during the scripted pan | 1.31% | 0.97% |
+| Time Profiler samples per frame drawn | 0.40 | 0.30 |
+| Main-thread samples during the pan (11 s) | 33 | 6 |
+| Dock CPU during the pan | 0.79% | 0.62% |
+| Housekeeping event at rest, mean | 0.84 ms | 0.14 ms |
+| Tana2D CPU at rest | 0.2% | 0.1% |
+| Context switches at rest | ~75/s | ~50/s |
+
+What changed:
+
+- **The event tap no longer waits on applications.** Move, resize and title
+  notifications name an element, and the window id was asked of the
+  application synchronously, on the main thread that also runs the event tap
+  every key and pointer event on the system passes through. At 100% every
+  window the plane carries reports a move on every frame of a pan; one slow
+  application stalled all input for up to the 1 s Accessibility timeout. The
+  id is now remembered per element for a second (dropped when the element is
+  destroyed), and an unknown element is asked about on a serial queue chosen
+  by process. Window focus keeps its synchronous lookup, since its order
+  against other events matters.
+- **A frame's reply from the helper is read in one syscall.** Checking
+  readiness, waiting and reading took two `poll`s and a `recv`; a reply that
+  has arrived (by the next frame it nearly always has) is now read with one
+  non-blocking `recv`, and the connection no longer reads back flags a new
+  socket does not have. Per frame the transport measured 37.5 µs before and
+  32.5 µs after in a standalone benchmark.
+- **The housekeeping sweep asks about fewer windows.** Every window was asked
+  whether it was ordered in (two WindowServer round trips each, twice a
+  second). WindowServer's list of the plane's Space, which the sweep already
+  reads, holds only ordered-in windows (checked live: 25 listed, all ordered
+  in; the 5 more listed with ordered-out windows included were all ordered
+  out). Only windows missing from it are asked.
+- **Hover reads the visible frame from a cache.** `NSScreen.visibleFrame`
+  decodes a WindowServer reply on every call (17 to 29 µs), and hover asked on
+  every pointer move; in an idle profile with some pointer movement it was 12
+  of the 14 hover samples. It is kept like the usable screen rectangle: until
+  a display, Dock or menu-bar event, or for two seconds.
+- **The menu-bar backdrop fades in its own layer.** Its window alpha was
+  animated by AppKit on its own threads, a WindowServer transaction a frame,
+  each time a window passed under the menu bar. The render server now animates
+  the backdrop layer's opacity, with the same linear 0.15 s fade. Faded out,
+  the panel stays ordered in, invisible, for two seconds, so the next window
+  to arrive does not order it in again; its filters are rebuilt only when the
+  menu bar's appearance changes.
+
+Pan speed follows the zoom (see the README): 1.55 times the fingers' travel at
+100%, 1.17 at 50%, 0.89 at 25%, times `swipeGain`; workspace scrolls follow the
+same curve from 1.25.
+
+Not changed: an attention outline (an application with a new Dock badge that
+does not have focus) breathes at display rate for as long as it is shown. A
+standalone breathing outline took WindowServer from 11-17% to 30% at rest;
+capped at 30 fps it read 24%. Capping it would change the animation's frame
+rate, so it was left as it is.
+
+### Kept-open helper connection (helper 0.5.12, 2026-11-08)
+
+Each frame was a new connection to the Dock helper: connect, accept, send,
+reply, and a close on both sides. A helper reporting
+`OSAX_ATTRIB_PLANE_STREAM` now keeps one connection open per manager thread
+after a `SA_OPCODE_PLANE_STREAM` hello. Plane and input-shape packets go over
+it, each answered with one byte as before. Ordinary commands still use a
+connection each. The helper serves kept-open connections on its one existing
+thread, polling them with the listening socket, so no two commands run at once
+in Dock. A packet already written to one goes before any connection made after
+it. Anything that cannot be answered with one byte is refused there and not
+run. At most eight are kept; a further hello is refused and that thread uses a
+connection per frame, asking again after a second. A reply that never comes
+closes the connection, so a late reply is never read as a later frame's. A
+Dock restart closes it too, and the next frame opens a new one. Every accepted
+socket now sets `SO_NOSIGPIPE`: replying to a manager that had already given
+up raised SIGPIPE in Dock (`tests/test_sa_stream_server.py` died of it
+without the flag).
+
+Transport alone, against the live helper, the same refused packet 3000 times
+1 ms apart: Tana2D 49 → 26 µs of CPU per packet, Dock 37 → 23 µs, round trip
+median 70 → 39 µs (p99 92 → 58 µs). In the app, 60 pan glides at 100%
+(17.7 s, about 1050 frames), three runs each, measured just after launch with
+CPU from `proc_pid_rusage`, same windows and camera:
+
+| | Connection per frame | Kept open |
+| --- | --- | --- |
+| Tana2D CPU during the pan | 1.50-1.57% | 1.18-1.19% |
+| Dock CPU during the pan | 1.00-1.04% | 0.93-0.95% |
+
+These runs used a different window set from the table above, and more
+precise CPU counters, so their absolute numbers are not comparable with it.
+Restarting Dock mid-session reopened the connection with no failed moves or
+dropped frames, and left no extra sockets open in the manager.

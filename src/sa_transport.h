@@ -62,10 +62,23 @@ static inline bool hwm_sa_ready(int fd)
     return poll(&descriptor, 1, 0) > 0;
 }
 
+/* Read one byte that has already arrived, without waiting: 1 when it was
+ * read, 0 at end of file or on an error, -1 when nothing has arrived yet.
+ * One syscall where checking readiness first and then reading takes three. */
+static inline int hwm_sa_try_receive_byte(int fd, unsigned char *byte)
+{
+    for (;;) {
+        ssize_t received = recv(fd, byte, 1U, MSG_DONTWAIT);
+        if (received == 1) return 1;
+        if (received == 0) return 0;
+        if (errno == EINTR) continue;
+        return errno == EAGAIN || errno == EWOULDBLOCK ? -1 : 0;
+    }
+}
+
 static inline int hwm_sa_connect(const char *path, long long deadline)
 {
     struct sockaddr_un address;
-    int flags;
     int fd = -1;
 
     if (path == NULL || strlen(path) >= sizeof(address.sun_path)) return -1;
@@ -78,8 +91,9 @@ static inline int hwm_sa_connect(const char *path, long long deadline)
         if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0) goto fail;
     }
 #endif
-    flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) goto fail;
+    /* A new socket has no other status flags to keep. A connection is made
+     * for every frame, so this saves reading them back each time. */
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) != 0) goto fail;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, path, strlen(path) + 1U);

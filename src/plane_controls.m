@@ -1,8 +1,10 @@
 /* Native camera controls. AppKit stays on the main thread; model actions are
  * serialized by horizontal_plane_action on the window-manager event loop. */
 #import <Cocoa/Cocoa.h>
+#include <os/lock.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <time.h>
 
 void horizontal_plane_action(const char *name);
 
@@ -115,10 +117,33 @@ static bool hwm_plane_controls_hit(CGPoint point)
     return NSPointInRect(NSMakePoint(point.x,height-point.y),frame);
 }
 
+/* NSScreen works the visible frame out again on every call, decoding a
+ * WindowServer reply about the Dock and menu bar, and hover asks for it on
+ * every pointer move. It changes only with the display, Dock or menu bar, so
+ * it is kept as the usable screen rectangle is (hwm_screen): until one of
+ * them reports a change, which bumps this epoch, or for two seconds. Declared
+ * again before horizontal_event_timed, which bumps it. Any thread. */
+static _Atomic unsigned hwm_workspace_frame_epoch;
+static os_unfair_lock hwm_workspace_frame_lock=OS_UNFAIR_LOCK_INIT;
+static NSRect hwm_workspace_visible_frame(void)
+{
+    static NSScreen *screen; // Compared, never dereferenced.
+    static NSRect visible; static uint64_t stamp; static unsigned epoch; static bool known;
+    NSScreen *main=NSScreen.mainScreen;
+    uint64_t now=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    unsigned current=atomic_load(&hwm_workspace_frame_epoch);
+    os_unfair_lock_lock(&hwm_workspace_frame_lock);
+    if(!known || main!=screen || current!=epoch || now-stamp>2*NSEC_PER_SEC) {
+        visible=main.visibleFrame; screen=main; epoch=current; stamp=now; known=true;
+    }
+    NSRect frame=visible;
+    os_unfair_lock_unlock(&hwm_workspace_frame_lock);
+    return frame;
+}
 static bool hwm_zoom_workspace_contains(CGPoint point)
 {
     double height=NSScreen.screens.firstObject.frame.size.height;
-    return NSPointInRect(NSMakePoint(point.x,height-point.y),NSScreen.mainScreen.visibleFrame);
+    return NSPointInRect(NSMakePoint(point.x,height-point.y),hwm_workspace_visible_frame());
 }
 
 static void hwm_plane_controls_update(bool visible,double scale)

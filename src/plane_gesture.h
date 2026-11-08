@@ -23,12 +23,27 @@ typedef struct {
     double time,pending_x,pending_y;
     bool committed;
 } HWMPlaneGesture;
-/* Keep native-size pans brisk while gradually reducing the extra gain as
- * windows get smaller. This is screen-space gain; world travel still uses
- * the camera scale below. User swipeGain remains a multiplier. */
+/* How a pan's speed follows the zoom: 1 at actual size, falling as the plane
+ * zooms out (.76 at 50%, .57 at 25%), so that a pan is quick among
+ * full-size windows and easy to aim across a zoomed-out plane, where every
+ * point on screen is several in the world. */
+static inline double hwm_plane_pan_zoom_response(double scale)
+{
+    return pow(fmin(1,fmax(.05,isfinite(scale) ? scale : 1)),.4);
+}
+/* Screen-space gain of a three-finger pan: 1.55 at actual size (finger
+ * travel times one and a half, so crossing a window takes a short swipe),
+ * 1.18 at 50%, .89 at 25%. World travel still divides by the camera scale
+ * below. User swipeGain remains a multiplier. */
 static inline double hwm_plane_pan_speed(double scale)
 {
-    return 1+.20*fmin(1,fmax(0,scale));
+    return 1.55*hwm_plane_pan_zoom_response(scale);
+}
+/* Workspace two-finger scrolls follow the same curve. macOS has already
+ * accelerated their deltas, so they start from less: 1.25 at actual size. */
+static inline double hwm_plane_scroll_pan_speed(double scale)
+{
+    return 1.25*hwm_plane_pan_zoom_response(scale);
 }
 /* Track identities, not the centroid of a changing finger set. Coordinates
  * increase right/up on the sensor; screen coordinates increase right/down. */

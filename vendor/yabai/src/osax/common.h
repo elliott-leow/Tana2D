@@ -5,12 +5,12 @@
 #define SA_SOCKET_BUFF_LEN 0x1000
 
 // Tana2D owns this payload and socket independently of installed yabai helpers.
-#define OSAX_VERSION                "0.5.10"
+#define OSAX_VERSION                "0.5.12"
 /* The oldest payload the manager still drives. Newer features are gated on
  * the attributes it reports, so an older Dock helper keeps the manager
  * running until the loader next replaces it. */
 #define OSAX_COMPATIBLE_VERSION     "0.5.5"
-#define OSAX_VERSION_COMPATIBLE(v)  (!strcmp((v), OSAX_VERSION) || !strcmp((v), "0.5.9") || !strcmp((v), "0.5.8") || !strcmp((v), "0.5.7") || !strcmp((v), "0.5.6") || !strcmp((v), OSAX_COMPATIBLE_VERSION))
+#define OSAX_VERSION_COMPATIBLE(v)  (!strcmp((v), OSAX_VERSION) || !strcmp((v), "0.5.11") || !strcmp((v), "0.5.10") || !strcmp((v), "0.5.9") || !strcmp((v), "0.5.8") || !strcmp((v), "0.5.7") || !strcmp((v), "0.5.6") || !strcmp((v), OSAX_COMPATIBLE_VERSION))
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02
@@ -23,6 +23,8 @@
 #define OSAX_ATTRIB_INPUT_SHAPE     0x100
 #define OSAX_ATTRIB_PLANE_NATIVE    0x200
 #define OSAX_ATTRIB_PLANE_ALPHA     0x400
+#define OSAX_ATTRIB_PLANE_DOCUMENT  0x800
+#define OSAX_ATTRIB_PLANE_STREAM    0x1000
 
 #define OSAX_ATTRIB_ALL             (OSAX_ATTRIB_DOCK_SPACES | \
                                      OSAX_ATTRIB_DPPM | \
@@ -34,7 +36,9 @@
                                      OSAX_ATTRIB_PLANE_TRANSFORM | \
                                      OSAX_ATTRIB_INPUT_SHAPE | \
                                      OSAX_ATTRIB_PLANE_NATIVE | \
-                                     OSAX_ATTRIB_PLANE_ALPHA)
+                                     OSAX_ATTRIB_PLANE_ALPHA | \
+                                     OSAX_ATTRIB_PLANE_DOCUMENT | \
+                                     OSAX_ATTRIB_PLANE_STREAM)
 
 enum sa_opcode
 {
@@ -59,6 +63,9 @@ enum sa_opcode
     SA_OPCODE_WINDOW_TO_SPACE       = 0x13,
     SA_OPCODE_WINDOW_PLANE_TRANSFORM = 0x14,
     SA_OPCODE_WINDOW_INPUT_SHAPE     = 0x15,
+    /* Keep this connection open for plane and input-shape packets, each
+     * answered with one byte, instead of one connection per packet. */
+    SA_OPCODE_PLANE_STREAM           = 0x16,
 };
 
 #endif

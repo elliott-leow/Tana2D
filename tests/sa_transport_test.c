@@ -242,6 +242,26 @@ static void test_send_fast_path_and_backpressure(void)
     free(large); close(pair[0]); close(pair[1]);
 }
 
+/* A reply already waiting is read in one call; one still to come is reported
+ * as such without blocking, and end of file as failure. The connection is
+ * blocking here, so a call that waited would hang. */
+static void test_try_receive_byte(void)
+{
+    int pair[2];
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
+    unsigned char byte=0;
+    poll_calls=0;
+    assert(hwm_sa_try_receive_byte(pair[0],&byte)==-1);
+    unsigned char ack=1;
+    assert(write(pair[1],&ack,1)==1);
+    assert(hwm_sa_try_receive_byte(pair[0],&byte)==1 && byte==1);
+    assert(hwm_sa_try_receive_byte(pair[0],&byte)==-1);
+    assert(poll_calls==0);
+    close(pair[1]);
+    assert(hwm_sa_try_receive_byte(pair[0],&byte)==0);
+    close(pair[0]);
+}
+
 static void test_fragmented_handshake(void)
 {
     static const unsigned char request[] = {1, 0, 12};
@@ -389,6 +409,7 @@ int main(void)
     test_pipeline_orders_and_awaits_every_message();
     test_pipeline_reports_unanswered_and_unsendable();
     test_send_fast_path_and_backpressure();
+    test_try_receive_byte();
     test_eof_and_partial_server_reads();
     test_optional_ack();
     test_failures_are_bounded();
