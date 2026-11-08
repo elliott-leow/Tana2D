@@ -103,7 +103,7 @@ require testing on the target Mac.
 | Four-finger swipe down | Center the active window at 100% without resizing it |
 | Four-finger swipe up | Open the same click-to-center mode |
 | Control + Option + Command + T | Open a new Ghostty window |
-| Control + Option + Command + B | Open Firefox |
+| Control + Option + Command + B | Open your default browser (`commands.browser` in the config runs something else instead) |
 | Control + Option + Command + arrow | Focus the nearest window in that direction |
 | Control + Shift + Option + Command + arrow | Move the focused window one grid step |
 | Click a window after panning or pinching out | Focus it and zoom to 100%; body drags stay with the app |

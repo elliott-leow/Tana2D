@@ -1538,6 +1538,16 @@ static void hwm_spawn(NSString *command)
 }
 #include "overview_runtime.m"
 
+static bool hwm_bundle_safe(NSString *bundle);
+/* Opens (or brings forward) the browser macOS opens web links with. Asked
+ * each time, so a new default browser applies at once. */
+static NSString *hwm_default_browser_command(void)
+{
+    NSURL *app=[NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:[NSURL URLWithString:@"https://example.com"]];
+    NSString *bundle=app ? [NSBundle bundleWithURL:app].bundleIdentifier : nil;
+    return hwm_bundle_safe(bundle) ? [NSString stringWithFormat:@"open -b '%@'",bundle] : @"open -b com.apple.Safari";
+}
+
 static void hwm_action(int action)
 {
     if(action==HWM_CANCEL_DRAG) { hwm_cancel_drag(); return; }
@@ -1549,7 +1559,7 @@ static void hwm_action(int action)
     if(action==HWM_OVERVIEW_CANCEL) { hwm_plane_actual_size(hwm_view()); return; }
     if (action==HWM_TERMINAL || action==HWM_BROWSER) {
         hwm_spawn(action==HWM_TERMINAL ? (hwm_terminal_command ?: @"open -na Ghostty")
-                                       : (hwm_browser_command ?: @"open -b org.mozilla.firefox"));
+                                       : (hwm_browser_command ?: hwm_default_browser_command()));
         return;
     }
     if (action == HWM_QUIT) { hwm_shutdown(); return; }
