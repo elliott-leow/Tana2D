@@ -7,7 +7,7 @@ static NSDictionary *hwm_default_shortcuts(void)
       @"maximize":@"ctrl+alt+cmd+m",@"fullscreen":@"f11",@"select-window":@"ctrl+alt+cmd+return",@"select-window-alt":@"ctrl+alt+cmd+s",@"fit-focused":@"ctrl+alt+cmd+f",@"actual-size":@"ctrl+alt+cmd+0",
       @"float":@"ctrl+alt+cmd+space",@"float-alt":@"ctrl+shift+alt+cmd+space",
       @"center":@"ctrl+alt+cmd+c",@"home":@"ctrl+alt+cmd+h",@"close":@"ctrl+alt+cmd+q",
-      @"terminal":@"ctrl+alt+cmd+t",@"browser":@"ctrl+alt+cmd+b",
+      @"terminal":@"ctrl+alt+cmd+t",@"browser":@"cmd+shift+w",
       @"previous":@"ctrl+alt+cmd+tab",@"undo":@"ctrl+alt+cmd+z",@"preset-width":@"ctrl+alt+cmd+r",
       @"commands":@"ctrl+alt+cmd+p",@"pause":@"ctrl+shift+alt+cmd+p",@"reload-config":@"ctrl+shift+alt+cmd+r"
     };

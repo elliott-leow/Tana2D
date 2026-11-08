@@ -78,11 +78,11 @@ static void test_plane_bindings(void) {
     assert([[s actionForKeyCode:36 modifiers:mod] isEqual:@"select-window"]);
     assert([[s actionForKeyCode:1 modifiers:mod] isEqual:@"select-window-alt"]);
     assert([[s actionForKeyCode:17 modifiers:mod] isEqual:@"terminal"]);
-    assert([[s actionForKeyCode:11 modifiers:mod] isEqual:@"browser"]);
+    assert([[s actionForKeyCode:13 modifiers:NSEventModifierFlagCommand|NSEventModifierFlagShift] isEqual:@"browser"]);
+    assert(![s actionForKeyCode:11 modifiers:mod]); /* the browser is on Cmd-Shift-W alone */
     assert(![s actionForKeyCode:12 modifiers:NSEventModifierFlagCommand]); /* Cmd-Q */
     assert(![s actionForKeyCode:49 modifiers:NSEventModifierFlagCommand]); /* Spotlight */
     assert(![s actionForKeyCode:36 modifiers:NSEventModifierFlagCommand]);
-    assert(![s actionForKeyCode:13 modifiers:NSEventModifierFlagCommand|NSEventModifierFlagShift]);
     assert(![s actionForKeyCode:126 modifiers:NSEventModifierFlagControl]); /* Mission Control */
     /* F11 toggles native fullscreen. The event's Function flag is stripped
      * by the event tap, as for arrows; Control-Command-F stays the app's. */

@@ -94,7 +94,7 @@
     "preset-width": "mod+r",
     "close": "mod+q",
     "terminal": "mod+t",
-    "browser": "mod+b",
+    "browser": "cmd+shift+w",
     "commands": "mod+p",
     "pause": "mod+shift+p",
     "reload-config": "mod+shift+r"
